@@ -101,7 +101,7 @@ async function check() {
   const { data } = await supabase
     .from('ledger')
     .select('kind, credits, channel_id')
-    .eq('user_id', '15f45633-4719-41a3-b6e3-338138ef1d5f')
+    .eq('user_id', '00000000-0000-0000-0000-000000000000')
     .order('created_at', { ascending: false })
     .limit(3);
   
@@ -197,7 +197,7 @@ Drain the balance first:
 ```bash
 cd E:/sitegen && pnpm supabase db query "
 INSERT INTO ledger (user_id, request_id, kind, credits)
-VALUES ('15f45633-4719-41a3-b6e3-338138ef1d5f', 'drain-balance', 'settle', -9950);
+VALUES ('00000000-0000-0000-0000-000000000000', 'drain-balance', 'settle', -9950);
 "
 
 # Verify low balance
@@ -207,7 +207,7 @@ const supabase = createClient(
   'http://127.0.0.1:54321',
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
-supabase.rpc('get_balance', {p_user_id: '15f45633-4719-41a3-b6e3-338138ef1d5f'})
+supabase.rpc('get_balance', {p_user_id: '00000000-0000-0000-0000-000000000000'})
   .then(({data}) => console.log('Balance:', data, 'credits'));
 "
 
