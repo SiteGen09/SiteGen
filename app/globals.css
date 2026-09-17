@@ -1,0 +1,1048 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+/* ---------------------------------------------------------------------------
+ * Theming
+ *
+ * The switch is `color-scheme`, not a class: every colour token below is a
+ * `light-dark()` pair, so a visitor who has never touched the control follows
+ * their device, and the stored override is one attribute on <html>. No
+ * component needs a `dark:` variant — Tailwind v4 compiles `bg-white` and
+ * friends to `var(--color-white)`, so remapping the palette here repaints the
+ * whole app. The neutrals mirror across the scale (50 <-> 950, 100 <-> 800 …)
+ * and the accents do the same, which preserves the light design's intent: a
+ * `-50` stays the quiet tint, a `-700` stays the readable text on it.
+ *
+ * Two surfaces opt out at the bottom of this block: the admin portal, which is
+ * deliberately dark in both themes, and the docs code samples, which are meant
+ * to read as an inverted slab.
+ * ------------------------------------------------------------------------ */
+
+:root {
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  /* Same specificity as the rule below, so source order keeps an explicit
+   * "dark" winning; an explicit "light" is excluded here instead. */
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+:root {
+  --background: light-dark(#ffffff, #0a0a0a);
+  --foreground: light-dark(#171717, #ededed);
+
+  /* Neutrals */
+  --color-white: light-dark(#fff, oklch(21% 0.006 285.885));
+  --color-zinc-50: light-dark(oklch(98.5% 0 none), oklch(14.1% 0.005 285.823));
+  --color-zinc-100: light-dark(oklch(96.7% 0.001 286.375), oklch(27.4% 0.006 286.033));
+  --color-zinc-200: light-dark(oklch(92% 0.004 286.32), oklch(27.4% 0.006 286.033));
+  --color-zinc-300: light-dark(oklch(87.1% 0.006 286.286), oklch(37% 0.013 285.805));
+  --color-zinc-400: light-dark(oklch(70.5% 0.015 286.067), oklch(44.2% 0.017 285.786));
+  --color-zinc-500: light-dark(oklch(55.2% 0.016 285.938), oklch(70.5% 0.015 286.067));
+  --color-zinc-600: light-dark(oklch(44.2% 0.017 285.786), oklch(87.1% 0.006 286.286));
+  --color-zinc-700: light-dark(oklch(37% 0.013 285.805), oklch(87.1% 0.006 286.286));
+  --color-zinc-800: light-dark(oklch(27.4% 0.006 286.033), oklch(92% 0.004 286.32));
+  --color-zinc-900: light-dark(oklch(21% 0.006 285.885), oklch(96.7% 0.001 286.375));
+  --color-zinc-950: light-dark(oklch(14.1% 0.005 285.823), oklch(98.5% 0 none));
+
+  /* Accents. Only the shades this app actually paints with are mirrored. */
+  --color-emerald-50: light-dark(oklch(97.9% 0.021 166.113), oklch(26.2% 0.051 172.552));
+  --color-emerald-200: light-dark(oklch(90.5% 0.093 164.15), oklch(43.2% 0.095 166.913));
+  --color-emerald-700: light-dark(oklch(50.8% 0.118 165.612), oklch(84.5% 0.143 164.978));
+  --color-emerald-800: light-dark(oklch(43.2% 0.095 166.913), oklch(90.5% 0.093 164.15));
+
+  --color-red-50: light-dark(oklch(97.1% 0.013 17.38), oklch(25.8% 0.092 26.042));
+  --color-red-700: light-dark(oklch(50.5% 0.213 27.518), oklch(80.8% 0.114 19.571));
+  --color-red-900: light-dark(oklch(39.6% 0.141 25.723), oklch(93.6% 0.032 17.717));
+
+  --color-amber-50: light-dark(oklch(98.7% 0.022 95.277), oklch(27.9% 0.077 45.635));
+  --color-amber-100: light-dark(oklch(96.2% 0.059 95.617), oklch(41.4% 0.112 45.904));
+  --color-amber-200: light-dark(oklch(92.4% 0.12 95.746), oklch(47.3% 0.137 46.201));
+  --color-amber-300: light-dark(oklch(87.9% 0.169 91.605), oklch(55.5% 0.163 48.998));
+  --color-amber-700: light-dark(oklch(55.5% 0.163 48.998), oklch(87.9% 0.169 91.605));
+  --color-amber-800: light-dark(oklch(47.3% 0.137 46.201), oklch(92.4% 0.12 95.746));
+  --color-amber-900: light-dark(oklch(41.4% 0.112 45.904), oklch(96.2% 0.059 95.617));
+
+  --color-blue-50: light-dark(oklch(97% 0.014 254.604), oklch(28.2% 0.091 267.935));
+  --color-blue-200: light-dark(oklch(88.2% 0.059 254.128), oklch(42.4% 0.199 265.638));
+  --color-blue-800: light-dark(oklch(42.4% 0.199 265.638), oklch(88.2% 0.059 254.128));
+}
+
+/* The admin portal ships its own dark chrome and is not part of the switch, so
+ * it pins the tokens it paints with back to Tailwind's stock values. */
+.admin-scope {
+  color-scheme: dark;
+
+  --color-white: #fff;
+  --color-zinc-50: oklch(98.5% 0 none);
+  --color-zinc-100: oklch(96.7% 0.001 286.375);
+  --color-zinc-200: oklch(92% 0.004 286.32);
+  --color-zinc-300: oklch(87.1% 0.006 286.286);
+  --color-zinc-400: oklch(70.5% 0.015 286.067);
+  --color-zinc-500: oklch(55.2% 0.016 285.938);
+  --color-zinc-600: oklch(44.2% 0.017 285.786);
+  --color-zinc-700: oklch(37% 0.013 285.805);
+  --color-zinc-800: oklch(27.4% 0.006 286.033);
+  --color-zinc-900: oklch(21% 0.006 285.885);
+  --color-zinc-950: oklch(14.1% 0.005 285.823);
+  --color-amber-300: oklch(87.9% 0.169 91.605);
+}
+
+/* Code samples stay a dark slab in either theme. In light they are the
+ * inverted block the docs were designed around; in dark they drop below the
+ * page instead of matching it, which is what keeps them legible as samples. */
+.code-surface {
+  --color-zinc-100: oklch(96.7% 0.001 286.375);
+  --color-zinc-900: light-dark(oklch(21% 0.006 285.885), oklch(14.1% 0.005 285.823));
+}
+
+html {
+  /* Keep iOS Safari from inflating body text when the phone rotates. */
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* iOS Safari zooms the whole page whenever a focused control's text is under
+ * 16px, which strands the layout off-screen. Lift every control to 16px at
+ * phone widths; above that the Tailwind sizes stand. */
+@media (max-width: 767px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
+/* The usage surface intentionally has its own visual language.  Keep every
+ * rule below scoped so the rest of the light dashboard is unchanged. */
+
+.usage-shell {
+  /* `--usage-ink` is the neutral every hairline, grid line and shadow on this
+   * surface is mixed from, so the whole visual language flips with the theme
+   * instead of each rule carrying its own rgba(). */
+  --usage-ink: light-dark(#171717, #ffffff);
+  --usage-bg: light-dark(#ffffff, #0e0d0d);
+  --usage-surface: light-dark(#ffffff, #151413);
+  --usage-surface-raised: light-dark(#fdfcfb, #1a1918);
+  --usage-border: color-mix(in srgb, var(--usage-ink) 11%, transparent);
+  --usage-border-strong: color-mix(in srgb, var(--usage-ink) 19%, transparent);
+  --usage-text: light-dark(#1f1d1b, #f0ede9);
+  --usage-body: light-dark(#3a3735, #d7d3cf);
+  --usage-muted: light-dark(#6b6764, #a5a09b);
+  --usage-faint: light-dark(#8f8b87, #837e79);
+  --usage-head-bg: light-dark(#f6f4f2, #201e1d);
+  --usage-orange: light-dark(#d95f34, #f07a4d);
+  --usage-orange-strong: light-dark(#a8431d, #ffa179);
+  --usage-coral: light-dark(#c06844, #e08a63);
+  --usage-blue: light-dark(#2563eb, #6ea0ff);
+  --usage-green: light-dark(#0f9d6e, #3fc79a);
+  --usage-yellow: light-dark(#b4801d, #e0aa3e);
+  --usage-red: light-dark(#cf4444, #ff7f7f);
+  --usage-purple: light-dark(#7c5cd6, #a892f0);
+  /* Topology graph: idle route lines and node outlines. */
+  --usage-line: light-dark(#c9c5c1, #3a3735);
+  --usage-node-border: light-dark(#dcd8d4, #35322f);
+  --usage-orange-wash: light-dark(#fdf0ea, #2a1a12);
+  position: relative;
+  isolation: isolate;
+  min-height: calc(100vh - 64px);
+  margin: -32px;
+  overflow: hidden;
+  color: var(--usage-text);
+  background: var(--usage-bg);
+  border: 1px solid var(--usage-border);
+  border-radius: 8px;
+  box-shadow: 0 20px 50px color-mix(in srgb, var(--usage-ink) 6%, transparent);
+}
+
+.usage-shell::before {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  content: '';
+  opacity: 0.55;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--usage-ink) 4.5%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--usage-ink) 4.5%, transparent) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(to bottom, black, transparent 80%);
+}
+
+.usage-shell-inner {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 1720px;
+  margin: 0 auto;
+  padding: 36px clamp(24px, 2.6vw, 48px) 48px;
+}
+
+.usage-page-header,
+.usage-controls-row,
+.usage-card-heading,
+.usage-header-actions,
+.usage-pagination {
+  display: flex;
+  align-items: center;
+}
+
+.usage-page-header {
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 24px;
+}
+
+.usage-title-group {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 14px;
+}
+
+.usage-title-group h1 {
+  margin: 0;
+  color: var(--usage-text);
+  font-size: 2rem;
+  font-weight: 650;
+  letter-spacing: 0;
+  line-height: 1.08;
+}
+
+.usage-title-group p {
+  margin: 7px 0 0;
+  color: var(--usage-muted);
+  font-size: 0.87rem;
+}
+
+.usage-title-mark {
+  display: grid;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  padding: 9px;
+  gap: 3px;
+  align-items: end;
+  grid-template-columns: repeat(3, 1fr);
+  border: 1px solid rgba(217, 95, 52, 0.4);
+  border-radius: 8px;
+  background: rgba(217, 95, 52, 0.1);
+  box-shadow: inset 0 0 18px rgba(217, 95, 52, 0.08);
+}
+
+.usage-title-mark span {
+  display: block;
+  min-height: 8px;
+  border-radius: 2px 2px 1px 1px;
+  background: var(--usage-orange);
+}
+
+.usage-title-mark span:nth-child(1) {
+  height: 13px;
+  opacity: 0.65;
+}
+
+.usage-title-mark span:nth-child(2) {
+  height: 19px;
+}
+
+.usage-title-mark span:nth-child(3) {
+  height: 10px;
+  opacity: 0.78;
+}
+
+.usage-header-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.usage-header-status,
+.usage-docs-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+}
+
+.usage-header-status {
+  gap: 8px;
+  padding: 0 11px;
+  color: var(--usage-muted);
+  border: 1px solid var(--usage-border);
+  background: color-mix(in srgb, var(--usage-ink) 3%, transparent);
+}
+
+.usage-docs-link {
+  padding: 0 12px;
+  color: var(--usage-orange);
+  border: 1px solid rgba(217, 95, 52, 0.35);
+  background: rgba(217, 95, 52, 0.07);
+  text-decoration: none;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.usage-docs-link:hover {
+  color: var(--usage-orange-strong);
+  border-color: rgba(217, 95, 52, 0.6);
+  background: rgba(217, 95, 52, 0.13);
+}
+
+.usage-live-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--usage-green);
+  box-shadow: 0 0 0 4px rgba(15, 157, 110, 0.14);
+}
+
+.usage-controls-row {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.usage-segmented,
+.usage-periods {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  gap: 2px;
+  border: 1px solid var(--usage-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--usage-ink) 4%, transparent);
+}
+
+.usage-segmented button,
+.usage-periods button {
+  min-height: 30px;
+  padding: 0 12px;
+  color: var(--usage-muted);
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.usage-periods button {
+  min-width: 48px;
+  padding-inline: 10px;
+}
+
+.usage-segmented button:hover,
+.usage-periods button:hover {
+  color: var(--usage-text);
+  background: color-mix(in srgb, var(--usage-ink) 6%, transparent);
+}
+
+.usage-segmented button.is-active,
+.usage-periods button.is-active {
+  color: var(--usage-orange-strong);
+  background: rgba(217, 95, 52, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(217, 95, 52, 0.38);
+}
+
+.usage-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 194px), 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.usage-kpi-card {
+  position: relative;
+  min-width: 0;
+  min-height: 126px;
+  padding: 16px 16px 14px;
+  overflow: hidden;
+  border: 1px solid var(--usage-border);
+  border-radius: 8px;
+  background: var(--usage-surface-raised);
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--usage-ink) 5%, transparent);
+}
+
+.usage-kpi-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--usage-muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.usage-kpi-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.usage-kpi-value {
+  margin: 17px 0 0;
+  color: var(--usage-text);
+  overflow-wrap: anywhere;
+  font-size: 1.65rem;
+  font-weight: 650;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.usage-kpi-hint {
+  margin: 9px 0 0;
+  color: var(--usage-faint);
+  font-size: 0.7rem;
+}
+
+.usage-kpi-dot.orange,
+.usage-kpi-value.orange {
+  color: var(--usage-orange);
+  background-color: var(--usage-orange);
+}
+
+.usage-kpi-dot.coral,
+.usage-kpi-value.coral {
+  color: var(--usage-coral);
+  background-color: var(--usage-coral);
+}
+
+.usage-kpi-dot.blue,
+.usage-kpi-value.blue {
+  color: var(--usage-blue);
+  background-color: var(--usage-blue);
+}
+
+.usage-kpi-dot.green,
+.usage-kpi-value.green {
+  color: var(--usage-green);
+  background-color: var(--usage-green);
+}
+
+.usage-kpi-dot.yellow,
+.usage-kpi-value.yellow {
+  color: var(--usage-yellow);
+  background-color: var(--usage-yellow);
+}
+
+.usage-kpi-value.orange,
+.usage-kpi-value.coral,
+.usage-kpi-value.blue,
+.usage-kpi-value.green,
+.usage-kpi-value.yellow {
+  background-color: transparent;
+}
+
+.usage-overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(300px, 0.75fr);
+  align-items: stretch;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.usage-card {
+  min-width: 0;
+  border: 1px solid var(--usage-border);
+  border-radius: 8px;
+  background: var(--usage-surface);
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--usage-ink) 5%, transparent);
+}
+
+.usage-card-heading {
+  justify-content: space-between;
+  gap: 14px;
+  padding: 18px 18px 0;
+}
+
+.usage-card-heading h2 {
+  margin: 4px 0 0;
+  color: var(--usage-text);
+  font-size: 0.98rem;
+  font-weight: 620;
+  letter-spacing: 0;
+}
+
+.usage-card-eyebrow {
+  margin: 0;
+  color: var(--usage-orange);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.usage-card-count {
+  flex: 0 0 auto;
+  color: var(--usage-muted);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.usage-topology-card {
+  overflow: hidden;
+}
+
+.usage-topology-canvas {
+  position: relative;
+  min-height: 350px;
+  padding: 9px 12px 13px;
+}
+
+.usage-topology-canvas svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 290px;
+  /* The viewBox is 720x420, so an unbounded width would drag the card's
+   * height up with it.  Cap it and let preserveAspectRatio centre the graph. */
+  max-height: 420px;
+}
+
+.usage-topology-caption {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 7px 2px;
+  color: var(--usage-muted);
+  font-size: 0.72rem;
+}
+
+/* With no channel nodes the graph is just the routing node, so drop the
+ * reserved height instead of leaving a tall band of empty canvas. */
+.usage-topology-canvas.is-empty {
+  min-height: 0;
+}
+
+.usage-topology-canvas.is-empty svg {
+  min-height: 0;
+  max-height: 210px;
+}
+
+.usage-recent-card {
+  overflow: hidden;
+}
+
+.usage-recent-list {
+  margin-top: 13px;
+  padding: 0 18px 12px;
+}
+
+.usage-recent-row {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 9px;
+  min-height: 47px;
+  border-bottom: 1px solid color-mix(in srgb, var(--usage-ink) 8%, transparent);
+}
+
+.usage-recent-row:last-child {
+  border-bottom: 0;
+}
+
+.usage-request-dot {
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--usage-faint);
+}
+
+.usage-request-dot.is-success {
+  background: var(--usage-green);
+  box-shadow: 0 0 10px rgba(15, 157, 110, 0.32);
+}
+
+.usage-request-dot.is-error {
+  background: var(--usage-red);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--usage-red) 28%, transparent);
+}
+
+.usage-recent-model {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.usage-recent-model strong {
+  overflow: hidden;
+  color: var(--usage-text);
+  font-size: 0.76rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-recent-model span,
+.usage-recent-row time {
+  color: var(--usage-faint);
+  font-size: 0.65rem;
+}
+
+.usage-recent-tokens {
+  display: inline-flex;
+  gap: 7px;
+  color: var(--usage-muted);
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.63rem;
+  white-space: nowrap;
+}
+
+.usage-recent-row time {
+  min-width: 43px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.usage-trend-card {
+  overflow: hidden;
+}
+
+.usage-trend-heading {
+  align-items: flex-start;
+  padding-bottom: 14px;
+}
+
+.usage-chart-toggle {
+  flex: 0 0 auto;
+}
+
+.usage-chart-toggle button {
+  min-height: 27px;
+  padding-inline: 10px;
+  font-size: 0.68rem;
+}
+
+.usage-chart-wrap {
+  position: relative;
+  min-height: 260px;
+  padding: 0 16px 12px;
+}
+
+.usage-chart-wrap svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.usage-chart-grid {
+  stroke: color-mix(in srgb, var(--usage-ink) 10%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 3 7;
+}
+
+.usage-chart-axis,
+.usage-chart-label {
+  fill: var(--usage-faint);
+  font-size: 12px;
+}
+
+.usage-chart-line {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.usage-chart-line.tokens,
+.usage-chart-point.tokens {
+  stroke: var(--usage-orange);
+}
+
+.usage-chart-line.cost,
+.usage-chart-point.cost {
+  stroke: var(--usage-yellow);
+}
+
+.usage-chart-point {
+  fill: var(--usage-bg);
+  stroke-width: 2.5;
+}
+
+.usage-chart-empty {
+  position: absolute;
+  inset: 48% 0 auto;
+  color: var(--usage-muted);
+  font-size: 0.75rem;
+  text-align: center;
+}
+
+.usage-details-view {
+  display: grid;
+  gap: 14px;
+}
+
+.usage-filter-card {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 18px;
+  padding: 18px;
+}
+
+.usage-filter-card > div:first-child {
+  flex: 1 1 220px;
+}
+
+.usage-filter-form {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.usage-filter-form label {
+  display: grid;
+  gap: 5px;
+  color: var(--usage-muted);
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.usage-filter-form input,
+.usage-filter-form select {
+  min-height: 34px;
+  min-width: 132px;
+  padding: 0 9px;
+  color: var(--usage-text);
+  border: 1px solid var(--usage-border-strong);
+  border-radius: 8px;
+  outline: none;
+  background: var(--usage-surface);
+  font: inherit;
+  font-size: 0.74rem;
+}
+
+.usage-filter-form input:focus,
+.usage-filter-form select:focus {
+  border-color: rgba(217, 95, 52, 0.75);
+  box-shadow: 0 0 0 3px rgba(217, 95, 52, 0.15);
+}
+
+.usage-primary-button,
+.usage-muted-button {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 650;
+  line-height: 1;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.usage-primary-button {
+  color: #ffffff;
+  border: 1px solid var(--usage-orange);
+  background: var(--usage-orange);
+}
+
+.usage-primary-button:hover {
+  border-color: var(--usage-orange-strong);
+  background: var(--usage-orange-strong);
+}
+
+.usage-muted-button {
+  color: var(--usage-muted);
+  border: 1px solid var(--usage-border-strong);
+  background: var(--usage-surface);
+}
+
+.usage-muted-button:hover {
+  color: var(--usage-text);
+  border-color: color-mix(in srgb, var(--usage-ink) 28%, transparent);
+  background: color-mix(in srgb, var(--usage-ink) 5%, transparent);
+}
+
+.usage-details-card {
+  overflow: hidden;
+}
+
+.usage-table-wrap {
+  width: 100%;
+  margin-top: 14px;
+  overflow-x: auto;
+  border-top: 1px solid color-mix(in srgb, var(--usage-ink) 8%, transparent);
+}
+
+.usage-table {
+  width: 100%;
+  min-width: 860px;
+  border-collapse: collapse;
+  color: var(--usage-body);
+  font-size: 0.72rem;
+}
+
+.usage-table th,
+.usage-table td {
+  padding: 11px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--usage-ink) 8%, transparent);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.usage-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--usage-muted);
+  background: var(--usage-head-bg);
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.usage-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.usage-table tbody tr:hover td {
+  background: color-mix(in srgb, var(--usage-ink) 3%, transparent);
+}
+
+.usage-table strong {
+  display: block;
+  color: var(--usage-text);
+  font-weight: 600;
+}
+
+.usage-table-subtext {
+  display: block;
+  margin-top: 3px;
+  color: var(--usage-faint);
+  font-size: 0.64rem;
+}
+
+.usage-table-empty {
+  padding: 32px 16px !important;
+  color: var(--usage-muted);
+  text-align: center !important;
+}
+
+.usage-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 7px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.usage-status-ok {
+  color: var(--usage-green);
+  background: rgba(15, 157, 110, 0.1);
+}
+
+.usage-status-failed {
+  color: var(--usage-red);
+  background: color-mix(in srgb, var(--usage-red) 12%, transparent);
+}
+
+.usage-status-warn {
+  color: var(--usage-yellow);
+  background: rgba(180, 128, 29, 0.12);
+}
+
+.usage-status-muted {
+  color: var(--usage-muted);
+  background: color-mix(in srgb, var(--usage-ink) 5%, transparent);
+}
+
+.usage-mono {
+  color: var(--usage-muted);
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.66rem;
+}
+
+.usage-nowrap {
+  white-space: nowrap;
+}
+
+.usage-positive {
+  color: var(--usage-green);
+}
+
+.usage-negative {
+  color: var(--usage-red);
+}
+
+.usage-pagination {
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px 16px;
+}
+
+.usage-empty-state {
+  padding: 34px 18px;
+  color: var(--usage-muted);
+  font-size: 0.76rem;
+  text-align: center;
+}
+
+@media (max-width: 860px) {
+  .usage-shell-inner {
+    padding-inline: 24px;
+  }
+
+  .usage-overview-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .usage-topology-canvas {
+    min-height: 0;
+  }
+
+  .usage-topology-canvas svg {
+    min-height: 0;
+  }
+}
+
+/* Below Tailwind's `md`, the dashboard <main> switches to 16px/24px padding,
+ * so the bleed has to shrink with it or the shell overflows the viewport. */
+@media (max-width: 767px) {
+  .usage-shell {
+    min-height: 0;
+    margin: -24px -16px;
+    border-radius: 0;
+    border-right: 0;
+    border-left: 0;
+  }
+
+  /* Comfortable touch targets, and 16px text so focusing a field does not
+   * zoom the page (see the global rule above — these selectors outrank it). */
+  .usage-segmented button,
+  .usage-periods button,
+  .usage-chart-toggle button {
+    min-height: 38px;
+    font-size: 0.8rem;
+  }
+
+  .usage-filter-form input,
+  .usage-filter-form select {
+    min-height: 42px;
+    font-size: 16px;
+  }
+
+  .usage-primary-button,
+  .usage-muted-button,
+  .usage-docs-link {
+    min-height: 42px;
+  }
+}
+
+@media (max-width: 640px) {
+  .usage-shell-inner {
+    padding: 26px 16px 36px;
+  }
+
+  .usage-title-group h1 {
+    font-size: 1.6rem;
+  }
+
+  .usage-page-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .usage-header-actions {
+    justify-content: flex-start;
+  }
+
+  .usage-controls-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .usage-periods {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .usage-periods button {
+    flex: 1 1 0;
+    min-width: 0;
+    padding-inline: 6px;
+  }
+
+  .usage-card-heading {
+    align-items: flex-start;
+  }
+
+  .usage-recent-row {
+    grid-template-columns: 8px minmax(0, 1fr) auto;
+  }
+
+  .usage-recent-tokens {
+    display: none;
+  }
+
+  .usage-filter-card {
+    align-items: stretch;
+    padding: 16px;
+  }
+
+  .usage-filter-form {
+    justify-content: stretch;
+  }
+
+  .usage-filter-form label,
+  .usage-filter-form input,
+  .usage-filter-form select,
+  .usage-filter-form .usage-primary-button,
+  .usage-filter-form .usage-muted-button {
+    width: 100%;
+  }
+
+  .usage-filter-form label {
+    flex: 1 1 100%;
+  }
+}
+
+@media (max-width: 420px) {
+  .usage-kpi-card {
+    min-height: 110px;
+  }
+}

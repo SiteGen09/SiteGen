@@ -1,0 +1,281 @@
+{
+  "meta": {
+    "businessName": "Ledgerloop",
+    "tagline": "Reconcile every payout without touching a spreadsheet",
+    "language": "en-GB",
+    "businessType": "B2B financial operations software"
+  },
+  "theme": {
+    "primaryColor": "#1F2A55",
+    "accentColor": "#4ADE9B",
+    "fontPairing": "inter-inter",
+    "tone": "professional"
+  },
+  "pages": [
+    {
+      "id": "home",
+      "slug": "home",
+      "title": "Ledgerloop",
+      "sections": [
+        {
+          "id": "home-hero",
+          "type": "hero",
+          "headline": "Payout reconciliation that closes itself",
+          "subheadline": "Ledgerloop pulls settlements from your processors, matches them against your ledger, and shows you only the exceptions worth a human.",
+          "ctaLabel": "Start free trial",
+          "ctaHref": "/signup"
+        },
+        {
+          "id": "home-features",
+          "type": "features",
+          "heading": "Built for finance teams that close monthly",
+          "items": [
+            {
+              "title": "Processor connectors",
+              "description": "Stripe, Adyen, Braintree, PayPal, and bank feeds sync every four hours with full settlement detail."
+            },
+            {
+              "title": "Deterministic matching",
+              "description": "Rules run in a fixed order and every match records the rule and inputs that produced it, so audits are reproducible."
+            },
+            {
+              "title": "Exception queue",
+              "description": "Unmatched lines land in a triage queue with a suggested resolution and a one-click journal entry."
+            },
+            {
+              "title": "Ledger sync",
+              "description": "Two-way sync with NetSuite, Xero, and QuickBooks Online, posting only reviewed and approved entries."
+            },
+            {
+              "title": "Multi-currency",
+              "description": "Settlements land in their original currency with the FX rate and gain or loss recorded on the entry."
+            },
+            {
+              "title": "Audit export",
+              "description": "One archive per period containing every matched pair, approval, and rule version your auditors will ask for."
+            }
+          ]
+        },
+        {
+          "id": "home-about",
+          "type": "about",
+          "heading": "Why we built it",
+          "body": "Our founders ran finance operations at two marketplaces and spent every month-end rebuilding the same reconciliation workbook. The tooling that existed either assumed a single processor or expected an implementation consultant and a six-month rollout. Ledgerloop takes the opposite position: connect a processor, import last month's ledger, and see your first matched period the same afternoon. The matching engine is deterministic by design because finance teams cannot defend a number they cannot reproduce, so we never use a model to decide whether two amounts are the same transaction. Models help us rank suggestions in the exception queue, and a person still approves every posting."
+        },
+        {
+          "id": "home-pricing",
+          "type": "pricing",
+          "heading": "Pricing that tracks volume, not seats",
+          "tiers": [
+            {
+              "name": "Starter",
+              "price": "149",
+              "period": "per month",
+              "features": [
+                "Up to 10,000 settled transactions monthly",
+                "Two processor connectors",
+                "One ledger integration",
+                "Unlimited users",
+                "Email support within one business day"
+              ],
+              "ctaLabel": "Start free trial"
+            },
+            {
+              "name": "Growth",
+              "price": "549",
+              "period": "per month",
+              "features": [
+                "Up to 150,000 settled transactions monthly",
+                "Unlimited processor connectors",
+                "Custom matching rules and approvals",
+                "Multi-entity and multi-currency support",
+                "Shared Slack channel with our team"
+              ],
+              "ctaLabel": "Start free trial"
+            },
+            {
+              "name": "Scale",
+              "price": "1,900",
+              "period": "per month",
+              "features": [
+                "Up to 2 million settled transactions monthly",
+                "SSO with SAML and SCIM provisioning",
+                "Sandbox environment and API access",
+                "Quarterly audit support sessions",
+                "Named implementation lead"
+              ],
+              "ctaLabel": "Book a walkthrough"
+            },
+            {
+              "name": "Enterprise",
+              "price": "Custom",
+              "features": [
+                "Unlimited transaction volume",
+                "Private deployment options",
+                "Custom data retention terms",
+                "Contractual uptime commitments",
+                "Dedicated support engineer"
+              ],
+              "ctaLabel": "Contact sales"
+            }
+          ]
+        },
+        {
+          "id": "home-testimonials",
+          "type": "testimonials",
+          "heading": "Teams closing faster",
+          "items": [
+            {
+              "quote": "Our close went from nine days to three. The exception queue is the only place my team looks now, and it is usually under thirty lines a month.",
+              "author": "Rachel Nwosu",
+              "role": "Controller, Foldwear"
+            },
+            {
+              "quote": "The audit export ended a two-week back-and-forth with our auditors. Everything they asked for was already in the archive.",
+              "author": "Daniel Feld",
+              "role": "VP Finance, Roamly"
+            },
+            {
+              "quote": "We connected Adyen on a Tuesday and had the previous quarter reconciled by Thursday, without an implementation call.",
+              "author": "Sofia Marchetti",
+              "role": "Head of FinOps, Verdemarkt"
+            }
+          ]
+        },
+        {
+          "id": "home-faq",
+          "type": "faq",
+          "heading": "Common questions",
+          "items": [
+            {
+              "question": "How long does implementation take?",
+              "answer": "Most teams reconcile their first period within a day. Connecting a processor takes minutes, and importing historical ledger data is a single CSV or an API sync."
+            },
+            {
+              "question": "Do you write to our accounting system automatically?",
+              "answer": "Only after a person approves the entry. You can require one or two approvers per journal, and every posting records who approved it and when."
+            },
+            {
+              "question": "Where is our data stored?",
+              "answer": "In EU or US regions of your choosing, encrypted at rest and in transit. Processor credentials are stored encrypted and are never exposed in the interface or exports."
+            },
+            {
+              "question": "Is there an audit trail?",
+              "answer": "Every match, unmatch, rule change, and approval is appended to an immutable log with actor, timestamp, and the rule version in force at the time."
+            },
+            {
+              "question": "What happens when we exceed our plan volume?",
+              "answer": "Nothing breaks. We bill overage at the plan rate and email you when you cross 80 percent of your allowance so you can move tiers deliberately."
+            },
+            {
+              "question": "Can we cancel mid-term?",
+              "answer": "Monthly plans cancel at the end of the current period. Annual plans can be cancelled for the following term, and your audit archives stay exportable for 90 days."
+            }
+          ]
+        },
+        {
+          "id": "home-cta",
+          "type": "cta",
+          "headline": "Reconcile your first period this week",
+          "ctaLabel": "Start free trial",
+          "ctaHref": "/signup"
+        }
+      ]
+    },
+    {
+      "id": "pricing",
+      "slug": "pricing",
+      "title": "Pricing",
+      "sections": [
+        {
+          "id": "pricing-hero",
+          "type": "hero",
+          "headline": "One number, no per-seat maths",
+          "subheadline": "Every plan includes unlimited users, every connector we support, and the full audit archive.",
+          "ctaLabel": "Compare plans",
+          "ctaHref": "#plans"
+        },
+        {
+          "id": "pricing-plans",
+          "type": "pricing",
+          "heading": "Plans",
+          "tiers": [
+            {
+              "name": "Starter",
+              "price": "149",
+              "period": "per month",
+              "features": [
+                "10,000 settled transactions monthly",
+                "Two processor connectors",
+                "Standard matching rules"
+              ],
+              "ctaLabel": "Start free trial"
+            },
+            {
+              "name": "Growth",
+              "price": "549",
+              "period": "per month",
+              "features": [
+                "150,000 settled transactions monthly",
+                "Unlimited connectors",
+                "Custom rules and approval chains"
+              ],
+              "ctaLabel": "Start free trial"
+            },
+            {
+              "name": "Enterprise",
+              "price": "Custom",
+              "features": [
+                "Unlimited volume and entities",
+                "SSO, SCIM, and private deployment",
+                "Dedicated support engineer"
+              ],
+              "ctaLabel": "Contact sales"
+            }
+          ]
+        },
+        {
+          "id": "pricing-faq",
+          "type": "faq",
+          "heading": "Billing questions",
+          "items": [
+            {
+              "question": "Is the trial limited?",
+              "answer": "The 14-day trial includes every Growth feature and caps at 25,000 transactions. No card is required to begin."
+            },
+            {
+              "question": "Do you offer annual discounts?",
+              "answer": "Yes, two months free on annual prepayment for Starter and Growth, and negotiated terms on Scale and Enterprise."
+            },
+            {
+              "question": "Which currencies can we pay in?",
+              "answer": "GBP, EUR, and USD by card or bank transfer. Enterprise contracts can be invoiced in other currencies on request."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "contact",
+      "slug": "contact",
+      "title": "Talk to us",
+      "sections": [
+        {
+          "id": "contact-sales",
+          "type": "contact",
+          "heading": "Talk to sales",
+          "email": "sales@ledgerloop.example",
+          "phone": "+44 20 7946 0221",
+          "address": "6 Bevis Marks, London EC3A 7BA, United Kingdom"
+        },
+        {
+          "id": "contact-cta",
+          "type": "cta",
+          "headline": "Prefer to see it first?",
+          "ctaLabel": "Book a 30-minute demo",
+          "ctaHref": "https://ledgerloop.example/demo"
+        }
+      ]
+    }
+  ]
+}

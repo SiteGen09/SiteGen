@@ -1,0 +1,208 @@
+{
+  "meta": {
+    "businessName": "Ines Okafor Design",
+    "tagline": "Independent brand and product designer for climate startups",
+    "language": "en",
+    "businessType": "Freelance design studio"
+  },
+  "theme": {
+    "primaryColor": "#12343B",
+    "accentColor": "#C9F26B",
+    "fontPairing": "space-grotesk-ibm-plex-sans",
+    "tone": "minimal"
+  },
+  "pages": [
+    {
+      "id": "home",
+      "slug": "home",
+      "title": "Ines Okafor",
+      "sections": [
+        {
+          "id": "home-hero",
+          "type": "hero",
+          "headline": "Design that survives contact with users",
+          "subheadline": "I help early climate and energy teams turn a rough product thesis into an interface people can actually operate.",
+          "ctaLabel": "See selected work",
+          "ctaHref": "/work"
+        },
+        {
+          "id": "home-services",
+          "type": "features",
+          "heading": "How I work with teams",
+          "items": [
+            {
+              "title": "Product design sprints",
+              "description": "Two weeks, one flow. We ship a tested prototype and a written record of what we learned."
+            },
+            {
+              "title": "Brand systems",
+              "description": "Wordmark, type scale, color, and a small component library your engineers can implement without me."
+            },
+            {
+              "title": "Design partner retainer",
+              "description": "Two days a week embedded with your team, in your tracker, in your standups, shipping alongside engineering."
+            },
+            {
+              "title": "Interface audits",
+              "description": "A prioritized list of usability and accessibility failures in your current product, with fixes sized by effort."
+            }
+          ]
+        },
+        {
+          "id": "home-about",
+          "type": "about",
+          "heading": "About me",
+          "body": "I spent six years in-house before going independent in 2021, first at a grid analytics company and then leading design for a heat pump installer platform. That work taught me that climate software usually fails on operations rather than aesthetics: the installer standing on a roof in the rain does not care about your gradient. So I design for the messy middle, which means shadowing field teams, reading support tickets, and testing flows on cracked phones with bad signal. I work solo on most engagements and pull in a trusted engineer or copywriter when a project needs more hands. Clients get direct access to me, written weekly updates, and files they own outright."
+        },
+        {
+          "id": "home-selected",
+          "type": "gallery",
+          "heading": "Selected screens",
+          "images": [
+            {
+              "alt": "Dashboard showing household energy usage over a week",
+              "prompt": "Clean product UI screenshot of a residential energy dashboard with a weekly usage bar chart, dark teal accents, generous white space, crisp sans-serif labels"
+            },
+            {
+              "alt": "Mobile field app for HVAC installers",
+              "prompt": "Mockup of a mobile field service app on a slightly worn smartphone held in a gloved hand, large tap targets, checklist interface, outdoor daylight"
+            },
+            {
+              "alt": "Brand system sheet with type scale and color swatches",
+              "prompt": "Flat lay of a printed brand system sheet showing a type scale, lime and deep teal color swatches, and a geometric wordmark on textured paper"
+            },
+            {
+              "alt": "Whiteboard mapping a solar permitting workflow",
+              "prompt": "Photograph of a whiteboard covered in sticky notes and arrows mapping a solar permitting workflow, hand-drawn boxes, natural office light"
+            },
+            {
+              "alt": "Component library documentation in a browser",
+              "prompt": "Screenshot of component library documentation showing buttons, form fields, and focus states with accessibility annotations, light theme"
+            },
+            {
+              "alt": "Two people reviewing a prototype on a laptop",
+              "prompt": "Candid photograph of a designer and an engineer reviewing an interactive prototype on a laptop in a small studio, warm afternoon light"
+            }
+          ]
+        },
+        {
+          "id": "home-testimonials",
+          "type": "testimonials",
+          "heading": "Client notes",
+          "items": [
+            {
+              "quote": "Ines rebuilt our installer onboarding in three weeks and our completion rate went from 41 percent to 78 percent. She found the problem by riding along on installs, not in a workshop.",
+              "author": "Tomas Bergstrom",
+              "role": "COO, Wattline"
+            },
+            {
+              "quote": "She writes the clearest handoff documentation I have received from any designer, in-house or contract. Our engineers had almost no follow-up questions.",
+              "author": "Elena Duarte",
+              "role": "Head of Engineering, Gridpath"
+            },
+            {
+              "quote": "We hired her for a logo and left with a coherent product strategy. Worth several times the engagement fee.",
+              "author": "Samuel Kirchner",
+              "role": "Founder, Coolstack"
+            }
+          ]
+        },
+        {
+          "id": "home-cta",
+          "type": "cta",
+          "headline": "Booking new projects from March",
+          "ctaLabel": "Start a conversation",
+          "ctaHref": "/contact"
+        }
+      ]
+    },
+    {
+      "id": "work",
+      "slug": "work",
+      "title": "Work",
+      "sections": [
+        {
+          "id": "work-hero",
+          "type": "hero",
+          "headline": "Six engagements, written up honestly",
+          "subheadline": "Each case study covers what we set out to do, what actually happened, and the numbers a month after launch.",
+          "ctaLabel": "Jump to case studies",
+          "ctaHref": "#cases"
+        },
+        {
+          "id": "work-cases",
+          "type": "features",
+          "heading": "Case studies",
+          "items": [
+            {
+              "title": "Wattline installer app",
+              "description": "Rebuilt a field checklist used by 300 installers. Job completion rose from 41 to 78 percent in eight weeks."
+            },
+            {
+              "title": "Gridpath analytics",
+              "description": "Designed a load-forecasting workspace for utility planners, replacing eleven spreadsheets with one reviewed model."
+            },
+            {
+              "title": "Coolstack brand",
+              "description": "Full identity and marketing site for a commercial refrigeration retrofit company, built in five weeks."
+            },
+            {
+              "title": "Verdant permitting",
+              "description": "Mapped and redesigned a solar permitting queue, cutting median approval turnaround from nine days to four."
+            }
+          ]
+        },
+        {
+          "id": "work-about",
+          "type": "about",
+          "heading": "How engagements run",
+          "body": "Every project starts with a paid one-week discovery: I read your support tickets, sit in on calls, and interview four or five users. At the end you get a written brief with the problems I found ranked by impact, plus a fixed price for the work I recommend. If you take the brief elsewhere, that is fine and the files are yours. Design happens in weekly cycles with a Friday demo, and I keep a running decision log so nobody has to reconstruct why a screen looks the way it does. I hand off Figma files, a component inventory, and a short recorded walkthrough for the engineers who will build it."
+        }
+      ]
+    },
+    {
+      "id": "contact",
+      "slug": "contact",
+      "title": "Contact",
+      "sections": [
+        {
+          "id": "contact-details",
+          "type": "contact",
+          "heading": "Get in touch",
+          "email": "studio@inesokafor.example",
+          "address": "Remote, based in Lisbon, working across UTC-5 to UTC+2"
+        },
+        {
+          "id": "contact-faq",
+          "type": "faq",
+          "heading": "Before you write",
+          "items": [
+            {
+              "question": "What does a project cost?",
+              "answer": "Discovery weeks are 4,000 euros. Most full engagements land between 18,000 and 45,000 euros depending on scope, and retainers start at 7,500 euros per month."
+            },
+            {
+              "question": "Do you take equity instead of fees?",
+              "answer": "Occasionally, for pre-seed teams working on grid or heat, and only as a partial offset against a discounted cash rate."
+            },
+            {
+              "question": "Can you write front-end code?",
+              "answer": "I build production-quality React and Tailwind prototypes, but I do not ship application code. For build-out I bring in engineers I have worked with for years."
+            },
+            {
+              "question": "How far out are you booked?",
+              "answer": "Usually six to ten weeks. Audits and discovery weeks can often start sooner because they are self-contained."
+            }
+          ]
+        },
+        {
+          "id": "contact-cta",
+          "type": "cta",
+          "headline": "Send a two-paragraph brief and I will reply within two business days",
+          "ctaLabel": "Email the studio",
+          "ctaHref": "https://inesokafor.example/brief"
+        }
+      ]
+    }
+  ]
+}

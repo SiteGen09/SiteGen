@@ -1,0 +1,3 @@
+Stub provider running on http://localhost:11435
+POST /v1/chat/completions → returns fixture spec with real token counts
+Add channel: provider=openai_compatible, base_url=http://localhost:11435, model_id=stub-fixture

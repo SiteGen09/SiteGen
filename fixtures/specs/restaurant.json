@@ -1,0 +1,217 @@
+{
+  "meta": {
+    "businessName": "Trattoria Nove",
+    "tagline": "Wood-fired Roman cooking in the heart of Oakland",
+    "language": "en-US",
+    "businessType": "Italian restaurant"
+  },
+  "theme": {
+    "primaryColor": "#7B2D26",
+    "accentColor": "#E8C547",
+    "fontPairing": "playfair-inter",
+    "tone": "friendly"
+  },
+  "pages": [
+    {
+      "id": "home",
+      "slug": "home",
+      "title": "Trattoria Nove",
+      "sections": [
+        {
+          "id": "home-hero",
+          "type": "hero",
+          "headline": "Roman classics, cooked over fire",
+          "subheadline": "Hand-rolled pasta, blistered pizza, and a short list of Italian wines poured by people who drink them.",
+          "ctaLabel": "Reserve a table",
+          "ctaHref": "/reservations"
+        },
+        {
+          "id": "home-highlights",
+          "type": "features",
+          "heading": "Why guests keep coming back",
+          "items": [
+            {
+              "title": "Pasta made daily",
+              "description": "Every shape is rolled and cut in-house each morning, then finished to order in the pan."
+            },
+            {
+              "title": "Wood-fired oven",
+              "description": "Our oven runs at 850F on almond and oak, which gives the crust its char and chew."
+            },
+            {
+              "title": "Small-grower wine list",
+              "description": "Thirty bottles from family estates across Lazio, Piedmont, and Sicily, most under 60 dollars."
+            },
+            {
+              "title": "Walk-ins welcome",
+              "description": "Half the dining room and the full bar are held back for guests without a reservation."
+            }
+          ]
+        },
+        {
+          "id": "home-about",
+          "type": "about",
+          "heading": "Our kitchen",
+          "body": "Trattoria Nove opened in 2016 in a former hardware store on Grand Avenue. Chef Lucia Fanelli grew up cooking in her grandmother's kitchen outside Rome, and the menu still leans on those recipes: cacio e pepe finished with pasta water and nothing else, artichokes fried twice, saltimbocca with sage cut from the planter by the back door. We buy produce from four Bay Area farms, mill our own semolina blend, and change the menu when the market changes rather than on a schedule. The dining room seats forty-eight, the bar seats ten, and the kitchen is open so you can watch the oven work."
+        },
+        {
+          "id": "home-gallery",
+          "type": "gallery",
+          "heading": "From the dining room",
+          "images": [
+            {
+              "alt": "Wood-fired pizza with charred crust on a marble counter",
+              "prompt": "Overhead photograph of a Roman-style pizza with blistered leopard-spotted crust, fresh basil, and buffalo mozzarella resting on a warm marble counter, natural window light, shallow depth of field"
+            },
+            {
+              "alt": "Chef rolling fresh pasta dough on a floured board",
+              "prompt": "Documentary photograph of a chef's hands rolling pasta dough on a flour-dusted wooden board, warm kitchen light, motion blur on the rolling pin"
+            },
+            {
+              "alt": "Candlelit dining room with exposed brick walls",
+              "prompt": "Interior photograph of a small Italian trattoria at dusk, exposed brick walls, candlelit tables, brass pendant lamps, guests softly out of focus"
+            },
+            {
+              "alt": "Glass of red wine beside a bowl of cacio e pepe",
+              "prompt": "Close-up photograph of a glass of Sangiovese next to a shallow bowl of cacio e pepe with cracked black pepper, moody restaurant lighting"
+            }
+          ]
+        },
+        {
+          "id": "home-testimonials",
+          "type": "testimonials",
+          "heading": "What guests say",
+          "items": [
+            {
+              "quote": "The cacio e pepe is the best version I have eaten outside of Trastevere, and the room feels like a neighborhood place rather than a destination.",
+              "author": "Dana Whitfield",
+              "role": "East Bay Eats"
+            },
+            {
+              "quote": "We booked for six on a Tuesday and left three hours later having ordered half the menu twice. The service never rushed us once.",
+              "author": "Marcus Oyelaran"
+            },
+            {
+              "quote": "Lucia sent out fried artichokes we did not order because the delivery had just arrived. That is the whole restaurant in one gesture.",
+              "author": "Priya Raghavan",
+              "role": "Regular since 2017"
+            }
+          ]
+        },
+        {
+          "id": "home-cta",
+          "type": "cta",
+          "headline": "Tables open thirty days out",
+          "ctaLabel": "Book online",
+          "ctaHref": "/reservations"
+        }
+      ]
+    },
+    {
+      "id": "menu",
+      "slug": "menu",
+      "title": "Menu",
+      "sections": [
+        {
+          "id": "menu-hero",
+          "type": "hero",
+          "headline": "What we are cooking this week",
+          "subheadline": "The menu shifts with the market, so treat this as a snapshot rather than a promise.",
+          "ctaLabel": "See wine list",
+          "ctaHref": "#wine"
+        },
+        {
+          "id": "menu-courses",
+          "type": "features",
+          "heading": "By the course",
+          "items": [
+            {
+              "title": "Antipasti",
+              "description": "Twice-fried artichokes, whipped ricotta with honey, marinated anchovies, and a rotating salumi board."
+            },
+            {
+              "title": "Pasta",
+              "description": "Cacio e pepe, rigatoni all'amatriciana, cassarecce with lamb ragu, and a vegetarian shape that changes weekly."
+            },
+            {
+              "title": "Pizza",
+              "description": "Margherita, salsiccia with broccoli rabe, and a white pie with potato, rosemary, and taleggio."
+            },
+            {
+              "title": "Dolci",
+              "description": "Olive oil cake, affogato with our own espresso, and a torta della nonna baked each afternoon."
+            }
+          ]
+        },
+        {
+          "id": "menu-faq",
+          "type": "faq",
+          "heading": "Menu questions",
+          "items": [
+            {
+              "question": "Can you cook gluten-free pasta?",
+              "answer": "Yes. We keep a dedicated pot and strainer for gluten-free shapes, though the wood oven is shared and we cannot promise a fully gluten-free kitchen."
+            },
+            {
+              "question": "Are there vegan options?",
+              "answer": "Every night has at least one vegan antipasto, one vegan pasta, and a marinara pizza. Tell your server and the kitchen will build a full vegan menu for the table."
+            },
+            {
+              "question": "Do you have a kids menu?",
+              "answer": "No separate menu, but the kitchen will happily make a half portion of buttered pasta or a plain margherita for younger guests."
+            },
+            {
+              "question": "Is there a corkage fee?",
+              "answer": "Twenty-five dollars per bottle, waived on Mondays and limited to two bottles per table."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "visit",
+      "slug": "visit",
+      "title": "Visit us",
+      "sections": [
+        {
+          "id": "visit-contact",
+          "type": "contact",
+          "heading": "Find us",
+          "email": "hello@trattorianove.example",
+          "phone": "+1 510 555 0138",
+          "address": "2214 Grand Avenue, Oakland, CA 94610"
+        },
+        {
+          "id": "visit-hours",
+          "type": "features",
+          "heading": "Hours",
+          "items": [
+            {
+              "title": "Tuesday to Thursday",
+              "description": "Dinner from 5:30pm to 9:30pm, with the bar open until 10:30pm."
+            },
+            {
+              "title": "Friday and Saturday",
+              "description": "Dinner from 5:00pm to 10:30pm, and the bar stays open until midnight."
+            },
+            {
+              "title": "Sunday",
+              "description": "Family-style supper from 4:00pm to 8:30pm, one seating menu at 55 dollars per person."
+            },
+            {
+              "title": "Monday",
+              "description": "Closed, except for private events booked through our events team."
+            }
+          ]
+        },
+        {
+          "id": "visit-cta",
+          "type": "cta",
+          "headline": "Planning something larger?",
+          "ctaLabel": "Email our events team",
+          "ctaHref": "https://trattorianove.example/events"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Blocks commits containing credential-shaped strings.
+# Enabled via: git config core.hooksPath .githooks
+node scripts/check-secrets.mjs || exit 1

@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:54321
+      # NEXT_PUBLIC_SUPABASE_ANON_KEY and SUPABASE_SERVICE_ROLE_KEY are exported
+      # from `supabase status` after the throwaway stack starts, so no JWT is
+      # ever committed to this file.
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+      ENCRYPTION_KEY: dGVzdC1rZXktZm9yLWxvY2FsLWRldmVsb3BtZW50LTMyYg==
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      WHOP_APP_ID: whop_app_ci
+      WHOP_WEBHOOK_SECRET: ci-webhook-secret
+      CRON_SECRET: ci-cron-secret
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Start throwaway Supabase (applies all migrations)
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - run: supabase start
+
+      - name: Export local Supabase keys
+        run: |
+          supabase status -o env \
+            --override-name auth.anon_key=NEXT_PUBLIC_SUPABASE_ANON_KEY \
+            --override-name auth.service_role_key=SUPABASE_SERVICE_ROLE_KEY \
+            | grep -E '^(NEXT_PUBLIC_SUPABASE_ANON_KEY|SUPABASE_SERVICE_ROLE_KEY)=' \
+            | tr -d '"' >> "$GITHUB_ENV"
+
+      - name: Unit and integration tests (includes cross-tenant isolation + credit concurrency)
+        run: npx vitest run
+
+      - name: Build
+        run: pnpm build
+
+      - name: Client bundle secret check
+        run: node scripts/check-client-bundle.mjs
