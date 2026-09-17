@@ -16,7 +16,8 @@
     "supabase:start": "supabase start",
     "supabase:stop": "supabase stop",
     "supabase:status": "supabase status",
-    "check:secrets": "node scripts/check-secrets.mjs --all"
+    "check:secrets": "node scripts/check-secrets.mjs --all",
+    "prepare": "git config core.hooksPath .githooks"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.54",
