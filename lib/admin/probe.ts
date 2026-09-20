@@ -1,6 +1,6 @@
 import { generateText } from 'ai';
 
-import { costUsd } from '@/lib/ai/pricing';
+import { costUsd, type TokenRates } from '@/lib/ai/pricing';
 import { buildAI, type ProviderCreds } from '@/lib/ai/provider';
 
 /**
@@ -10,6 +10,11 @@ import { buildAI, type ProviderCreds } from '@/lib/ai/provider';
  * actions so "does this key actually work" has one definition. Server-only.
  */
 
+/**
+ * Rates are supplied by the caller: pricing lives on the channel row. A
+ * credential probe has no channel yet, so `rates` may be omitted and the
+ * result simply carries no cost — the point of the probe is the round trip.
+ */
 export interface ProbeResult {
   ok: boolean;
   latencyMs: number;
@@ -33,6 +38,7 @@ function errorMessage(err: unknown): string {
 export async function probeCredentials(
   creds: ProviderCreds,
   modelId: string,
+  rates?: TokenRates,
 ): Promise<ProbeResult> {
   const startedAt = Date.now();
 
@@ -52,13 +58,14 @@ export async function probeCredentials(
       usage.inputTokenDetails.noCacheTokens ??
       Math.max((usage.inputTokens ?? 0) - cachedTokens, 0);
     const outputTokens = usage.outputTokens ?? 0;
-
     let cost: number | null = null;
-    try {
-      cost = costUsd(modelId, { inputTokens, outputTokens, cachedTokens });
-    } catch {
-      // Unpriced model: the probe still proves the credential works.
-      cost = null;
+    if (rates !== undefined) {
+      try {
+        cost = costUsd(rates, { inputTokens, outputTokens, cachedTokens });
+      } catch {
+        // Invalid rates must not fail a probe that proved the credential works.
+        cost = null;
+      }
     }
 
     return { ok: true, latencyMs, costUsd: cost };

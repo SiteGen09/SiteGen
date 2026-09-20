@@ -4,6 +4,9 @@ import * as schema from './schema';
 
 const connectionString = process.env.DATABASE_URL!;
 
-// For migrations and queries
-export const sql = postgres(connectionString, { max: 1 });
+// A pool of 1 suits serverless (one connection per isolated process). On a
+// long-lived server every query would serialise through it, so make it tunable.
+const poolMax = Number(process.env.DB_POOL_MAX ?? 10);
+
+export const sql = postgres(connectionString, { max: poolMax });
 export const db = drizzle(sql, { schema });

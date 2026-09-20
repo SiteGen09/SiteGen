@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
+import { PROVIDER_LABELS } from '@/lib/ai/providers';
 import type { ChannelInfo, LedgerRow, UsageEventRow } from '@/lib/dashboard/queries';
 import { formatCredits, formatTimestamp } from '../ui';
 
@@ -119,6 +120,7 @@ function relativeTime(value: string, now: number): string {
 
 function providerColor(provider: ChannelInfo['provider'], index: number): string {
   if (provider === 'anthropic') return 'var(--usage-orange)';
+  if (provider === 'anthropic_compatible') return 'var(--usage-purple)';
   if (provider === 'openai_compatible') return 'var(--usage-blue)';
   return (
     ['var(--usage-purple)', 'var(--usage-green)', 'var(--usage-yellow)'][index % 3] ??
@@ -127,7 +129,7 @@ function providerColor(provider: ChannelInfo['provider'], index: number): string
 }
 
 function providerShortName(provider: ChannelInfo['provider']): string {
-  return provider === 'anthropic' ? 'Anthropic' : 'OpenAI compatible';
+  return PROVIDER_LABELS[provider];
 }
 
 function statusClass(status: string): string {

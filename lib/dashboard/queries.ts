@@ -1,7 +1,9 @@
 import { z } from 'zod';
+import { PROVIDERS, type Provider } from '@/lib/ai/providers';
 import { createClient } from '@/lib/supabase/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { isPlanKey, type PlanKey } from '@/lib/billing/plans';
+import { costUsd, creditsForUsage, type TokenRates } from '@/lib/ai/pricing';
 
 /**
  * Read helpers for the developer dashboard.
@@ -61,11 +63,55 @@ export const channelInfoRowSchema = z.object({
   id: z.string(),
   label: z.string(),
   task: z.string(),
-  provider: z.enum(['anthropic', 'openai_compatible']),
+  provider: z.enum(PROVIDERS),
   model_id: z.string(),
   status: z.string(),
 });
 export type ChannelInfo = z.infer<typeof channelInfoRowSchema>;
+
+const modelCatalogRowSchema = z.object({
+  public_model_id: z.string(),
+  label: z.string(),
+  provider: z.enum(PROVIDERS),
+  model_id: z.string(),
+  status: z.string(),
+  min_plan: z.string(),
+  // numeric(10,2) arrives as a string; the catalog only displays it, so a
+  // Number here is safe where the billing path deliberately keeps the string.
+  credit_multiplier: numeric,
+  input_per_mtok: numeric,
+  output_per_mtok: numeric,
+  cached_per_mtok: numeric,
+});
+
+export interface ModelCatalogEntry {
+  publicModelId: string;
+  label: string;
+  provider: Provider;
+  /** The real upstream model string. Never exposed to API callers. */
+  upstreamModelId: string;
+  status: string;
+  minPlan: PlanKey;
+  /** 0 means BYOK-only: the channel bills the caller's own key, not credits. */
+  creditMultiplier: number;
+  inputCreditsPerMTok: number;
+  outputCreditsPerMTok: number;
+  cachedCreditsPerMTok: number;
+}
+
+/** Credits charged for one million tokens of a single kind, markup included. */
+function creditsPerMTok(
+  rates: TokenRates,
+  kind: 'inputTokens' | 'outputTokens' | 'cachedTokens',
+  multiplier: number,
+): number {
+  const usage = {
+    inputTokens: kind === 'inputTokens' ? 1_000_000 : 0,
+    outputTokens: kind === 'outputTokens' ? 1_000_000 : 0,
+    cachedTokens: kind === 'cachedTokens' ? 1_000_000 : 0,
+  };
+  return creditsForUsage(costUsd(rates, usage), multiplier);
+}
 
 export const credentialRowSchema = z.object({
   id: z.string(),
@@ -227,4 +273,56 @@ export async function listCredentials(userId: string): Promise<CredentialRow[]> 
     .order('created_at', { ascending: false });
   if (error) fail('credentials', error.message);
   return z.array(credentialRowSchema).parse(data);
+}
+
+/**
+ * Every addressable model on the gateway, whatever the caller's plan.
+ *
+ * Only channels with a `public_model_id` are listed: the rest are internal
+ * site-spec channels with no name a caller could pass as `"model"`. Fully off
+ * channels are hidden, but ones above the user's plan are not — the page shows
+ * them as locked so upgrading has something to point at.
+ *
+ * Channel rows are service-only (no client grant), so this reads with the
+ * service client and selects nothing that is not already public via
+ * `GET /v1/models` plus published pricing.
+ */
+export async function listModelCatalog(): Promise<ModelCatalogEntry[]> {
+  const service = createServiceClient();
+  const { data, error } = await service
+    .from('channels')
+    .select(
+      'public_model_id, label, provider, model_id, status, min_plan, credit_multiplier, input_per_mtok, output_per_mtok, cached_per_mtok',
+    )
+    .not('public_model_id', 'is', null)
+    .neq('status', 'off');
+  if (error) fail('models', error.message);
+
+  return z
+    .array(modelCatalogRowSchema)
+    .parse(data)
+    .map((row) => {
+      const rates: TokenRates = {
+        inputPerMTok: row.input_per_mtok,
+        outputPerMTok: row.output_per_mtok,
+        cachedPerMTok: row.cached_per_mtok,
+      };
+      const multiplier = Number(row.credit_multiplier);
+
+      return {
+        publicModelId: row.public_model_id,
+        label: row.label,
+        provider: row.provider,
+        upstreamModelId: row.model_id,
+        status: row.status,
+        minPlan: isPlanKey(row.min_plan) ? row.min_plan : 'free',
+        creditMultiplier: multiplier,
+        // Credits for a full million tokens of each kind, which is how the
+        // rates are quoted — per-call figures round up to 1 and say nothing.
+        inputCreditsPerMTok: creditsPerMTok(rates, 'inputTokens', multiplier),
+        outputCreditsPerMTok: creditsPerMTok(rates, 'outputTokens', multiplier),
+        cachedCreditsPerMTok: creditsPerMTok(rates, 'cachedTokens', multiplier),
+      };
+    })
+    .sort((left, right) => left.publicModelId.localeCompare(right.publicModelId));
 }

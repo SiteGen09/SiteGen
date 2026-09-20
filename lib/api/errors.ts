@@ -8,6 +8,8 @@ export const ERROR_CODES = [
   'channel_unavailable',
   'generation_failed',
   'not_found',
+  'model_not_found',
+  'content_policy_violation',
   'internal_error',
 ] as const;
 

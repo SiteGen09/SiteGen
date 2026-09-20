@@ -103,6 +103,36 @@ describe('credit ledger concurrency', () => {
     expect(await balance()).toBe(0);
   });
 
+  it('1-credit balance, 50 parallel holds: exactly one wins, never negative', async () => {
+    // Reset to a clean 1-credit balance regardless of prior test state.
+    const current = await balance();
+    if (current !== 1) {
+      await admin.from('ledger').insert({
+        user_id: userId,
+        request_id: `cc-reset-${Date.now()}`,
+        kind: 'grant',
+        credits: 1 - current,
+      });
+    }
+    expect(await balance()).toBe(1);
+
+    const results = await Promise.all(
+      Array.from({ length: 50 }, (_, i) => hold(`cc-50-${i}-${Date.now()}`, 1)),
+    );
+
+    const successes = results.filter((r) => r.success).length;
+    const rejections = results.filter(
+      (r) => !r.success && r.error === 'insufficient_credits',
+    ).length;
+
+    // Exactly one hold may win a single credit; the rest are rejected, and the
+    // balance is never driven below zero by the race.
+    expect(successes).toBe(1);
+    expect(rejections).toBe(49);
+    expect(await balance()).toBe(0);
+    expect(await balance()).toBeGreaterThanOrEqual(0);
+  });
+
   it('settle reverses hold and charges actuals', async () => {
     await admin.from('ledger').insert({
       user_id: userId,

@@ -51,14 +51,19 @@ beforeAll(async () => {
   userA = await createTestUser('a');
   userB = await createTestUser('b');
 
-  // Seed a channel (server-only table) for FK targets.
-  await admin.from('channels').upsert({
+  // Seed a channel (server-only table) for FK targets. The per-MTok rate
+  // columns are NOT NULL, so they must be supplied.
+  const { error: channelErr } = await admin.from('channels').upsert({
     id: 'iso-test-channel',
     label: 'Isolation Test',
     task: 'site.spec',
     provider: 'anthropic',
     model_id: 'test-model',
+    input_per_mtok: 0,
+    output_per_mtok: 0,
+    cached_per_mtok: 0,
   });
+  if (channelErr) throw new Error(`seed channel: ${channelErr.message}`);
 
   // Seed user B's rows in every owner-scoped table via service role.
   const { data: keyRow, error: keyErr } = await admin

@@ -35,6 +35,11 @@ const apiKeyRowSchema = z.object({
   status: z.string(),
   rate_limit_rpm: z.number().int(),
   revoked_at: z.string().nullable(),
+  /**
+   * Embedded owner row. PostgREST returns an object for a to-one embed and
+   * `null` when the profile is missing; both are handled rather than assumed.
+   */
+  profiles: z.object({ status: z.string() }).nullable(),
 });
 
 /**
@@ -44,6 +49,7 @@ const apiKeyRowSchema = z.object({
 function unauthorized(): ApiError {
   return new ApiError('unauthorized', 'invalid or missing API key', 401);
 }
+
 
 /** Extracts the raw key from an `Authorization` header, or throws `unauthorized`. */
 export function parseBearerKey(authHeader: string | null): string {
@@ -101,7 +107,9 @@ export async function authenticateApiKey(
 
   const { data, error } = await service
     .from('api_keys')
-    .select('id, owner_id, key_hash, scopes, status, rate_limit_rpm, revoked_at')
+    .select(
+      'id, owner_id, key_hash, scopes, status, rate_limit_rpm, revoked_at, profiles(status)',
+    )
     .eq('key_hash', keyHash)
     .maybeSingle();
 
@@ -114,6 +122,14 @@ export async function authenticateApiKey(
   const row = apiKeyRowSchema.parse(data);
   if (!timingSafeEqualHex(row.key_hash, keyHash)) throw unauthorized();
   if (row.status !== 'active' || row.revoked_at !== null) throw unauthorized();
+
+  // The kill switch: one check here covers every present and future endpoint,
+  // since all of them authenticate through this function. The message stays
+  // generic so a caller cannot tell suspension from a bad key.
+  if (row.profiles?.status === 'suspended') {
+    log?.warn('api_key.suspended', { api_key_id: row.id });
+    throw new ApiError('forbidden', 'invalid or missing API key', 403);
+  }
 
   touchLastUsed(service, row.id, log);
 

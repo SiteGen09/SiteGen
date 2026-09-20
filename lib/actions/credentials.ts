@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { MODELS } from '@/lib/ai/models';
+import { PROVIDERS, requiresBaseUrl, type Provider } from '@/lib/ai/providers';
 import { encryptSecret } from '@/lib/crypto/aes';
 import { requireUser } from '@/lib/dashboard/session';
 import { logger } from '@/lib/log';
@@ -19,13 +20,13 @@ import { createServiceClient } from '@/lib/supabase/service';
 
 export type CredentialState = { status: 'idle' | 'saved' } | { status: 'error'; message: string };
 
-const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
+const ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
 const ANTHROPIC_VERSION = '2023-06-01';
 const VALIDATION_TIMEOUT_MS = 15_000;
 
 const addSchema = z
   .object({
-    provider: z.enum(['anthropic', 'openai_compatible']),
+    provider: z.enum(PROVIDERS),
     apiKey: z.string().trim().min(8, 'That API key looks too short.'),
     baseUrl: z
       .string()
@@ -34,11 +35,11 @@ const addSchema = z
       .nullable(),
   })
   .superRefine((value, ctx) => {
-    if (value.provider === 'openai_compatible' && value.baseUrl === null) {
+    if (requiresBaseUrl(value.provider) && value.baseUrl === null) {
       ctx.addIssue({
         code: 'custom',
         path: ['baseUrl'],
-        message: 'Base URL is required for an OpenAI-compatible provider.',
+        message: 'Base URL is required for a compatible provider.',
       });
       return;
     }
@@ -65,8 +66,25 @@ function toByteaHex(buffer: Buffer): string {
 
 type ValidationResult = { ok: true } | { ok: false; message: string };
 
+function trimBase(baseUrl: string | null): string {
+  return (baseUrl ?? '').replace(/\/+$/, '');
+}
+
+/**
+ * One minimal live request per protocol, proving the key before it is stored.
+ *
+ * Each kind is probed the way its own protocol expects, never another's:
+ *
+ *  - `anthropic` — POST /messages at Anthropic's own host, with a known-good
+ *    model, since the form collects no model id.
+ *  - `anthropic_compatible` — GET /models at the user's gateway with Anthropic
+ *    auth headers. A model id would be a guess here (a gateway names its own
+ *    models), and probing /messages with a wrong one returns 404, which is
+ *    indistinguishable from a bad key.
+ *  - `openai_compatible` — GET /models with bearer auth.
+ */
 async function validateCredential(
-  provider: 'anthropic' | 'openai_compatible',
+  provider: Provider,
   apiKey: string,
   baseUrl: string | null,
 ): Promise<ValidationResult> {
@@ -74,27 +92,37 @@ async function validateCredential(
 
   let response: Response;
   try {
-    response =
-      provider === 'anthropic'
-        ? await fetch(ANTHROPIC_MESSAGES_URL, {
-            method: 'POST',
-            headers: {
-              'content-type': 'application/json',
-              'x-api-key': apiKey,
-              'anthropic-version': ANTHROPIC_VERSION,
-            },
-            body: JSON.stringify({
-              model: MODELS.cheap,
-              max_tokens: 1,
-              messages: [{ role: 'user', content: 'ping' }],
-            }),
-            signal,
-          })
-        : await fetch(`${(baseUrl ?? '').replace(/\/+$/, '')}/models`, {
-            method: 'GET',
-            headers: { authorization: `Bearer ${apiKey}` },
-            signal,
-          });
+    if (provider === 'anthropic') {
+      response = await fetch(`${ANTHROPIC_BASE_URL}/messages`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': ANTHROPIC_VERSION,
+        },
+        body: JSON.stringify({
+          model: MODELS.cheap,
+          max_tokens: 1,
+          messages: [{ role: 'user', content: 'ping' }],
+        }),
+        signal,
+      });
+    } else if (provider === 'anthropic_compatible') {
+      response = await fetch(`${trimBase(baseUrl)}/models`, {
+        method: 'GET',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': ANTHROPIC_VERSION,
+        },
+        signal,
+      });
+    } else {
+      response = await fetch(`${trimBase(baseUrl)}/models`, {
+        method: 'GET',
+        headers: { authorization: `Bearer ${apiKey}` },
+        signal,
+      });
+    }
   } catch (error) {
     const reason = error instanceof Error ? error.message : 'unknown error';
     return { ok: false, message: `Could not reach the provider: ${reason}` };

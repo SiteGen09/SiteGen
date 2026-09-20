@@ -1,6 +1,7 @@
 'use client';
 
 import { useActionState, useState } from 'react';
+import { isProvider, PROVIDERS, PROVIDER_LABELS, requiresBaseUrl, type Provider } from '@/lib/ai/providers';
 import {
   addCredential,
   revokeCredential,
@@ -16,8 +17,8 @@ export function AddCredentialForm() {
   const [state, action, pending] = useActionState<CredentialState, FormData>(addCredential, {
     status: 'idle',
   });
-  const [provider, setProvider] = useState<'anthropic' | 'openai_compatible'>('anthropic');
-  const needsBaseUrl = provider === 'openai_compatible';
+  const [provider, setProvider] = useState<Provider>('anthropic');
+  const needsBaseUrl = requiresBaseUrl(provider);
 
   return (
     <form action={action} className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -29,13 +30,17 @@ export function AddCredentialForm() {
           id="provider"
           name="provider"
           value={provider}
-          onChange={(event) =>
-            setProvider(event.target.value === 'openai_compatible' ? 'openai_compatible' : 'anthropic')
-          }
+          onChange={(event) => {
+            const next = event.target.value;
+            setProvider(isProvider(next) ? next : 'anthropic');
+          }}
           className={INPUT_CLASS}
         >
-          <option value="anthropic">Anthropic</option>
-          <option value="openai_compatible">OpenAI-compatible</option>
+          {PROVIDERS.map((value) => (
+            <option key={value} value={value}>
+              {PROVIDER_LABELS[value]}
+            </option>
+          ))}
         </select>
       </div>
 
@@ -59,7 +64,7 @@ export function AddCredentialForm() {
 
       <div className="flex flex-col gap-1.5">
         <label htmlFor="base_url" className="text-sm font-medium text-zinc-700">
-          Base URL {needsBaseUrl ? '' : '(optional)'}
+          Base URL {needsBaseUrl ? '(your gateway)' : '(not used by Anthropic)'}
         </label>
         <input
           id="base_url"

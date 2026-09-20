@@ -4,6 +4,10 @@ import { callWithFallback, isRetryableError, type ChannelRow } from './fallback'
 import { MODELS } from './models';
 import { costUsd, creditsForUsage } from './pricing';
 
+/** List prices matching the deleted PRICING constant for MODELS.cheap. */
+const CHEAP_RATES = { inputPerMTok: 0.8, outputPerMTok: 4, cachedPerMTok: 0.08 };
+const STRONG_RATES = { inputPerMTok: 15, outputPerMTok: 75, cachedPerMTok: 1.5 };
+
 function channel(id: string, overrides: Partial<ChannelRow> = {}): ChannelRow {
   return {
     id,
@@ -13,6 +17,7 @@ function channel(id: string, overrides: Partial<ChannelRow> = {}): ChannelRow {
     creditMultiplier: '1.00',
     status: 'active',
     fallbackTo: null,
+    rates: CHEAP_RATES,
     ...overrides,
   };
 }
@@ -218,23 +223,32 @@ describe('isRetryableError', () => {
 describe('pricing', () => {
   it('prices cached input below fresh input', () => {
     expect(
-      costUsd(MODELS.strong, { inputTokens: 1_000_000, outputTokens: 0, cachedTokens: 0 }),
+      costUsd(STRONG_RATES, { inputTokens: 1_000_000, outputTokens: 0, cachedTokens: 0 }),
     ).toBeCloseTo(15, 10);
     expect(
-      costUsd(MODELS.strong, { inputTokens: 0, outputTokens: 1_000_000, cachedTokens: 0 }),
+      costUsd(STRONG_RATES, { inputTokens: 0, outputTokens: 1_000_000, cachedTokens: 0 }),
     ).toBeCloseTo(75, 10);
     expect(
-      costUsd(MODELS.strong, { inputTokens: 0, outputTokens: 0, cachedTokens: 1_000_000 }),
+      costUsd(STRONG_RATES, { inputTokens: 0, outputTokens: 0, cachedTokens: 1_000_000 }),
     ).toBeCloseTo(1.5, 10);
     expect(
-      costUsd(MODELS.cheap, { inputTokens: 1_000_000, outputTokens: 1_000_000, cachedTokens: 0 }),
+      costUsd(CHEAP_RATES, { inputTokens: 1_000_000, outputTokens: 1_000_000, cachedTokens: 0 }),
     ).toBeCloseTo(4.8, 10);
   });
 
-  it('throws for an unpriced model', () => {
+  it('rejects a negative or non-finite rate rather than undercharging', () => {
     expect(() =>
-      costUsd('mystery-model', { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }),
-    ).toThrow(/no pricing configured/);
+      costUsd(
+        { inputPerMTok: -1, outputPerMTok: 1, cachedPerMTok: 0 },
+        { inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
+      ),
+    ).toThrow(/invalid inputPerMTok/);
+    expect(() =>
+      costUsd(
+        { inputPerMTok: Number.NaN, outputPerMTok: 1, cachedPerMTok: 0 },
+        { inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
+      ),
+    ).toThrow(/invalid inputPerMTok/);
   });
 
   it('rounds credits up and honors the multiplier', () => {
@@ -255,7 +269,7 @@ describe('pricing', () => {
     expect(() => creditsForUsage(-1, 1)).toThrow(/invalid costUsd/);
     expect(() => creditsForUsage(1, -1)).toThrow(/invalid multiplier/);
     expect(() =>
-      costUsd(MODELS.cheap, { inputTokens: -1, outputTokens: 0, cachedTokens: 0 }),
+      costUsd(CHEAP_RATES, { inputTokens: -1, outputTokens: 0, cachedTokens: 0 }),
     ).toThrow(/invalid inputTokens/);
   });
 });

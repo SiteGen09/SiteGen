@@ -1,5 +1,5 @@
 import type { ChannelRow } from '@/lib/ai/fallback';
-import { PRICING, costUsd, creditsForUsage } from '@/lib/ai/pricing';
+import { costUsd, creditsForUsage } from '@/lib/ai/pricing';
 import { ApiError } from '@/lib/api/errors';
 import { MAX_ROUNDS } from '@/lib/generate/generate';
 
@@ -26,9 +26,8 @@ export const HOLD_BUDGET_TOTAL = {
  * Credits to reserve before running `channel`.
  *
  * A zero multiplier (BYOK) holds nothing — the caller's own key pays. For a
- * billable channel the model must be priced; an unpriced billable channel is a
- * misconfiguration that would silently undercharge, so it is rejected as
- * unavailable rather than run.
+ * billable channel the rates come from the channel row itself, so adding a
+ * model needs no code change.
  */
 export function estimateHoldCredits(channel: ChannelRow): number {
   const multiplier = Number(channel.creditMultiplier);
@@ -37,10 +36,39 @@ export function estimateHoldCredits(channel: ChannelRow): number {
   }
   if (multiplier === 0) return 0;
 
-  if (PRICING[channel.modelId] === undefined) {
-    throw new ApiError('channel_unavailable', 'channel model is not priced', 503);
-  }
+  const cost = costUsd(channel.rates, HOLD_BUDGET_TOTAL);
+  return creditsForUsage(cost, multiplier);
+}
 
-  const cost = costUsd(channel.modelId, HOLD_BUDGET_TOTAL);
+/** Deliberately coarse token estimate: ~4 characters per token. */
+const CHARS_PER_TOKEN = 4;
+
+/**
+ * Credits to hold for a gateway chat call.
+ *
+ * Unlike {@link estimateHoldCredits}, the site-spec path owns its prompt and
+ * can size from a fixed budget; here the caller supplies the messages and the
+ * output ceiling, so the hold is derived from them. The input estimate is a
+ * deliberate over-estimate — `ceil(totalChars / 4)` tends to exceed the real
+ * token count — so a call can never settle above its hold; settle then
+ * reconciles the true figure. No tokenizer dependency is taken for this.
+ */
+export function estimateChatHoldCredits(
+  channel: ChannelRow,
+  totalChars: number,
+  maxOutputTokens: number,
+): number {
+  const multiplier = Number(channel.creditMultiplier);
+  if (!Number.isFinite(multiplier) || multiplier < 0) {
+    throw new ApiError('channel_unavailable', 'channel has an invalid credit multiplier', 503);
+  }
+  if (multiplier === 0) return 0;
+
+  const estimatedInput = Math.ceil(Math.max(0, totalChars) / CHARS_PER_TOKEN);
+  const cost = costUsd(channel.rates, {
+    inputTokens: estimatedInput,
+    outputTokens: Math.max(0, maxOutputTokens),
+    cachedTokens: 0,
+  });
   return creditsForUsage(cost, multiplier);
 }

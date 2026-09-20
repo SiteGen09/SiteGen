@@ -22,6 +22,80 @@ const grantSchema = z.object({
   reason: z.string().trim().min(1, 'a reason is required').max(500),
 });
 
+const statusSchema = z.object({
+  userId: z.string().uuid('invalid user id'),
+  reason: z.string().trim().min(1, 'a reason is required').max(500),
+});
+
+/**
+ * Flips `profiles.status`. Suspension is enforced inside `authenticateApiKey`,
+ * so this takes effect on the account's very next API call without revoking
+ * keys or deleting the auth user.
+ */
+async function setStatusAction(
+  formData: FormData,
+  next: 'active' | 'suspended',
+): Promise<ActionState> {
+  try {
+    const ctx = await requireAdmin();
+    const parsed = statusSchema.safeParse({
+      userId: typeof formData.get('userId') === 'string' ? formData.get('userId') : '',
+      reason: typeof formData.get('reason') === 'string' ? formData.get('reason') : '',
+    });
+    if (!parsed.success) {
+      return { status: 'error', message: parsed.error.issues[0]?.message ?? 'invalid input' };
+    }
+    const { userId, reason } = parsed.data;
+
+    await sql.begin(async (tx) => {
+      const rows = await tx`
+        SELECT id, email, status FROM profiles WHERE id = ${userId} FOR UPDATE
+      `;
+      const before = rows[0];
+      if (before === undefined) {
+        throw new ApiError('not_found', 'user not found', 404);
+      }
+
+      const after = await tx`
+        UPDATE profiles SET status = ${next} WHERE id = ${userId} RETURNING id, email, status
+      `;
+      await writeAudit(
+        ctx.user.id,
+        `user.${next === 'suspended' ? 'suspend' : 'unsuspend'}`,
+        `user:${userId}`,
+        before,
+        { ...after[0], reason },
+        tx,
+      );
+    });
+
+    revalidatePath('/admin/users');
+    return {
+      status: 'success',
+      message: next === 'suspended' ? 'user suspended' : 'user unsuspended',
+    };
+  } catch (err) {
+    return {
+      status: 'error',
+      message: err instanceof ApiError ? err.message : 'status change failed',
+    };
+  }
+}
+
+export async function suspendUserAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  return setStatusAction(formData, 'suspended');
+}
+
+export async function unsuspendUserAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  return setStatusAction(formData, 'active');
+}
+
 export async function grantCreditsAction(
   _prev: ActionState,
   formData: FormData,

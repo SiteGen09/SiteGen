@@ -1,39 +1,31 @@
-import { MODELS } from './models';
-
-export interface ModelPricing {
-  /** USD per million non-cached input tokens. */
+/** USD per million non-cached input tokens. */
+export interface TokenRates {
   inputPerMTok: number;
-  /** USD per million output tokens. */
   outputPerMTok: number;
-  /** USD per million cache-read input tokens. */
-  cachedInputPerMTok: number;
+  cachedPerMTok: number;
 }
-
-/** USD list prices per model id. Keyed by {@link MODELS} so ids stay in one place. */
-export const PRICING: Record<string, ModelPricing> = {
-  [MODELS.strong]: { inputPerMTok: 15, outputPerMTok: 75, cachedInputPerMTok: 1.5 },
-  [MODELS.cheap]: { inputPerMTok: 0.8, outputPerMTok: 4, cachedInputPerMTok: 0.08 },
-  'stub-fixture': { inputPerMTok: 0.5, outputPerMTok: 2, cachedInputPerMTok: 0.05 },
-  'gemini-3-8-flash': { inputPerMTok: 0.5, outputPerMTok: 1.5, cachedInputPerMTok: 0.05 },
-};
-
-/** USD value of one credit. */
-const USD_PER_CREDIT = 0.0001;
 
 /**
  * Raw provider cost in USD for one call.
  *
+ * Rates are supplied by the caller rather than looked up from a model id, so
+ * adding a model is a channel row rather than a code change and a redeploy.
  * `inputTokens` must exclude `cachedTokens`; cache reads are billed at the
- * cached rate. Throws on an unpriced model rather than silently returning 0,
- * which would undercharge a paid channel.
+ * cached rate. Every rate and count is validated: a bad figure would otherwise
+ * silently undercharge a paid channel.
  */
 export function costUsd(
-  modelId: string,
+  rates: TokenRates,
   usage: { inputTokens: number; outputTokens: number; cachedTokens: number },
 ): number {
-  const pricing = PRICING[modelId];
-  if (pricing === undefined) {
-    throw new Error(`no pricing configured for model '${modelId}'`);
+  for (const [name, rate] of [
+    ['inputPerMTok', rates.inputPerMTok],
+    ['outputPerMTok', rates.outputPerMTok],
+    ['cachedPerMTok', rates.cachedPerMTok],
+  ] as const) {
+    if (!Number.isFinite(rate) || rate < 0) {
+      throw new Error(`invalid ${name}: ${rate}`);
+    }
   }
 
   const { inputTokens, outputTokens, cachedTokens } = usage;
@@ -48,12 +40,15 @@ export function costUsd(
   }
 
   return (
-    (inputTokens * pricing.inputPerMTok +
-      outputTokens * pricing.outputPerMTok +
-      cachedTokens * pricing.cachedInputPerMTok) /
+    (inputTokens * rates.inputPerMTok +
+      outputTokens * rates.outputPerMTok +
+      cachedTokens * rates.cachedPerMTok) /
     1_000_000
   );
 }
+
+/** USD value of one credit. */
+const USD_PER_CREDIT = 0.0001;
 
 /**
  * Credits to charge for a call. One credit is $0.0001; the multiplier is the

@@ -167,12 +167,14 @@ const userRowSchema = z.object({
   id: z.string(),
   email: z.string(),
   role: z.string(),
+  status: z.string(),
   created_at: dbDate,
   plan_key: z.string().nullable(),
   entitlement_status: z.string().nullable(),
   current_period_end: dbDateOrNull,
   monthly_credits: dbNumberOrNull,
   balance: dbNumber,
+  strikes_24h: dbNumber,
 });
 
 export type UserRow = z.infer<typeof userRowSchema>;
@@ -184,12 +186,15 @@ export async function usersPage(
 ): Promise<{ users: UserRow[]; total: number }> {
   const [rows, counts] = await Promise.all([
     sql<Record<string, unknown>[]>`
-      SELECT p.id, p.email, p.role, p.created_at,
+      SELECT p.id, p.email, p.role, p.status, p.created_at,
              e.plan_key,
              e.status AS entitlement_status,
              e.current_period_end,
              e.monthly_credits,
-             get_balance(p.id) AS balance
+             get_balance(p.id) AS balance,
+             (SELECT count(*) FROM abuse_strikes s
+                WHERE s.user_id = p.id
+                  AND s.created_at >= now() - interval '24 hours') AS strikes_24h
       FROM profiles p
       LEFT JOIN entitlements e ON e.user_id = p.id
       ORDER BY p.created_at DESC, p.id ASC

@@ -15,6 +15,9 @@ const channelSchema = z.object({
   provider: z.enum(PROVIDERS),
   base_url: z.string().nullable(),
   model_id: z.string(),
+  input_per_mtok: z.coerce.number().nonnegative(),
+  output_per_mtok: z.coerce.number().nonnegative(),
+  cached_per_mtok: z.coerce.number().nonnegative(),
 });
 
 export async function POST(request: Request): Promise<Response> {
@@ -33,7 +36,7 @@ export async function POST(request: Request): Promise<Response> {
     const service = createServiceClient();
     const { data, error } = await service
       .from('channels')
-      .select('id, provider, base_url, model_id')
+      .select('id, provider, base_url, model_id, input_per_mtok, output_per_mtok, cached_per_mtok')
       .eq('id', parsedBody.data.channelId)
       .maybeSingle();
 
@@ -47,7 +50,11 @@ export async function POST(request: Request): Promise<Response> {
 
     const provider: Provider = channel.data.provider;
     const creds = await resolvePlatformCreds(provider, channel.data.base_url);
-    const probe = await probeCredentials(creds, channel.data.model_id);
+    const probe = await probeCredentials(creds, channel.data.model_id, {
+      inputPerMTok: channel.data.input_per_mtok,
+      outputPerMTok: channel.data.output_per_mtok,
+      cachedPerMTok: channel.data.cached_per_mtok,
+    });
 
     await writeAudit(
       ctx.user.id,

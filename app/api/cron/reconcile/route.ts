@@ -153,6 +153,10 @@ export async function GET(request: Request): Promise<Response> {
     log.warn('reconcile.unauthorized');
     return apiError('unauthorized', 'Invalid cron credentials', requestId, 401);
   }
+  // Reclaim stranded holds first, so a missing WHOP_API_KEY or a Whop outage
+  // — both of which abort the entitlement pass below — can never leave a
+  // customer's held credits stranded. This is the whole point of the sweep.
+  const holds = await reclaimHolds(log);
 
   // Surfaced explicitly: without an API key every page read fails, and a
   // generic 500 would hide the actual cause from the cron log.
@@ -229,8 +233,6 @@ export async function GET(request: Request): Promise<Response> {
     return apiError('internal_error', 'Reconciliation failed', requestId, 500);
   }
 
-  // Runs after the entitlement pass so a Whop outage never blocks the sweep.
-  const holds = await reclaimHolds(log);
 
   log.info('reconcile.completed', {
     checked,

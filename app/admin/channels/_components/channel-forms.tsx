@@ -10,10 +10,10 @@ import {
   LABEL_CLASS,
   type ActionState,
 } from '../../_components/action-state';
+import { PROVIDERS, PROVIDER_LABELS } from '@/lib/ai/providers';
 import { createChannelAction, updateChannelAction } from '../actions';
 
-const TASK_OPTIONS = ['site.spec', 'site.copy', 'interview'] as const;
-const PROVIDER_OPTIONS = ['anthropic', 'openai_compatible'] as const;
+const TASK_OPTIONS = ['site.spec', 'site.copy', 'interview', 'chat.completions'] as const;
 const STATUS_OPTIONS = ['active', 'degraded', 'off'] as const;
 
 export interface ChannelDefaults {
@@ -23,11 +23,15 @@ export interface ChannelDefaults {
   provider: string;
   baseUrl: string;
   modelId: string;
+  publicModelId: string;
   creditMultiplier: string;
   status: string;
   minPlan: string;
   fallbackTo: string;
   priority: string;
+  inputPerMTok: string;
+  outputPerMTok: string;
+  cachedPerMTok: string;
 }
 
 interface FieldsProps {
@@ -89,9 +93,9 @@ function ChannelFields({ defaults, planKeys, fallbackOptions, lockId }: FieldsPr
       <label className="block">
         <span className={LABEL_CLASS}>Provider</span>
         <select name="provider" defaultValue={defaults.provider} className={`${INPUT_CLASS} mt-1`}>
-          {PROVIDER_OPTIONS.map((p) => (
+          {PROVIDERS.map((p) => (
             <option key={p} value={p}>
-              {p}
+              {PROVIDER_LABELS[p]}
             </option>
           ))}
         </select>
@@ -101,11 +105,56 @@ function ChannelFields({ defaults, planKeys, fallbackOptions, lockId }: FieldsPr
         <input name="modelId" defaultValue={defaults.modelId} required className={`${INPUT_CLASS} mt-1`} />
       </label>
       <label className="block">
-        <span className={LABEL_CLASS}>Base URL (openai_compatible only)</span>
+        <span className={LABEL_CLASS}>Base URL (required for every *_compatible provider)</span>
         <input
           name="baseUrl"
           defaultValue={defaults.baseUrl}
           placeholder="https://…"
+          className={`${INPUT_CLASS} mt-1`}
+        />
+      </label>
+      <label className="block">
+        <span className={LABEL_CLASS}>Public model id (gateway only)</span>
+        <input
+          name="publicModelId"
+          defaultValue={defaults.publicModelId}
+          placeholder="stub-chat"
+          className={`${INPUT_CLASS} mt-1`}
+        />
+      </label>
+      <label className="block">
+        <span className={LABEL_CLASS}>Input $/Mtok</span>
+        <input
+          name="inputPerMTok"
+          type="number"
+          step="0.000001"
+          min="0"
+          defaultValue={defaults.inputPerMTok}
+          required
+          className={`${INPUT_CLASS} mt-1`}
+        />
+      </label>
+      <label className="block">
+        <span className={LABEL_CLASS}>Output $/Mtok</span>
+        <input
+          name="outputPerMTok"
+          type="number"
+          step="0.000001"
+          min="0"
+          defaultValue={defaults.outputPerMTok}
+          required
+          className={`${INPUT_CLASS} mt-1`}
+        />
+      </label>
+      <label className="block">
+        <span className={LABEL_CLASS}>Cached $/Mtok</span>
+        <input
+          name="cachedPerMTok"
+          type="number"
+          step="0.000001"
+          min="0"
+          defaultValue={defaults.cachedPerMTok}
+          required
           className={`${INPUT_CLASS} mt-1`}
         />
       </label>
@@ -182,11 +231,15 @@ export function CreateChannelForm({
     provider: 'anthropic',
     baseUrl: '',
     modelId: '',
+    publicModelId: '',
     creditMultiplier: '1.00',
     status: 'active',
     minPlan: 'free',
     fallbackTo: '',
     priority: '0',
+    inputPerMTok: '0',
+    outputPerMTok: '0',
+    cachedPerMTok: '0',
   };
   return (
     <form action={action} className="space-y-4">

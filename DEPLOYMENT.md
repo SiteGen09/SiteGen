@@ -219,7 +219,7 @@ Admins configure channels via the admin portal without deploying:
   id: 'spec-strong',           // Stable identifier
   label: 'Site Spec (Opus 4)', // Human-readable
   task: 'site.spec',           // What it's for
-  provider: 'anthropic',       // or 'openai_compatible'
+  provider: 'anthropic',       // or 'anthropic_compatible' / 'openai_compatible'
   model_id: 'claude-opus-4-20250514',
   credit_multiplier: 1.0,      // 1 credit = $0.0001
   status: 'active',            // active | degraded | off

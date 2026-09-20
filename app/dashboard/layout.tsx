@@ -8,6 +8,8 @@ import { MobileNav } from './mobile-nav';
 const NAV = [
   { href: '/dashboard', label: 'Overview' },
   { href: '/dashboard/keys', label: 'API Keys' },
+  { href: '/dashboard/models', label: 'Models' },
+  { href: '/dashboard/status', label: 'Model status' },
   { href: '/dashboard/usage', label: 'Usage' },
   { href: '/dashboard/credentials', label: 'Credentials' },
   { href: '/dashboard/billing', label: 'Billing' },

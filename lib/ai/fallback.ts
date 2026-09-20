@@ -1,3 +1,6 @@
+import type { TokenRates } from '@/lib/ai/pricing';
+import type { Provider } from '@/lib/ai/providers';
+
 /** Max channels visited in one fallback walk, including the starting channel. */
 const MAX_CHAIN_DEPTH = 5;
 
@@ -7,13 +10,18 @@ const MAX_CHAIN_DEPTH = 5;
  */
 export interface ChannelRow {
   id: string;
-  provider: 'anthropic' | 'openai_compatible';
+  provider: Provider;
   baseUrl: string | null;
   modelId: string;
   /** Decimal string, e.g. '1.00'; '0' means BYOK (no credits charged). */
   creditMultiplier: string;
   status: string;
   fallbackTo: string | null;
+  /**
+   * USD list price per million tokens for this channel's model, held as
+   * numbers because `numeric(12,6)` arrives from PostgREST as a string.
+   */
+  rates: TokenRates;
 }
 
 export interface FallbackResult<T> {

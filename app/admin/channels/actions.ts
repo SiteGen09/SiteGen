@@ -7,12 +7,41 @@ import { requireAdmin, writeAudit } from '@/lib/api/admin';
 import { ApiError } from '@/lib/api/errors';
 import { sql } from '@/lib/db';
 import { isPlanKey, type PlanKey } from '@/lib/billing/plans';
+import {
+  acceptsBaseUrl,
+  PROVIDERS,
+  PROVIDER_LABELS,
+  requiresBaseUrl,
+  type Provider,
+} from '@/lib/ai/providers';
 
 import type { ActionState } from '../_components/action-state';
 
-const TASKS = ['site.spec', 'site.copy', 'interview'] as const;
-const PROVIDERS = ['anthropic', 'openai_compatible'] as const;
+const TASKS = ['site.spec', 'site.copy', 'interview', 'chat.completions'] as const;
 const STATUSES = ['active', 'degraded', 'off'] as const;
+
+/**
+ * USD per million tokens. Bounded to six decimals because the column is
+ * `numeric(12,6)` — anything finer would be rounded on write and not
+ * round-trip, so the stored value stays the one the admin sees.
+ */
+function rate(label: string) {
+  return z.coerce
+    .number()
+    .refine(Number.isFinite, `${label} must be a number`)
+    .refine((n) => n >= 0, `${label} must be >= 0`)
+    .transform((n) => Math.round(n * 1_000_000) / 1_000_000);
+}
+
+/**
+ * Public model name callers pass as `"model"`. Null for channels that are not
+ * addressable by name, e.g. everything on the site-spec path.
+ */
+const publicModelId = z
+  .string()
+  .trim()
+  .transform((v) => (v.length === 0 ? null : v))
+  .refine((v) => v === null || v.length <= 128, 'public model id must be <= 128 characters');
 
 const baseFields = {
   label: z.string().trim().min(1, 'label is required').max(120),
@@ -23,6 +52,7 @@ const baseFields = {
     .trim()
     .transform((v) => (v.length === 0 ? null : v)),
   modelId: z.string().trim().min(1, 'model id is required').max(200),
+  publicModelId,
   creditMultiplier: z.coerce
     .number()
     .refine(Number.isFinite, 'multiplier must be a number')
@@ -36,7 +66,37 @@ const baseFields = {
     .trim()
     .transform((v) => (v.length === 0 ? null : v)),
   priority: z.coerce.number().int('priority must be an integer'),
+  inputPerMTok: rate('input rate'),
+  outputPerMTok: rate('output rate'),
+  cachedPerMTok: rate('cached rate'),
 };
+
+/**
+ * A channel's base URL decides which host it calls, and — with its provider —
+ * which stored credential it resolves. A compatible gateway needs one;
+ * `anthropic` must not have one, because the first-party client ignores it and
+ * the channel would then match no credential at all.
+ */
+function checkBaseUrl(
+  value: { provider: Provider; baseUrl: string | null },
+  ctx: z.RefinementCtx,
+): void {
+  if (requiresBaseUrl(value.provider) && value.baseUrl === null) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['baseUrl'],
+      message: `${PROVIDER_LABELS[value.provider]} requires a base URL`,
+    });
+  }
+  if (!acceptsBaseUrl(value.provider) && value.baseUrl !== null) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['baseUrl'],
+      message:
+        'anthropic always calls api.anthropic.com — choose anthropic_compatible to use a gateway',
+    });
+  }
+}
 
 const createSchema = z
   .object({
@@ -46,17 +106,11 @@ const createSchema = z
       .regex(/^[a-z0-9-]{1,64}$/, 'id must be lowercase letters, digits and hyphens'),
     ...baseFields,
   })
-  .refine((v) => v.provider !== 'openai_compatible' || v.baseUrl !== null, {
-    message: 'openai_compatible requires a base URL',
-    path: ['baseUrl'],
-  });
+  .superRefine(checkBaseUrl);
 
 const updateSchema = z
   .object({ id: z.string().trim().min(1), ...baseFields })
-  .refine((v) => v.provider !== 'openai_compatible' || v.baseUrl !== null, {
-    message: 'openai_compatible requires a base URL',
-    path: ['baseUrl'],
-  });
+  .superRefine(checkBaseUrl);
 
 function formValues(formData: FormData): Record<string, string> {
   const out: Record<string, string> = {};
@@ -67,11 +121,15 @@ function formValues(formData: FormData): Record<string, string> {
     'provider',
     'baseUrl',
     'modelId',
+    'publicModelId',
     'creditMultiplier',
     'status',
     'minPlan',
     'fallbackTo',
     'priority',
+    'inputPerMTok',
+    'outputPerMTok',
+    'cachedPerMTok',
   ]) {
     const value = formData.get(key);
     out[key] = typeof value === 'string' ? value : '';
@@ -113,15 +171,30 @@ export async function createChannelAction(
           throw new ApiError('invalid_request', `fallback '${data.fallbackTo}' does not exist`, 400);
         }
       }
+      if (data.publicModelId !== null) {
+        const clash = await tx<{ one: number }[]>`
+          SELECT 1 AS one FROM channels WHERE public_model_id = ${data.publicModelId}
+        `;
+        if (clash[0] !== undefined) {
+          throw new ApiError(
+            'invalid_request',
+            `public model id '${data.publicModelId}' is already in use`,
+            409,
+          );
+        }
+      }
 
       const rows = await tx`
         INSERT INTO channels
-          (id, label, task, provider, base_url, model_id, credit_multiplier,
-           status, min_plan, fallback_to, priority)
+          (id, label, task, provider, base_url, model_id, public_model_id,
+           credit_multiplier, status, min_plan, fallback_to, priority,
+           input_per_mtok, output_per_mtok, cached_per_mtok)
         VALUES (
           ${data.id}, ${data.label}, ${data.task}, ${data.provider}, ${data.baseUrl},
-          ${data.modelId}, ${toMultiplier(data.creditMultiplier)}, ${data.status},
-          ${data.minPlan}, ${data.fallbackTo}, ${data.priority}
+          ${data.modelId}, ${data.publicModelId},
+          ${toMultiplier(data.creditMultiplier)}, ${data.status},
+          ${data.minPlan}, ${data.fallbackTo}, ${data.priority},
+          ${data.inputPerMTok}, ${data.outputPerMTok}, ${data.cachedPerMTok}
         )
         RETURNING *
       `;
@@ -166,6 +239,19 @@ export async function updateChannelAction(
           throw new ApiError('invalid_request', `fallback '${data.fallbackTo}' does not exist`, 400);
         }
       }
+      if (data.publicModelId !== null) {
+        const clash = await tx<{ id: string }[]>`
+          SELECT id FROM channels
+          WHERE public_model_id = ${data.publicModelId} AND id <> ${data.id}
+        `;
+        if (clash[0] !== undefined) {
+          throw new ApiError(
+            'invalid_request',
+            `public model id '${data.publicModelId}' is already in use`,
+            409,
+          );
+        }
+      }
 
       const afterRows = await tx`
         UPDATE channels SET
@@ -174,11 +260,15 @@ export async function updateChannelAction(
           provider = ${data.provider},
           base_url = ${data.baseUrl},
           model_id = ${data.modelId},
+          public_model_id = ${data.publicModelId},
           credit_multiplier = ${toMultiplier(data.creditMultiplier)},
           status = ${data.status},
           min_plan = ${data.minPlan},
           fallback_to = ${data.fallbackTo},
           priority = ${data.priority},
+          input_per_mtok = ${data.inputPerMTok},
+          output_per_mtok = ${data.outputPerMTok},
+          cached_per_mtok = ${data.cachedPerMTok},
           updated_at = now()
         WHERE id = ${data.id}
         RETURNING *

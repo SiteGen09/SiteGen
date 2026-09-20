@@ -1,5 +1,7 @@
 import { NoObjectGeneratedError, generateObject } from 'ai';
 
+import type { TokenRates } from '@/lib/ai/pricing';
+
 import type { ChannelRow } from '@/lib/ai/fallback';
 import { callWithFallback } from '@/lib/ai/fallback';
 import type { ProviderCreds } from '@/lib/ai/provider';
@@ -28,6 +30,8 @@ export interface SpecGenerationResult {
   multiplier: number;
   /** Model id of the serving channel, for cost calculation. */
   modelId: string;
+  /** USD rates of the serving channel, for cost calculation. */
+  rates: TokenRates;
   /** Token usage summed across every attempt, including failed ones. */
   usage: NormalizedUsage;
   latencyMs: number;
@@ -89,6 +93,7 @@ export async function generateSpec(params: GenerateSpecParams): Promise<SpecGene
         channelId: servingChannel.id,
         multiplier: Number(servingChannel.creditMultiplier),
         modelId: servingChannel.modelId,
+        rates: servingChannel.rates,
         usage,
         latencyMs: Date.now() - startedAt,
       };

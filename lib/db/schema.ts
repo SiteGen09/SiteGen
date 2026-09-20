@@ -21,7 +21,7 @@ export const apiKeys = pgTable('api_keys', {
   keyHash: text('key_hash').notNull().unique(),
   keyPrefix: text('key_prefix').notNull(),
   lastFour: text('last_four').notNull(),
-  scopes: text('scopes').array().notNull().default(['generate']),
+  scopes: text('scopes').array().notNull().default(['generate', 'chat']),
   status: text('status').notNull().default('active'), // active | revoked
   lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
   rateLimitRpm: integer('rate_limit_rpm').notNull().default(60),
@@ -36,7 +36,7 @@ export const channels = pgTable('channels', {
   id: text('id').primaryKey(), // slug, e.g. 'spec-strong'
   label: text('label').notNull(),
   task: text('task').notNull(), // site.spec | site.copy | interview
-  provider: text('provider').notNull(), // anthropic | openai_compatible
+  provider: text('provider').notNull(), // see lib/ai/providers.ts PROVIDERS
   baseUrl: text('base_url'),
   modelId: text('model_id').notNull(),
   creditMultiplier: numeric('credit_multiplier', { precision: 10, scale: 2 }).notNull().default('1.0'),

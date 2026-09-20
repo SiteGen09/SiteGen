@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PROVIDERS, type Provider } from '@/lib/ai/providers';
 
 import type { ChannelRow } from '@/lib/ai/fallback';
 import type { TaskAlias } from '@/lib/ai/provider';
@@ -15,7 +16,7 @@ const channelRowSchema = z.object({
   id: z.string(),
   label: z.string(),
   task: z.string(),
-  provider: z.enum(['anthropic', 'openai_compatible']),
+  provider: z.enum(PROVIDERS),
   base_url: z.string().nullable(),
   model_id: z.string(),
   credit_multiplier: z.union([z.string(), z.number()]).transform(String),
@@ -23,14 +24,16 @@ const channelRowSchema = z.object({
   min_plan: z.string(),
   fallback_to: z.string().nullable(),
   priority: z.number().int(),
+  input_per_mtok: z.coerce.number().nonnegative(),
+  output_per_mtok: z.coerce.number().nonnegative(),
+  cached_per_mtok: z.coerce.number().nonnegative(),
+  public_model_id: z.string().nullable(),
 });
 
 type ChannelDbRow = z.infer<typeof channelRowSchema>;
 
 const CHANNEL_COLUMNS =
-  'id, label, task, provider, base_url, model_id, credit_multiplier, status, min_plan, fallback_to, priority';
-
-/** Higher status is preferred when priority ties. `off` never reaches ranking. */
+  'id, label, task, provider, base_url, model_id, credit_multiplier, status, min_plan, fallback_to, priority, input_per_mtok, output_per_mtok, cached_per_mtok, public_model_id';
 const STATUS_RANK: Record<string, number> = { active: 2, degraded: 1 };
 
 function toChannelRow(row: ChannelDbRow): ChannelRow {
@@ -42,6 +45,11 @@ function toChannelRow(row: ChannelDbRow): ChannelRow {
     creditMultiplier: row.credit_multiplier,
     status: row.status,
     fallbackTo: row.fallback_to,
+    rates: {
+      inputPerMTok: row.input_per_mtok,
+      outputPerMTok: row.output_per_mtok,
+      cachedPerMTok: row.cached_per_mtok,
+    },
   };
 }
 
@@ -100,7 +108,7 @@ export async function selectChannel(
  */
 export async function selectByokChannel(
   task: TaskAlias,
-  provider: 'anthropic' | 'openai_compatible',
+  provider: Provider,
   planKey: string,
 ): Promise<ChannelRow | null> {
   const service = createServiceClient();
@@ -122,6 +130,66 @@ export async function selectByokChannel(
     .filter((row) => planMeetsMinimum(planKey, row.min_plan));
 
   return bestOf(eligible);
+}
+
+/**
+ * Picks the gateway channel a caller addressed by `publicModelId`.
+ *
+ * Deliberately mirrors {@link selectChannel}: `off` channels are excluded,
+ * a zero multiplier means BYOK-only and is not billable here, and the plan
+ * minimum is enforced. An unknown name and a name the caller's plan cannot
+ * reach both return `null`, so the caller cannot tell "no such model" from
+ * "your plan cannot use this model".
+ */
+export async function selectChannelByModel(
+  publicModelId: string,
+  planKey: string,
+): Promise<ChannelRow | null> {
+  const service = createServiceClient();
+  const { data, error } = await service
+    .from('channels')
+    .select(CHANNEL_COLUMNS)
+    .eq('public_model_id', publicModelId)
+    .neq('status', 'off')
+    .gt('credit_multiplier', 0);
+
+  if (error !== null) {
+    throw new Error(`channel model lookup failed: ${error.message}`);
+  }
+
+  const eligible = channelRowSchema
+    .array()
+    .parse(data ?? [])
+    .filter((row) => planMeetsMinimum(planKey, row.min_plan));
+
+  return bestOf(eligible);
+}
+
+/**
+ * Every model name `planKey` may reach, newest-first by id for a stable list.
+ * Returns only `public_model_id` values: the upstream `model_id`, base URL,
+ * and multiplier must never reach a caller.
+ */
+export async function listPublicModels(planKey: string): Promise<string[]> {
+  const service = createServiceClient();
+  const { data, error } = await service
+    .from('channels')
+    .select(CHANNEL_COLUMNS)
+    .not('public_model_id', 'is', null)
+    .neq('status', 'off')
+    .gt('credit_multiplier', 0);
+
+  if (error !== null) {
+    throw new Error(`public model lookup failed: ${error.message}`);
+  }
+
+  return channelRowSchema
+    .array()
+    .parse(data ?? [])
+    .filter((row) => planMeetsMinimum(planKey, row.min_plan))
+    .map((row) => row.public_model_id)
+    .filter((id): id is string => id !== null)
+    .sort();
 }
 
 /**

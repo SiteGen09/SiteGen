@@ -33,6 +33,10 @@ function lmUsage(input: number, output: number, cacheRead = 0): LanguageModelUsa
   };
 }
 
+/** Rates matching what the deleted PRICING constant carried for MODELS. */
+const CHEAP_RATES = { inputPerMTok: 0.8, outputPerMTok: 4, cachedPerMTok: 0.08 };
+const STRONG_RATES = { inputPerMTok: 15, outputPerMTok: 75, cachedPerMTok: 1.5 };
+
 function cheapChannel(overrides: Partial<ChannelRow> = {}): ChannelRow {
   return {
     id: 'spec-cheap',
@@ -42,6 +46,7 @@ function cheapChannel(overrides: Partial<ChannelRow> = {}): ChannelRow {
     creditMultiplier: '1.00',
     status: 'active',
     fallbackTo: null,
+    rates: CHEAP_RATES,
     ...overrides,
   };
 }
@@ -154,20 +159,26 @@ describe('estimateHoldCredits', () => {
 
   it('applies the channel multiplier', () => {
     // Two rounds of (10000*15 + 8000*75)/1e6 = 1.5 USD -> ceil(15000 * 1.2) = 18000.
-    const strong = cheapChannel({ modelId: MODELS.strong, creditMultiplier: '1.20' });
+    const strong = cheapChannel({ rates: STRONG_RATES, creditMultiplier: '1.20' });
     expect(estimateHoldCredits(strong)).toBe(18000);
   });
-
 
   it('holds nothing for a zero-multiplier BYOK channel', () => {
     expect(estimateHoldCredits(cheapChannel({ creditMultiplier: '0' }))).toBe(0);
   });
 
-  it('rejects a billable channel whose model is not priced', () => {
-    const channel = cheapChannel({ modelId: 'mystery-model', creditMultiplier: '1.00' });
-    expect(() => estimateHoldCredits(channel)).toThrow(
+  it('rejects a channel with an invalid multiplier', () => {
+    expect(() => estimateHoldCredits(cheapChannel({ creditMultiplier: 'nope' }))).toThrow(
       expect.objectContaining({ code: 'channel_unavailable', status: 503 }),
     );
+  });
+
+  it('prices from the channel rates, not the model id', () => {
+    // The same model id at different rates must hold differently — pricing is
+    // per channel now, so a model id no longer implies a price.
+    const cheap = cheapChannel({ rates: CHEAP_RATES });
+    const pricey = cheapChannel({ rates: STRONG_RATES });
+    expect(estimateHoldCredits(pricey)).toBeGreaterThan(estimateHoldCredits(cheap));
   });
 });
 
@@ -207,7 +218,7 @@ describe('hold covers every round that settles', () => {
       cachedTokens: 0,
     });
 
-    const settled = creditsForUsage(costUsd(channel.modelId, result.usage), 1);
+    const settled = creditsForUsage(costUsd(channel.rates, result.usage), 1);
     expect(settled).toBeLessThanOrEqual(held);
   });
 });

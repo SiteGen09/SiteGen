@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { selectByokChannel, selectChannel, resolveChannel } from '@/lib/ai/channels';
 import type { ChannelRow } from '@/lib/ai/fallback';
-import { PRICING, costUsd, creditsForUsage } from '@/lib/ai/pricing';
+import { costUsd, creditsForUsage } from '@/lib/ai/pricing';
 import type { ProviderCreds } from '@/lib/ai/provider';
 import { authenticateApiKey, requireScope, type AuthenticatedKey } from '@/lib/api/api-key-auth';
 import { ApiError, apiError } from '@/lib/api/errors';
@@ -11,7 +11,8 @@ import {
   withIdempotency,
   type IdempotentResponse,
 } from '@/lib/api/idempotency';
-import { getPlatformCreds, getUserCredential } from '@/lib/generate/credentials';
+import { resolvePlatformCreds } from '@/lib/admin/credentials';
+import { getUserCredential } from '@/lib/generate/credentials';
 import { HOLD_BUDGET, estimateHoldCredits } from '@/lib/generate/estimate';
 import { generateSpec } from '@/lib/generate/generate';
 import {
@@ -84,7 +85,7 @@ async function resolveChannelAndCreds(
   return {
     start: platformChannel,
     resolve: resolveChannel,
-    buildCreds: (channel) => getPlatformCreds(channel.provider, channel.baseUrl),
+    buildCreds: (channel) => resolvePlatformCreds(channel.provider, channel.baseUrl),
   };
 }
 
@@ -186,9 +187,9 @@ async function runGeneration(ctx: GenerationContext): Promise<IdempotentResponse
       prompt: buildSpecPrompt(body),
       maxOutputTokens: HOLD_BUDGET.outputTokens,
     });
-
-    const priced = PRICING[generation.modelId] !== undefined;
-    const cost = priced ? costUsd(generation.modelId, generation.usage) : null;
+    // Rates come from the serving channel, so an unpriced model is a channel
+    // misconfiguration rather than a code lookup that can silently miss.
+    const cost = costUsd(generation.rates, generation.usage);
 
     let creditsCharged = 0;
     if (held) {
