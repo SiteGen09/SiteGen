@@ -47,7 +47,7 @@ export const sources = pgTable('sources', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   defaultFamily: uniqueIndex('sources_default_family_key').on(table.family).where(sql`${table.isDefault}`),
-  familyCheck: check('sources_family_check', sql`${table.family} IN ('gpt', 'claude', 'grok')`),
+  familyCheck: check('sources_family_check', sql`${table.family} IN ('gpt', 'claude', 'grok', 'deepseek', 'qwen')`),
   multiplierCheck: check('sources_credit_multiplier_check', sql`${table.creditMultiplier} > 0`),
   statusCheck: check('sources_status_check', sql`${table.status} IN ('active', 'degraded', 'off')`),
   planCheck: check('sources_min_plan_check', sql`${table.minPlan} IN ('free', 'starter', 'pro')`),
@@ -60,7 +60,7 @@ export const userRoutingPreferences = pgTable('user_routing_preferences', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   pk: primaryKey({ columns: [table.userId, table.family] }),
-  familyCheck: check('user_routing_preferences_family_check', sql`${table.family} IN ('gpt', 'claude', 'grok')`),
+  familyCheck: check('user_routing_preferences_family_check', sql`${table.family} IN ('gpt', 'claude', 'grok', 'deepseek', 'qwen')`),
 }));
 
 export const channels = pgTable('channels', {
@@ -101,6 +101,7 @@ export const channels = pgTable('channels', {
   listCachedCheck: check('channels_list_cached_per_mtok_check', sql.raw('list_cached_per_mtok >= 0')),
   sourceIdx: index('channels_source_id_idx').on(table.sourceId),
   publicModelIdx: index('channels_public_model_id_idx').on(table.publicModelId).where(sql`${table.publicModelId} IS NOT NULL`),
+  sourcePublicModelKey: uniqueIndex('channels_source_public_model_key').on(table.sourceId, table.publicModelId).where(sql`${table.publicModelId} IS NOT NULL AND ${table.sourceId} IS NOT NULL`),
   sourceCheck: check('channels_source_check', sql`(${table.isByok} AND ${table.sourceId} IS NULL) OR (NOT ${table.isByok} AND ${table.sourceId} IS NOT NULL)`),
 }));
 

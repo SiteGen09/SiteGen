@@ -12,23 +12,27 @@ Vercel Hobby permits daily cron jobs only.** The scheduled endpoint is
 An external scheduler must send the same header. Probes consume small upstream
 requests but do not debit user credits.
 
-Apply the SQL migrations through `20260920000500_usage_source_snapshot.sql`
+Apply the SQL migrations through `20260920000600_widen_source_families.sql`
 before starting the updated application. The runner loads `.env.local`, records
 versions in Supabase's migration history and serializes concurrent migration
 attempts; rerunning it is a no-op for applied versions. The previous runner
 replayed all DDL and could not migrate the existing database safely.
 
 Review family mappings before a production migration. Existing data has no
-vendor family: known Claude/Grok/GPT model names are mapped explicitly by name;
+vendor family: known Claude/Grok/GPT/DeepSeek/Qwen models are mapped explicitly by name;
 the local stub belongs to GPT. Unknown names stop the migration with an error
 requiring an explicit mapping. Wire protocol is never used to infer family.
 No default sources are invented during backfill. Every existing non-BYOK
 channel receives its own source with its exact previous multiplier.
+The original bootstrap migration now recognizes the additional families for
+fresh databases; the follow-up migration widens both family checks on existing
+databases without replaying the backfill.
 
 ## Behavior and data decisions
 
 - Platform routing uses the user's eligible preferred source, then an eligible
-  family default, then the existing priority/status/id order. Missing model
+  family default, then the existing priority/status/id order. Status is the worse
+  of channel and source status, shared by ranking and the returned channel. Missing model
   coverage does not cause a 404. Cross-source availability fallbacks settle
   against the serving channel's rates. Source family and plan constraints are
   enforced by both the routing action and preference RLS.
@@ -37,7 +41,11 @@ channel receives its own source with its exact previous multiplier.
   prevents that count changing during the update. Every admin mutation and
   default-source change is audited in the same transaction.
 - The old unique public-model index was incompatible with several sources
-  serving one public name; it is now nonunique. The old channel multiplier is
+  serving one public name; it is now nonunique. A partial unique index on
+  `(source_id, public_model_id)` prevents duplicate routes within one source.
+  Migration 006 names existing conflicts and stops; it never silently removes
+  them. Admin create/edit actions return a readable error for the same conflict.
+  The old channel multiplier is
   retained but unwritten. Its temporary BYOK check is superseded by the
   BYOK/source-nullability check, so new BYOK rows need no legacy multiplier write.
   Rollback after adding/reassigning channels requires a deliberate restoration
@@ -49,10 +57,12 @@ channel receives its own source with its exact previous multiplier.
   guessing from today's configuration. Null-channel moderation events render
   correctly. Dashboard clients receive public model names only.
 - The 24 buckets include the current UTC hour and previous 23 hours. Usage and
-  probes aggregate independently to avoid double-counting joins. One probe
-  contributes ten observations to the existing minimum-sample classifier, so
-  an unused but successfully probed model is green. No observations remain
-  gray. Availability and observed SLA count operational observed model-hours;
+  probes aggregate independently to avoid double-counting joins. Each probe
+  supplies ten observations toward the minimum sample, so an unused successfully
+  probed model is green, but a probe failure counts only once. If every probe
+  fails and no real request succeeds, an explicit outage rule applies. No
+  observations remain gray. Availability and observed SLA count operational
+  observed model-hours;
   gray hours are excluded and degraded hours are not operational. This is an
   observed status statistic, not a contractual uptime guarantee.
 - Chat uses verified Supabase sessions and the shared moderation, plan ceiling,
@@ -76,7 +86,18 @@ excluded from token dispatch, fallback, chat selection and probes so a
 per-request rate cannot be accidentally interpreted as a per-million-token rate.
 Implementing additional endpoint protocols or request billing is separate work.
 
-## Verification
+## Follow-up verification
+
+The four review fixes pass `pnpm typecheck`, zero-warning `pnpm lint`, all 327
+tests across 28 files, and `pnpm build`. Migration 006 applied against local
+Supabase and its rerun was a no-op. Direct inserts and admin create/edit tests
+confirm source/model uniqueness; authenticated rendered pages show DeepSeek
+and Qwen. The original release proof below remains a record of that earlier run.
+
+See [ROUTING_FOLLOWUP_VERIFICATION.md](ROUTING_FOLLOWUP_VERIFICATION.md) for
+captured command output, the seven-case classifier table and migration notes.
+
+## Original release verification
 
 - `pnpm supabase:start` and `pnpm db:migrate`: passed on local Supabase; applied
   versions are skipped on rerun.

@@ -3,6 +3,7 @@
 import { priceMetadataFields } from '@/lib/ai/price-metadata';
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
+import type { TransactionSql } from 'postgres';
 
 import { requireAdmin, writeAudit } from '@/lib/api/admin';
 import { ApiError } from '@/lib/api/errors';
@@ -154,6 +155,44 @@ function formValues(formData: FormData): Record<string, string> {
   return out;
 }
 
+/** Same public name is valid across sources, but never twice on one source. */
+async function requireUniqueSourceModel(
+  tx: TransactionSql,
+  data: { id: string; sourceId: string | null; publicModelId: string | null },
+): Promise<void> {
+  if (data.sourceId === null || data.publicModelId === null) return;
+  // Both actions hold the shared assignment lock. Ignore this channel on edit,
+  // but include disabled channels: re-enabling one must not create ambiguity.
+  const duplicates = await tx<{ id: string }[]>`
+    SELECT id FROM channels
+    WHERE source_id = ${data.sourceId} AND public_model_id = ${data.publicModelId}
+      AND id <> ${data.id}
+    LIMIT 1
+  `;
+  if (duplicates[0]) {
+    throw new ApiError(
+      'invalid_request',
+      `public model '${data.publicModelId}' is already assigned to channel '${duplicates[0].id}' on source '${data.sourceId}'`,
+      409,
+    );
+  }
+}
+
+function mutationError(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) return err.message;
+  // The index is the final authority if a service-role writer bypasses the
+  // admin assignment lock between our lookup and write. Keep that error useful.
+  const duplicate = z
+    .object({
+      code: z.literal('23505'),
+      constraint_name: z.literal('channels_source_public_model_key'),
+    })
+    .safeParse(err);
+  return duplicate.success
+    ? 'This source already has a channel for this public model. Choose another source or public model ID.'
+    : fallback;
+}
+
 export async function createChannelAction(
   _prev: ActionState,
   formData: FormData,
@@ -181,6 +220,7 @@ export async function createChannelAction(
       if (dupe[0] !== undefined) {
         throw new ApiError('invalid_request', `channel '${data.id}' already exists`, 409);
       }
+      await requireUniqueSourceModel(tx, data);
       if (data.fallbackTo !== null) {
         const fb = await tx<{ one: number }[]>`
           SELECT 1 AS one FROM channels WHERE id = ${data.fallbackTo}
@@ -216,7 +256,7 @@ export async function createChannelAction(
     revalidatePath('/admin/channels');
     return { status: 'success', message: `channel '${data.id}' created` };
   } catch (err) {
-    return { status: 'error', message: err instanceof ApiError ? err.message : 'create failed' };
+    return { status: 'error', message: mutationError(err, 'create failed') };
   }
 }
 
@@ -248,6 +288,7 @@ export async function updateChannelAction(
       if (before === undefined) {
         throw new ApiError('not_found', `channel '${data.id}' not found`, 404);
       }
+      await requireUniqueSourceModel(tx, data);
 
       if (data.fallbackTo !== null) {
         const target = await tx<{ id: string }[]>`
@@ -304,7 +345,7 @@ export async function updateChannelAction(
     revalidatePath('/admin/channels');
     return { status: 'success', message: `channel '${data.id}' updated` };
   } catch (err) {
-    return { status: 'error', message: err instanceof ApiError ? err.message : 'update failed' };
+    return { status: 'error', message: mutationError(err, 'update failed') };
   }
 }
 

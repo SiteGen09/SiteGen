@@ -1,7 +1,7 @@
 -- A source owns markup and vendor family, while channels retain wire protocol.
 CREATE TABLE sources (
   id text PRIMARY KEY,
-  family text NOT NULL CHECK (family IN ('gpt', 'claude', 'grok')),
+  family text NOT NULL CHECK (family IN ('gpt', 'claude', 'grok', 'deepseek', 'qwen')),
   label text NOT NULL,
   description text NOT NULL DEFAULT '',
   credit_multiplier numeric(10,2) NOT NULL CHECK (credit_multiplier > 0),
@@ -23,10 +23,12 @@ CREATE INDEX channels_source_id_idx ON channels(source_id);
 -- The old data has no family. Infer only known model names, NEVER protocol;
 -- unfamiliar production names require an explicit mapping before migration.
 -- The local stub is deliberately assigned to GPT for development exercises.
+-- This widened bootstrap mapping covers databases that have not applied this
+-- migration yet. Migration 006 widens the checks on already-migrated databases.
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM channels WHERE NOT is_byok AND
-    lower(coalesce(public_model_id, '') || ' ' || model_id) !~ '(claude|grok|gpt|(^|[ /])o[134]([ -]|$)|stub)') THEN
+    lower(coalesce(public_model_id, '') || ' ' || model_id) !~ '(claude|grok|deepseek|qwen|gpt|(^|[ /])o[134]([ -]|$)|stub)') THEN
     RAISE EXCEPTION 'Unmapped channel family: add an explicit model-name mapping to routing_sources before applying';
   END IF;
 END $$;
@@ -34,7 +36,10 @@ INSERT INTO sources (id, family, label, description, credit_multiplier, min_plan
 SELECT 'legacy-' || id,
   CASE WHEN lower(coalesce(public_model_id, '') || ' ' || model_id) LIKE '%claude%' THEN 'claude'
        WHEN lower(coalesce(public_model_id, '') || ' ' || model_id) LIKE '%grok%' THEN 'grok'
-       ELSE 'gpt' END,
+       WHEN lower(coalesce(public_model_id, '') || ' ' || model_id) LIKE '%deepseek%' THEN 'deepseek'
+       WHEN lower(coalesce(public_model_id, '') || ' ' || model_id) LIKE '%qwen%' THEN 'qwen'
+       WHEN lower(coalesce(public_model_id, '') || ' ' || model_id) ~ '(gpt|(^|[ /])o[134]([ -]|$)|stub)' THEN 'gpt'
+       ELSE NULL END,
   label, 'Migrated source; retains the original channel price.', credit_multiplier, min_plan
 FROM channels WHERE NOT is_byok;
 UPDATE channels SET source_id = 'legacy-' || id WHERE NOT is_byok;
@@ -48,7 +53,7 @@ CREATE INDEX channels_public_model_id_idx ON channels(public_model_id) WHERE pub
 
 CREATE TABLE user_routing_preferences (
   user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
-  family text NOT NULL CHECK (family IN ('gpt', 'claude', 'grok')),
+  family text NOT NULL CHECK (family IN ('gpt', 'claude', 'grok', 'deepseek', 'qwen')),
   source_id text NOT NULL REFERENCES sources(id),
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, family)

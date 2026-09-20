@@ -171,8 +171,9 @@ export default async function StatusPage() {
           <span className="font-medium text-zinc-700">How health is decided.</span> Over a rolling{' '}
           {STATUS_WINDOW_HOURS}-hour window: under 10% upstream failures is operational, 10% or more
           is degraded, 50% or more is an outage. A model needs at least 10 requests before the rate
-          is trusted. Each hourly probe contributes ten observations so unused models have a
-          measured signal. Hours with no evidence stay gray.{' '}
+          is trusted. Each hourly probe supplies ten observations toward that minimum, but a failed
+          probe counts as only one failure. If every probe fails and no real request succeeds, the
+          model is in outage. Hours with no evidence stay gray.{' '}
           <span className="font-medium text-zinc-700">Errors</span> counts upstream failures;
           rejected requests (bad input, moderation, or too few credits) are listed separately
           because they are not the model faltering. p95 latency covers successful requests only. See{' '}

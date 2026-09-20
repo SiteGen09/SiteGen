@@ -6,6 +6,7 @@ import {
   selectChannel,
   selectChannelByModel,
 } from '@/lib/ai/channels';
+import type { Family } from '@/lib/ai/source-types';
 
 interface QueryResult {
   data: unknown;
@@ -56,7 +57,7 @@ interface Row {
   source_id: string | null;
   sources: {
     id: string;
-    family: 'claude';
+    family: Family;
     label: string;
     description: string;
     credit_multiplier: string | number;
@@ -159,6 +160,45 @@ describe('selectChannel', () => {
     const channel = await selectChannel('site.spec', 'free');
     expect(channel?.id).toBe('healthy');
   });
+
+  it('ranks the source status before the id tie-breaker in both selectors', async () => {
+    state.result = {
+      data: [
+        row({
+          id: 'a-degraded-source',
+          public_model_id: 'shared-model',
+          priority: 5,
+          source_id: 'degraded-source',
+          sources: source({ id: 'degraded-source', status: 'degraded' }),
+        }),
+        row({ id: 'z-healthy-source', public_model_id: 'shared-model', priority: 5 }),
+      ],
+      error: null,
+    };
+    expect(await selectChannel('site.spec', 'free')).toMatchObject({
+      id: 'z-healthy-source',
+      status: 'active',
+    });
+    expect(await selectChannelByModel('shared-model', 'free')).toMatchObject({
+      id: 'z-healthy-source',
+      status: 'active',
+    });
+  });
+
+  it.each([
+    ['active', 'degraded'],
+    ['degraded', 'active'],
+    ['degraded', 'degraded'],
+  ])(
+    'returns degraded for channel %s and source %s from selection and fallback lookup',
+    async (channelStatus, sourceStatus) => {
+      const candidate = row({ status: channelStatus, sources: source({ status: sourceStatus }) });
+      state.result = { data: [candidate], error: null };
+      expect((await selectChannel('site.spec', 'free'))?.status).toBe('degraded');
+      state.result = { data: candidate, error: null };
+      expect((await resolveChannel(candidate.id))?.status).toBe('degraded');
+    },
+  );
 
   it('carries the credit multiplier through as a string', async () => {
     state.result = {
@@ -263,6 +303,15 @@ describe('source cascade', () => {
     expect(await selectChannelByModel('m', 'free', preferences)).toMatchObject({
       id: 'preferred',
       creditMultiplier: '1.85',
+    });
+  });
+  it('preserves the preference cascade even when the chosen source is degraded', async () => {
+    const preferred = chosen();
+    preferred.sources = source({ id: 'chosen', status: 'degraded' });
+    state.result = { data: [preferred, standard()], error: null };
+    expect(await selectChannelByModel('m', 'free', preferences)).toMatchObject({
+      id: 'preferred',
+      status: 'degraded',
     });
   });
   it('falls back to default when choice lacks model coverage', async () => {

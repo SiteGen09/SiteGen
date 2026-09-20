@@ -32,11 +32,85 @@ describe('classifyModelHealth', () => {
 });
 
 describe('synthetic evidence', () => {
-  it('makes an unused successfully probed model operational', () => {
-    expect(classifyObservedHealth('active', 0, 0, 1, 0).health).toBe('operational');
-  });
-  it('makes a failed probe without traffic an outage', () => {
-    expect(classifyObservedHealth('active', 0, 0, 1, 1).health).toBe('outage');
+  // Keep the reported regressions together: real successes must not turn into
+  // an outage because the scheduled probe had a single transient failure.
+  it.each([
+    {
+      name: '1 good probe, no traffic',
+      requests: 0,
+      failed: 0,
+      probes: 1,
+      probeFailures: 0,
+      health: 'operational',
+    },
+    {
+      name: '1 failed probe, no traffic',
+      requests: 0,
+      failed: 0,
+      probes: 1,
+      probeFailures: 1,
+      health: 'outage',
+    },
+    {
+      name: '5 real requests all OK + 1 failed probe',
+      requests: 5,
+      failed: 0,
+      probes: 1,
+      probeFailures: 1,
+      health: 'operational',
+    },
+    {
+      name: '20 real requests, 2 failed, no probe',
+      requests: 20,
+      failed: 2,
+      probes: 0,
+      probeFailures: 0,
+      health: 'degraded',
+    },
+    {
+      name: '20 real requests all OK + 1 failed probe',
+      requests: 20,
+      failed: 0,
+      probes: 1,
+      probeFailures: 1,
+      health: 'operational',
+    },
+    {
+      name: 'all probes failed, no traffic',
+      requests: 0,
+      failed: 0,
+      probes: 3,
+      probeFailures: 3,
+      health: 'outage',
+    },
+    {
+      name: 'all probes and real requests failed',
+      requests: 2,
+      failed: 2,
+      probes: 2,
+      probeFailures: 2,
+      health: 'outage',
+    },
+    {
+      name: 'mixed successful traffic + 1 failed probe',
+      requests: 5,
+      failed: 1,
+      probes: 1,
+      probeFailures: 1,
+      health: 'degraded',
+    },
+    {
+      name: 'successful and failed probes without traffic',
+      requests: 0,
+      failed: 0,
+      probes: 2,
+      probeFailures: 1,
+      health: 'operational',
+    },
+  ])('$name → $health', ({ requests, failed, probes, probeFailures, health }) => {
+    expect(classifyObservedHealth('active', requests, failed, probes, probeFailures).health).toBe(
+      health,
+    );
   });
   it('does not invent evidence for missing buckets', () => {
     expect(classifyObservedHealth('active', 0, 0, 0, 0).health).toBe('idle');

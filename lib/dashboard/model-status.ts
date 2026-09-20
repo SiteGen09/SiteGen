@@ -52,7 +52,7 @@ export interface ModelStatusRow {
   failed: number;
   /** Requests turned away before dispatch (bad input, moderation, credits). */
   rejected: number;
-  /** 0–1 over `requests`, or null when the sample is too small to mean anything. */
+  /** 0–1 over weighted observations, or null when the sample is too small. */
   errorRate: number | null;
   p95LatencyMs: number | null;
   lastSuccessAt: string | null;
@@ -95,8 +95,10 @@ export function classifyModelHealth(
 /**
  * A scheduled probe is deliberate evidence even when nobody called a model.
  * Weight each probe as MIN_SAMPLE observations so it reaches the existing
- * classifier threshold; usage still contributes its actual successes/failures.
- * No evidence remains idle, and rejected requests never dilute failure rates.
+ * classifier threshold, but count each probe failure only once. A transient
+ * probe failure must not overwhelm successful user traffic. If every probe
+ * failed and no real request succeeded, there is direct outage evidence instead
+ * of a ratio to dilute. No evidence stays idle; rejected requests are excluded.
  */
 export function classifyObservedHealth(
   status: string,
@@ -107,11 +109,12 @@ export function classifyObservedHealth(
 ) {
   // Today's operator flag cannot invent evidence for an unobserved past hour.
   if (requests === 0 && probes === 0) return { health: 'idle' as const, errorRate: null };
-  return classifyModelHealth(
-    status,
-    requests + probes * MIN_SAMPLE,
-    failed + probeFailures * MIN_SAMPLE,
-  );
+  // This explicit case keeps a completely unreachable model red without
+  // multiplying synthetic failures in hours that have successful traffic.
+  if (probes > 0 && probeFailures === probes && requests === failed) {
+    return { health: 'outage' as const, errorRate: 1 };
+  }
+  return classifyModelHealth(status, requests + probes * MIN_SAMPLE, failed + probeFailures);
 }
 
 export interface ModelHour {

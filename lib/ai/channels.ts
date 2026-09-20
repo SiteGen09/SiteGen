@@ -13,26 +13,38 @@ import { createServiceClient } from '@/lib/supabase/service';
  * carried as a string all the way to {@link ChannelRow.creditMultiplier}
  * rather than being parsed through a lossy float.
  */
-const channelRowSchema = z.object({
-  id: z.string(),
-  label: z.string(),
-  task: z.string(),
-  provider: z.enum(PROVIDERS),
-  base_url: z.string().nullable(),
-  model_id: z.string(),
-  is_byok: z.boolean(),
-  pricing_type: z.enum(['token', 'request']),
-  source_id: z.string().nullable(),
-  sources: sourceSchema.nullable(),
-  status: z.string(),
-  min_plan: z.string(),
-  fallback_to: z.string().nullable(),
-  priority: z.number().int(),
-  input_per_mtok: z.coerce.number().nonnegative(),
-  output_per_mtok: z.coerce.number().nonnegative(),
-  cached_per_mtok: z.coerce.number().nonnegative(),
-  public_model_id: z.string().nullable(),
-});
+const channelRowSchema = z
+  .object({
+    id: z.string(),
+    label: z.string(),
+    task: z.string(),
+    provider: z.enum(PROVIDERS),
+    base_url: z.string().nullable(),
+    model_id: z.string(),
+    is_byok: z.boolean(),
+    pricing_type: z.enum(['token', 'request']),
+    source_id: z.string().nullable(),
+    sources: sourceSchema.nullable(),
+    status: z.string(),
+    min_plan: z.string(),
+    fallback_to: z.string().nullable(),
+    priority: z.number().int(),
+    input_per_mtok: z.coerce.number().nonnegative(),
+    output_per_mtok: z.coerce.number().nonnegative(),
+    cached_per_mtok: z.coerce.number().nonnegative(),
+    public_model_id: z.string().nullable(),
+  })
+  .transform((row) => ({
+    ...row,
+    // Normalize once at the database boundary. Ranking and the fallback walker
+    // must agree: an active channel on a degraded source is degraded end to end.
+    effectiveStatus:
+      row.status === 'off' || row.sources?.status === 'off'
+        ? 'off'
+        : row.status === 'degraded' || row.sources?.status === 'degraded'
+          ? 'degraded'
+          : row.status,
+  }));
 
 type ChannelDbRow = z.infer<typeof channelRowSchema>;
 
@@ -52,7 +64,7 @@ function toChannelRow(row: ChannelDbRow): ChannelRow {
     modelId: row.model_id,
     creditMultiplier: row.is_byok ? '0' : sourceSchema.parse(row.sources).credit_multiplier,
     isByok: row.is_byok,
-    status: row.sources?.status === 'degraded' ? 'degraded' : row.status,
+    status: row.effectiveStatus,
     fallbackTo: row.fallback_to,
     rates: {
       inputPerMTok: row.input_per_mtok,
@@ -69,7 +81,8 @@ function toChannelRow(row: ChannelDbRow): ChannelRow {
 function bestOf(rows: ChannelDbRow[]): ChannelRow | null {
   const ranked = [...rows].sort((a, b) => {
     if (a.priority !== b.priority) return b.priority - a.priority;
-    const statusDelta = (STATUS_RANK[b.status] ?? 0) - (STATUS_RANK[a.status] ?? 0);
+    const statusDelta =
+      (STATUS_RANK[b.effectiveStatus] ?? 0) - (STATUS_RANK[a.effectiveStatus] ?? 0);
     if (statusDelta !== 0) return statusDelta;
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
