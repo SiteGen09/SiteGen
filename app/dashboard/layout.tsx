@@ -10,6 +10,7 @@ const NAV = [
   { href: '/dashboard/keys', label: 'API Keys' },
   { href: '/dashboard/models', label: 'Models' },
   { href: '/dashboard/routing', label: 'Routing' },
+  { href: '/dashboard/chat', label: 'Chat' },
   { href: '/dashboard/status', label: 'Model status' },
   { href: '/dashboard/usage', label: 'Usage' },
   { href: '/dashboard/credentials', label: 'Credentials' },

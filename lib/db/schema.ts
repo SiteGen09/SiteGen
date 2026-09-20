@@ -224,3 +224,28 @@ export const modelHealthChecks = pgTable('model_health_checks', {
   statusCheck: check('model_health_checks_status_check', sql.raw("status IN ('ok', 'error', 'timeout')")),
   latencyCheck: check('model_health_checks_latency_ms_check', sql.raw('latency_ms >= 0')),
 }));
+
+export const chatConversations = pgTable('chat_conversations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => profiles.id, { onDelete: 'cascade' }),
+  title: text('title').notNull(),
+  model: text('model').notNull(),
+  activeRequestId: uuid('active_request_id'),
+  lockedUntil: timestamp('locked_until', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({ userIdx: index('chat_conversations_user_idx').on(table.userId, table.updatedAt) }));
+
+export const chatMessages = pgTable('chat_messages', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  conversationId: uuid('conversation_id').notNull().references(() => chatConversations.id, { onDelete: 'cascade' }),
+  role: text('role').notNull(),
+  content: text('content').notNull(),
+  model: text('model').notNull(),
+  tokens: integer('tokens'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  conversationIdx: index('chat_messages_conversation_idx').on(table.conversationId, table.createdAt),
+  roleCheck: check('chat_messages_role_check', sql.raw("role IN ('user','assistant','system')")),
+  tokensCheck: check('chat_messages_tokens_check', sql.raw('tokens >= 0')),
+}));

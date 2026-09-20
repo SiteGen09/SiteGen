@@ -7,7 +7,6 @@ import { resolveChannel, selectChannelByModel } from '@/lib/ai/channels';
 import type { ChannelRow } from '@/lib/ai/fallback';
 import { costUsd, creditsForUsage, type TokenRates } from '@/lib/ai/pricing';
 import type { ProviderCreds } from '@/lib/ai/provider';
-import type { AuthenticatedKey } from '@/lib/api/api-key-auth';
 import { ApiError, type ErrorCode } from '@/lib/api/errors';
 import { openAiErrorBody } from '@/lib/api/openai-errors';
 import {
@@ -31,6 +30,12 @@ import { checkContent } from '@/lib/moderation/check';
 import { recordStrikeAndMaybeSuspend } from '@/lib/moderation/strikes';
 import type { Logger } from '@/lib/log';
 import { createServiceClient } from '@/lib/supabase/service';
+
+/** Shared caller identity: dashboard sessions do not manufacture an API key. */
+export interface CallIdentity {
+  ownerId: string;
+  apiKeyId: string | null;
+}
 
 export const SSE_HEADERS = {
   'content-type': 'text/event-stream; charset=utf-8',
@@ -127,7 +132,7 @@ export async function resolveChannelAndCreds(
 export interface UsageEventInput {
   requestId: string;
   userId: string;
-  apiKeyId: string;
+  apiKeyId: string | null;
   channelId: string | null;
   status: 'ok' | 'failed' | 'rejected';
   latencyMs: number | null;
@@ -163,7 +168,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
 /** Protocol-agnostic preflight input. `maxOutputField` only names the wire field in the refusal message. */
 export interface PreflightInput {
   requestId: string;
-  auth: AuthenticatedKey;
+  auth: CallIdentity;
   log: Logger;
   model: string;
   messages: ChatMessage[];
@@ -284,7 +289,7 @@ export async function prepareCall(input: PreflightInput): Promise<Preflight> {
 /** Settles the hold and writes the `ok` usage event. Returns what was charged. */
 export interface SettleInput {
   requestId: string;
-  auth: AuthenticatedKey;
+  auth: CallIdentity;
   log: Logger;
   channelId: string;
   held: boolean;
@@ -327,7 +332,7 @@ export async function settleCall(input: SettleInput): Promise<{ creditsCharged: 
 /** Releases any hold and writes the `failed` usage event. */
 export async function recordCallFailure(input: {
   requestId: string;
-  auth: AuthenticatedKey;
+  auth: CallIdentity;
   log: Logger;
   channelId: string | null;
   held: boolean;

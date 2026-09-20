@@ -55,6 +55,7 @@ beforeAll(async () => {
   // columns are NOT NULL, so they must be supplied.
   const { error: channelErr } = await admin.from('channels').upsert({
     id: 'iso-test-channel',
+    is_byok: true,
     label: 'Isolation Test',
     task: 'site.spec',
     provider: 'anthropic',
@@ -125,7 +126,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (userA) await admin.auth.admin.deleteUser(userA.id);
-  if (userB) await admin.auth.admin.deleteUser(userB.id);
+  if (userB) {
+    await admin.from('admin_audit_log').delete().eq('actor_id', userB.id);
+    await admin.auth.admin.deleteUser(userB.id);
+  }
   await admin.from('channels').delete().eq('id', 'iso-test-channel');
 });
 
@@ -229,6 +233,7 @@ describe('cross-tenant isolation', () => {
     for (const table of [
       'profiles', 'api_keys', 'entitlements', 'ledger', 'usage_events',
       'channels', 'provider_credentials', 'billing_events', 'admin_audit_log',
+      'sources', 'user_routing_preferences', 'model_health_checks', 'chat_conversations', 'chat_messages',
     ]) {
       const { data, error } = await anon.from(table).select('*');
       expect(error !== null || data?.length === 0, `table ${table} leaked to anon`).toBe(true);
