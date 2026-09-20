@@ -2,9 +2,8 @@ import { z } from 'zod';
 
 import { createServiceClient } from '@/lib/supabase/service';
 
-export const FAMILIES = ['gpt', 'claude', 'grok'] as const;
-export type Family = (typeof FAMILIES)[number];
-export type RoutingPreferences = ReadonlyMap<Family, string>;
+import { FAMILIES, type Family } from './source-types';
+export { FAMILIES, type Family, type RoutingPreferences } from './source-types';
 
 /** Shared parser: PostgREST may serialize numeric as either string or number. */
 export const sourceSchema = z.object({

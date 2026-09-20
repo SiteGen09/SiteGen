@@ -21,6 +21,7 @@ const channelRowSchema = z.object({
   base_url: z.string().nullable(),
   model_id: z.string(),
   is_byok: z.boolean(),
+  pricing_type: z.enum(['token', 'request']),
   source_id: z.string().nullable(),
   sources: sourceSchema.nullable(),
   status: z.string(),
@@ -36,7 +37,7 @@ const channelRowSchema = z.object({
 type ChannelDbRow = z.infer<typeof channelRowSchema>;
 
 const CHANNEL_COLUMNS =
-  'id, label, task, provider, base_url, model_id, is_byok, source_id, status, min_plan, fallback_to, priority, input_per_mtok, output_per_mtok, cached_per_mtok, public_model_id';
+  'id, label, task, provider, base_url, model_id, is_byok, pricing_type, source_id, status, min_plan, fallback_to, priority, input_per_mtok, output_per_mtok, cached_per_mtok, public_model_id';
 // An inner join excludes malformed platform rows without embedded filters. BYOK
 // and fallback lookup use a left join because BYOK intentionally has no source.
 const PLATFORM_COLUMNS = `${CHANNEL_COLUMNS}, sources!inner(${SOURCE_COLUMNS})`;
@@ -77,16 +78,30 @@ function bestOf(rows: ChannelDbRow[]): ChannelRow | null {
 
 /** Source minimums cannot be bypassed by a less restricted channel on it. */
 function eligibleForPlan(row: ChannelDbRow, planKey: string): boolean {
-  return row.status !== 'off' && planMeetsMinimum(planKey, row.min_plan) &&
-    (row.is_byok || (row.sources !== null && row.sources.status !== 'off' &&
-      planMeetsMinimum(planKey, row.sources.min_plan)));
+  // All current dispatchers bill tokens. Request-priced catalog entries must
+  // wait for an endpoint that understands their unit instead of undercharging.
+  return (
+    row.pricing_type === 'token' &&
+    row.status !== 'off' &&
+    planMeetsMinimum(planKey, row.min_plan) &&
+    (row.is_byok ||
+      (row.sources !== null &&
+        row.sources.status !== 'off' &&
+        planMeetsMinimum(planKey, row.sources.min_plan)))
+  );
 }
 
 /** A preference is a best effort: missing model coverage must not become a 404. */
 function preferredOf(rows: ChannelDbRow[], preferences: RoutingPreferences): ChannelRow | null {
-  return bestOf(rows.filter((row) => row.sources !== null &&
-    preferences.get(row.sources.family) === row.source_id)) ??
-    bestOf(rows.filter((row) => row.sources?.is_default === true)) ?? bestOf(rows);
+  return (
+    bestOf(
+      rows.filter(
+        (row) => row.sources !== null && preferences.get(row.sources.family) === row.source_id,
+      ),
+    ) ??
+    bestOf(rows.filter((row) => row.sources?.is_default === true)) ??
+    bestOf(rows)
+  );
 }
 
 /**
@@ -97,10 +112,7 @@ function preferredOf(rows: ChannelDbRow[], preferences: RoutingPreferences): Cha
  * channels are BYOK-only and would bill the platform's own key for free, so
  * they are excluded here and reached through {@link selectByokChannel}.
  */
-export async function selectChannel(
-  task: TaskAlias,
-  planKey: string,
-): Promise<ChannelRow | null> {
+export async function selectChannel(task: TaskAlias, planKey: string): Promise<ChannelRow | null> {
   const service = createServiceClient();
   const { data, error } = await service
     .from('channels')
@@ -197,16 +209,29 @@ export async function listPublicModels(
   planKey: string,
   preferences: RoutingPreferences = new Map(),
 ): Promise<string[]> {
-  const { data, error } = await createServiceClient().from('channels')
-    .select(PLATFORM_COLUMNS).not('public_model_id', 'is', null)
-    .neq('status', 'off').eq('is_byok', false);
+  const { data, error } = await createServiceClient()
+    .from('channels')
+    .select(PLATFORM_COLUMNS)
+    .not('public_model_id', 'is', null)
+    .neq('status', 'off')
+    .eq('is_byok', false);
   if (error) throw new Error(`public model lookup failed: ${error.message}`);
-  const rows = channelRowSchema.array().parse(data ?? [])
+  const rows = channelRowSchema
+    .array()
+    .parse(data ?? [])
     .filter((row) => eligibleForPlan(row, planKey));
   // Several sources can serve the same public name; enumerate names once using
   // precisely the same eligibility and cascade as the dispatch path.
-  return [...new Set(rows.flatMap((row) => row.public_model_id === null ? [] : [row.public_model_id]))]
-    .filter((id) => preferredOf(rows.filter((row) => row.public_model_id === id), preferences) !== null)
+  return [
+    ...new Set(rows.flatMap((row) => (row.public_model_id === null ? [] : [row.public_model_id]))),
+  ]
+    .filter(
+      (id) =>
+        preferredOf(
+          rows.filter((row) => row.public_model_id === id),
+          preferences,
+        ) !== null,
+    )
     .sort();
 }
 
@@ -229,6 +254,7 @@ export async function resolveChannel(id: string): Promise<ChannelRow | null> {
   if (data === null) return null;
 
   const row = channelRowSchema.parse(data);
+  if (row.pricing_type !== 'token') return null;
   if (!row.is_byok && (row.sources === null || row.sources.status === 'off')) return null;
   return toChannelRow(row);
 }

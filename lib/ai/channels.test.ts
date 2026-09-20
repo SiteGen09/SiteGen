@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { listPublicModels, selectChannel, selectChannelByModel } from '@/lib/ai/channels';
+import {
+  listPublicModels,
+  resolveChannel,
+  selectChannel,
+  selectChannelByModel,
+} from '@/lib/ai/channels';
 
 interface QueryResult {
   data: unknown;
@@ -49,8 +54,18 @@ interface Row {
   base_url: string | null;
   model_id: string;
   source_id: string | null;
-  sources: { id: string; family: 'claude'; label: string; description: string; credit_multiplier: string | number; status: string; min_plan: string; is_default: boolean } | null;
+  sources: {
+    id: string;
+    family: 'claude';
+    label: string;
+    description: string;
+    credit_multiplier: string | number;
+    status: string;
+    min_plan: string;
+    is_default: boolean;
+  } | null;
   is_byok: boolean;
+  pricing_type: 'token' | 'request';
   status: string;
   min_plan: string;
   fallback_to: string | null;
@@ -62,8 +77,17 @@ interface Row {
 }
 
 function source(overrides: Partial<NonNullable<Row['sources']>> = {}): NonNullable<Row['sources']> {
-  return { id: 'source-1', family: 'claude', label: 'Source', description: '',
-    credit_multiplier: '1.00', status: 'active', min_plan: 'free', is_default: false, ...overrides };
+  return {
+    id: 'source-1',
+    family: 'claude',
+    label: 'Source',
+    description: '',
+    credit_multiplier: '1.00',
+    status: 'active',
+    min_plan: 'free',
+    is_default: false,
+    ...overrides,
+  };
 }
 
 function row(overrides: Partial<Row> = {}): Row {
@@ -77,6 +101,7 @@ function row(overrides: Partial<Row> = {}): Row {
     source_id: 'source-1',
     sources: source(),
     is_byok: false,
+    pricing_type: 'token',
     status: 'active',
     min_plan: 'free',
     fallback_to: null,
@@ -136,7 +161,10 @@ describe('selectChannel', () => {
   });
 
   it('carries the credit multiplier through as a string', async () => {
-    state.result = { data: [row({ id: 'cheap', sources: source({ credit_multiplier: 1.2 }) })], error: null };
+    state.result = {
+      data: [row({ id: 'cheap', sources: source({ credit_multiplier: 1.2 }) })],
+      error: null,
+    };
     const channel = await selectChannel('site.spec', 'free');
     expect(channel?.creditMultiplier).toBe('1.2');
   });
@@ -222,11 +250,20 @@ describe('listPublicModels', () => {
 // A choice is best effort and cannot bypass source eligibility.
 describe('source cascade', () => {
   const preferences = new Map<'claude', string>([['claude', 'chosen']]);
-  const chosen = () => row({ id: 'preferred', source_id: 'chosen', sources: source({ id: 'chosen', credit_multiplier: '1.85' }) });
-  const standard = () => row({ id: 'default', priority: 10, sources: source({ is_default: true }) });
+  const chosen = () =>
+    row({
+      id: 'preferred',
+      source_id: 'chosen',
+      sources: source({ id: 'chosen', credit_multiplier: '1.85' }),
+    });
+  const standard = () =>
+    row({ id: 'default', priority: 10, sources: source({ is_default: true }) });
   it('prefers choice over default and priority', async () => {
     state.result = { data: [chosen(), standard()], error: null };
-    expect(await selectChannelByModel('m', 'free', preferences)).toMatchObject({ id: 'preferred', creditMultiplier: '1.85' });
+    expect(await selectChannelByModel('m', 'free', preferences)).toMatchObject({
+      id: 'preferred',
+      creditMultiplier: '1.85',
+    });
   });
   it('falls back to default when choice lacks model coverage', async () => {
     state.result = { data: [standard(), row({ priority: 100 })], error: null };
@@ -234,7 +271,10 @@ describe('source cascade', () => {
   });
   it.each(['off', 'locked'])('excludes an %s source', async (reason) => {
     const unavailable = chosen();
-    unavailable.sources = source({ status: reason === 'off' ? 'off' : 'active', min_plan: reason === 'locked' ? 'pro' : 'free' });
+    unavailable.sources = source({
+      status: reason === 'off' ? 'off' : 'active',
+      min_plan: reason === 'locked' ? 'pro' : 'free',
+    });
     state.result = { data: [unavailable, standard()], error: null };
     expect((await selectChannelByModel('m', 'free', preferences))?.id).toBe('default');
   });
@@ -243,7 +283,23 @@ describe('source cascade', () => {
     expect((await selectChannelByModel('m', 'free', preferences))?.id).toBe('any');
   });
   it('deduplicates model names', async () => {
-    state.result = { data: [row({ public_model_id: 'm' }), row({ id: 'other', public_model_id: 'm' })], error: null };
+    state.result = {
+      data: [row({ public_model_id: 'm' }), row({ id: 'other', public_model_id: 'm' })],
+      error: null,
+    };
     expect(await listPublicModels('free', preferences)).toEqual(['m']);
+  });
+});
+
+// A catalog unit must never be interpreted as a different billing unit.
+describe('request-priced catalog entries', () => {
+  it('excludes them from token dispatch, model enumeration and fallback', async () => {
+    const requestRow = row({ pricing_type: 'request', public_model_id: 'request-model' });
+    state.result = { data: [requestRow], error: null };
+    expect(await selectChannel('site.spec', 'pro')).toBeNull();
+    expect(await selectChannelByModel('request-model', 'pro')).toBeNull();
+    expect(await listPublicModels('pro')).toEqual([]);
+    state.result = { data: requestRow, error: null };
+    expect(await resolveChannel(requestRow.id)).toBeNull();
   });
 });

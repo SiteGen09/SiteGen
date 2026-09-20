@@ -1,5 +1,6 @@
 'use server';
 
+import { priceMetadataFields } from '@/lib/ai/price-metadata';
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 
@@ -44,6 +45,7 @@ const publicModelId = z
   .refine((v) => v === null || v.length <= 128, 'public model id must be <= 128 characters');
 
 const baseFields = {
+  ...priceMetadataFields,
   label: z.string().trim().min(1, 'label is required').max(120),
   task: z.enum(TASKS),
   provider: z.enum(PROVIDERS),
@@ -54,14 +56,12 @@ const baseFields = {
   modelId: z.string().trim().min(1, 'model id is required').max(200),
   publicModelId,
   isByok: z.string().transform((value) => value === 'on'),
-  creditMultiplier: z.coerce
-    .number()
-    .refine(Number.isFinite, 'multiplier must be a number')
-    .refine((n) => n >= 0, 'multiplier must be >= 0'),
-  status: z.enum(STATUSES),
-  minPlan: z
+  sourceId: z
     .string()
-    .refine((v): v is PlanKey => isPlanKey(v), 'invalid plan'),
+    .trim()
+    .transform((v) => v || null),
+  status: z.enum(STATUSES),
+  minPlan: z.string().refine((v): v is PlanKey => isPlanKey(v), 'invalid plan'),
   fallbackTo: z
     .string()
     .trim()
@@ -79,11 +79,15 @@ const baseFields = {
  * the channel would then match no credential at all.
  */
 function checkBaseUrl(
-  value: { provider: Provider; baseUrl: string | null; isByok: boolean; creditMultiplier: number },
+  value: { provider: Provider; baseUrl: string | null; isByok: boolean; sourceId: string | null },
   ctx: z.RefinementCtx,
 ): void {
-  if (value.isByok && value.creditMultiplier !== 0) {
-    ctx.addIssue({ code: 'custom', path: ['creditMultiplier'], message: 'BYOK channels must have a zero multiplier' });
+  if (value.isByok ? value.sourceId !== null : value.sourceId === null) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['sourceId'],
+      message: 'Choose a source for platform channels; BYOK channels must have none',
+    });
   }
   if (requiresBaseUrl(value.provider) && value.baseUrl === null) {
     ctx.addIssue({
@@ -119,6 +123,14 @@ const updateSchema = z
 function formValues(formData: FormData): Record<string, string> {
   const out: Record<string, string> = {};
   for (const key of [
+    'vendor',
+    'contextWindow',
+    'endpoints',
+    'tags',
+    'pricingType',
+    'listInputPerMTok',
+    'listOutputPerMTok',
+    'listCachedPerMTok',
     'id',
     'label',
     'task',
@@ -126,7 +138,7 @@ function formValues(formData: FormData): Record<string, string> {
     'baseUrl',
     'modelId',
     'publicModelId',
-    'creditMultiplier',
+    'sourceId',
     'isByok',
     'status',
     'minPlan',
@@ -140,11 +152,6 @@ function formValues(formData: FormData): Record<string, string> {
     out[key] = typeof value === 'string' ? value : '';
   }
   return out;
-}
-
-/** numeric(10,2) column — clamp to two decimals so we store what admins see. */
-function toMultiplier(value: number): number {
-  return Math.round(value * 100) / 100;
 }
 
 export async function createChannelAction(
@@ -164,6 +171,12 @@ export async function createChannelAction(
     }
 
     await sql.begin(async (tx) => {
+      // Source repricing shares this lock so its confirmation count stays stable.
+      await tx`SELECT pg_advisory_xact_lock(20260921)`;
+      if (data.sourceId !== null) {
+        const source = await tx`SELECT id FROM sources WHERE id = ${data.sourceId} FOR SHARE`;
+        if (!source[0]) throw new ApiError('invalid_request', 'source does not exist', 400);
+      }
       const dupe = await tx<{ one: number }[]>`SELECT 1 AS one FROM channels WHERE id = ${data.id}`;
       if (dupe[0] !== undefined) {
         throw new ApiError('invalid_request', `channel '${data.id}' already exists`, 409);
@@ -173,18 +186,10 @@ export async function createChannelAction(
           SELECT 1 AS one FROM channels WHERE id = ${data.fallbackTo}
         `;
         if (fb[0] === undefined) {
-          throw new ApiError('invalid_request', `fallback '${data.fallbackTo}' does not exist`, 400);
-        }
-      }
-      if (data.publicModelId !== null) {
-        const clash = await tx<{ one: number }[]>`
-          SELECT 1 AS one FROM channels WHERE public_model_id = ${data.publicModelId}
-        `;
-        if (clash[0] !== undefined) {
           throw new ApiError(
             'invalid_request',
-            `public model id '${data.publicModelId}' is already in use`,
-            409,
+            `fallback '${data.fallbackTo}' does not exist`,
+            400,
           );
         }
       }
@@ -192,14 +197,16 @@ export async function createChannelAction(
       const rows = await tx`
         INSERT INTO channels
           (id, label, task, provider, base_url, model_id, public_model_id,
-           credit_multiplier, is_byok, status, min_plan, fallback_to, priority,
-           input_per_mtok, output_per_mtok, cached_per_mtok)
+           source_id, is_byok, status, min_plan, fallback_to, priority,
+           input_per_mtok, output_per_mtok, cached_per_mtok, vendor, context_window, endpoints, tags, pricing_type,
+           list_input_per_mtok, list_output_per_mtok, list_cached_per_mtok)
         VALUES (
           ${data.id}, ${data.label}, ${data.task}, ${data.provider}, ${data.baseUrl},
           ${data.modelId}, ${data.publicModelId},
-          ${toMultiplier(data.creditMultiplier)}, ${data.isByok}, ${data.status},
+          ${data.sourceId}, ${data.isByok}, ${data.status},
           ${data.minPlan}, ${data.fallbackTo}, ${data.priority},
-          ${data.inputPerMTok}, ${data.outputPerMTok}, ${data.cachedPerMTok}
+          ${data.inputPerMTok}, ${data.outputPerMTok}, ${data.cachedPerMTok},
+          ${data.vendor}, ${data.contextWindow}, ${tx.array(data.endpoints)}, ${tx.array(data.tags)}, ${data.pricingType}, ${data.listInputPerMTok}, ${data.listOutputPerMTok}, ${data.listCachedPerMTok}
         )
         RETURNING *
       `;
@@ -230,6 +237,12 @@ export async function updateChannelAction(
     }
 
     await sql.begin(async (tx) => {
+      // Source repricing shares this lock so its confirmation count stays stable.
+      await tx`SELECT pg_advisory_xact_lock(20260921)`;
+      if (data.sourceId !== null) {
+        const source = await tx`SELECT id FROM sources WHERE id = ${data.sourceId} FOR SHARE`;
+        if (!source[0]) throw new ApiError('invalid_request', 'source does not exist', 400);
+      }
       const beforeRows = await tx`SELECT * FROM channels WHERE id = ${data.id} FOR UPDATE`;
       const before = beforeRows[0];
       if (before === undefined) {
@@ -241,19 +254,10 @@ export async function updateChannelAction(
           SELECT id FROM channels WHERE id = ${data.fallbackTo}
         `;
         if (target[0] === undefined) {
-          throw new ApiError('invalid_request', `fallback '${data.fallbackTo}' does not exist`, 400);
-        }
-      }
-      if (data.publicModelId !== null) {
-        const clash = await tx<{ id: string }[]>`
-          SELECT id FROM channels
-          WHERE public_model_id = ${data.publicModelId} AND id <> ${data.id}
-        `;
-        if (clash[0] !== undefined) {
           throw new ApiError(
             'invalid_request',
-            `public model id '${data.publicModelId}' is already in use`,
-            409,
+            `fallback '${data.fallbackTo}' does not exist`,
+            400,
           );
         }
       }
@@ -266,7 +270,7 @@ export async function updateChannelAction(
           base_url = ${data.baseUrl},
           model_id = ${data.modelId},
           public_model_id = ${data.publicModelId},
-          credit_multiplier = ${toMultiplier(data.creditMultiplier)},
+          source_id = ${data.sourceId},
           is_byok = ${data.isByok},
           status = ${data.status},
           min_plan = ${data.minPlan},
@@ -275,11 +279,26 @@ export async function updateChannelAction(
           input_per_mtok = ${data.inputPerMTok},
           output_per_mtok = ${data.outputPerMTok},
           cached_per_mtok = ${data.cachedPerMTok},
+          vendor = ${data.vendor},
+          context_window = ${data.contextWindow},
+          endpoints = ${tx.array(data.endpoints)},
+          tags = ${tx.array(data.tags)},
+          pricing_type = ${data.pricingType},
+          list_input_per_mtok = ${data.listInputPerMTok},
+          list_output_per_mtok = ${data.listOutputPerMTok},
+          list_cached_per_mtok = ${data.listCachedPerMTok},
           updated_at = now()
         WHERE id = ${data.id}
         RETURNING *
       `;
-      await writeAudit(ctx.user.id, 'channel.update', `channel:${data.id}`, before, afterRows[0], tx);
+      await writeAudit(
+        ctx.user.id,
+        'channel.update',
+        `channel:${data.id}`,
+        before,
+        afterRows[0],
+        tx,
+      );
     });
 
     revalidatePath('/admin/channels');

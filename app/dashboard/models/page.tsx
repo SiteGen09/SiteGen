@@ -10,6 +10,7 @@ export const metadata = { title: 'Models — sitegen' };
 const HEAD = [
   'Model',
   'Provider',
+  'Source',
   'Status',
   'Input / Mtok',
   'Output / Mtok',
@@ -79,7 +80,7 @@ export default async function ModelsPage() {
           <EmptyRow colSpan={HEAD.length}>No models are configured yet.</EmptyRow>
         ) : (
           models.map((model) => (
-            <tr key={model.publicModelId}>
+            <tr key={model.id}>
               <td className="px-4 py-2.5">
                 <span className="font-mono text-xs text-zinc-900">{model.publicModelId}</span>
                 <span className="mt-0.5 block text-xs text-zinc-500">{model.label}</span>
@@ -87,6 +88,7 @@ export default async function ModelsPage() {
               <td className="whitespace-nowrap px-4 py-2.5 text-zinc-600">
                 {PROVIDER_LABELS[model.provider]}
               </td>
+              <td className="px-4 py-2.5 text-zinc-600">{model.sourceLabel} · ×{model.creditMultiplier}</td>
               <td className="px-4 py-2.5">
                 <StatusBadge status={model.status} />
               </td>

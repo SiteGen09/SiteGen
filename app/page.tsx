@@ -36,6 +36,7 @@ export default function LandingPage() {
           >
             API docs
           </Link>
+          <Link href="/prices" className="inline-flex min-h-11 items-center rounded-md px-4 text-sm font-medium text-zinc-700 underline">Model prices</Link>
         </div>
       </div>
     </main>

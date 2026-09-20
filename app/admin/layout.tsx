@@ -7,6 +7,7 @@ import { requireAdmin, type AdminContext } from '@/lib/api/admin';
 const NAV = [
   { href: '/admin', label: 'Overview' },
   { href: '/admin/channels', label: 'Channels' },
+  { href: '/admin/sources', label: 'Sources' },
   { href: '/admin/users', label: 'Users' },
   { href: '/admin/credentials', label: 'Credentials' },
   { href: '/admin/audit', label: 'Audit Log' },

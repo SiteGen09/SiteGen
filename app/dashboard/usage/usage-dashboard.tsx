@@ -598,6 +598,7 @@ function DetailsView({
               <tr>
                 <th>Request</th>
                 <th>Channel / model</th>
+                <th>Source</th>
                 <th>Input</th>
                 <th>Cached</th>
                 <th>Output</th>
@@ -610,7 +611,7 @@ function DetailsView({
             <tbody>
               {events.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="usage-table-empty">
+                  <td colSpan={10} className="usage-table-empty">
                     No requests match these filters.
                   </td>
                 </tr>
@@ -624,6 +625,7 @@ function DetailsView({
                         <strong>{channel?.label ?? event.channel_id}</strong>
                         <span className="usage-table-subtext">{channel?.model_id ?? 'Unknown model'}</span>
                       </td>
+                      <td>{event.source_label ?? '—'}</td>
                       <td>{number(event.input_tokens ?? 0)}</td>
                       <td>{number(event.cached_tokens ?? 0)}</td>
                       <td>{number(event.output_tokens ?? 0)}</td>

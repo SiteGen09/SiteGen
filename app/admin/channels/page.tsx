@@ -1,3 +1,4 @@
+import { listSources } from '@/lib/ai/sources';
 import { Fragment } from 'react';
 import { z } from 'zod';
 
@@ -25,7 +26,15 @@ const channelRowSchema = z.object({
   base_url: z.string().nullable(),
   model_id: z.string(),
   is_byok: z.boolean(),
-  credit_multiplier: z.union([z.string(), z.number()]).transform(String),
+  source_id: z.string().nullable(),
+  vendor: z.string().nullable(),
+  context_window: z.coerce.number().nullable(),
+  endpoints: z.array(z.string()),
+  tags: z.array(z.string()),
+  pricing_type: z.enum(['token', 'request']),
+  list_input_per_mtok: z.coerce.number().nullable(),
+  list_output_per_mtok: z.coerce.number().nullable(),
+  list_cached_per_mtok: z.coerce.number().nullable(),
   public_model_id: z.string().nullable(),
   input_per_mtok: z.union([z.string(), z.number()]).transform(String),
   output_per_mtok: z.union([z.string(), z.number()]).transform(String),
@@ -41,13 +50,21 @@ const COLS = 11;
 
 function toDefaults(row: z.infer<typeof channelRowSchema>): ChannelDefaults {
   return {
+    vendor: row.vendor ?? '',
+    contextWindow: row.context_window === null ? '' : String(row.context_window),
+    endpoints: row.endpoints.join(', '),
+    tags: row.tags.join(', '),
+    pricingType: row.pricing_type,
+    listInputPerMTok: row.list_input_per_mtok === null ? '' : String(row.list_input_per_mtok),
+    listOutputPerMTok: row.list_output_per_mtok === null ? '' : String(row.list_output_per_mtok),
+    listCachedPerMTok: row.list_cached_per_mtok === null ? '' : String(row.list_cached_per_mtok),
     id: row.id,
     label: row.label,
     task: row.task,
     provider: row.provider,
     baseUrl: row.base_url ?? '',
     modelId: row.model_id,
-    creditMultiplier: row.credit_multiplier,
+    sourceId: row.source_id ?? '',
     isByok: row.is_byok,
     publicModelId: row.public_model_id ?? '',
     inputPerMTok: row.input_per_mtok,
@@ -63,6 +80,7 @@ function toDefaults(row: z.infer<typeof channelRowSchema>): ChannelDefaults {
 export default async function ChannelsPage() {
   await requireAdmin();
 
+  const sources = await listSources();
   const service = createServiceClient();
   const { data, error } = await service
     .from('channels')
@@ -79,7 +97,10 @@ export default async function ChannelsPage() {
 
   return (
     <>
-      <PageTitle title="Channels" subtitle="Serving channels. Multiplier changes apply on the next request." />
+      <PageTitle
+        title="Channels"
+        subtitle="Serving channels. Source changes apply on the next request."
+      />
 
       <div className="mb-6">
         <Card>
@@ -88,7 +109,11 @@ export default async function ChannelsPage() {
               New channel
             </summary>
             <div className="mt-4">
-              <CreateChannelForm planKeys={PLAN_KEYS} fallbackOptions={channelIds} />
+              <CreateChannelForm
+                planKeys={PLAN_KEYS}
+                sourceOptions={sources}
+                fallbackOptions={channelIds}
+              />
             </div>
           </details>
         </Card>
@@ -103,7 +128,7 @@ export default async function ChannelsPage() {
                 <Th>Task</Th>
                 <Th>Provider</Th>
                 <Th>Model</Th>
-                <Th>Mult.</Th>
+                <Th>Source</Th>
                 <Th>Status</Th>
                 <Th>Min plan</Th>
                 <Th>Fallback</Th>
@@ -132,7 +157,9 @@ export default async function ChannelsPage() {
                       <Td>
                         <span className="font-mono text-xs">{row.model_id}</span>
                       </Td>
-                      <Td>{row.credit_multiplier}</Td>
+                      <Td>
+                        {sources.find((source) => source.id === row.source_id)?.label ?? 'BYOK'}
+                      </Td>
                       <Td>
                         <Badge value={row.status} />
                       </Td>
@@ -168,6 +195,7 @@ export default async function ChannelsPage() {
                             <EditChannelForm
                               defaults={toDefaults(row)}
                               planKeys={PLAN_KEYS}
+                              sourceOptions={sources}
                               fallbackOptions={channelIds.filter((id) => id !== row.id)}
                             />
                           </div>

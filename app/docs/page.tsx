@@ -234,6 +234,16 @@ export default function DocsPage() {
             </p>
           </Section>
 
+          <Section id="endpoint-types" title="Endpoint types">
+            <p className="text-sm leading-6 text-zinc-600">
+              OpenAI-compatible chat models use POST /v1/chat/completions or POST /v1/responses.
+              Other endpoint labels on the prices page describe provider capabilities; this gateway
+              currently exposes chat and site generation. A listed capability does not create
+              an additional gateway endpoint. Request-priced entries are catalog information only;
+              token-billed routes and dashboard chat exclude them.
+            </p>
+          </Section>
+
           <Section id="models" title="GET /v1/models">
             <p>
               Lists models available to your plan. Each model has an <Tok>id</Tok> (the public model

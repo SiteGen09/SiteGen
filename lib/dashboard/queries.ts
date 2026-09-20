@@ -1,8 +1,9 @@
+import { sourceSchema, SOURCE_COLUMNS, type Family } from '@/lib/ai/sources';
 import { z } from 'zod';
 import { PROVIDERS, type Provider } from '@/lib/ai/providers';
 import { createClient } from '@/lib/supabase/server';
 import { createServiceClient } from '@/lib/supabase/service';
-import { isPlanKey, type PlanKey } from '@/lib/billing/plans';
+import { isPlanKey, planMeetsMinimum, type PlanKey } from '@/lib/billing/plans';
 import { costUsd, creditsForUsage, type TokenRates } from '@/lib/ai/pricing';
 
 /**
@@ -46,7 +47,12 @@ export type LedgerRow = z.infer<typeof ledgerRowSchema>;
 
 export const usageEventRowSchema = z.object({
   request_id: z.string(),
-  channel_id: z.string(),
+  // Moderation rejects before channel selection; keep the UI's empty-id sentinel.
+  channel_id: z
+    .string()
+    .nullable()
+    .transform((value) => value ?? ''),
+  source_label: z.string().nullable(),
   input_tokens: nullableNumeric,
   output_tokens: nullableNumeric,
   cached_tokens: nullableNumeric,
@@ -64,13 +70,18 @@ export const channelInfoRowSchema = z.object({
   label: z.string(),
   task: z.string(),
   provider: z.enum(PROVIDERS),
-  model_id: z.string(),
+  model_id: z
+    .string()
+    .nullable()
+    .transform((v) => v ?? 'Internal task'),
   status: z.string(),
 });
 export type ChannelInfo = z.infer<typeof channelInfoRowSchema>;
 
 const modelCatalogRowSchema = z.object({
+  id: z.string(),
   public_model_id: z.string(),
+  pricing_type: z.enum(['token', 'request']),
   label: z.string(),
   provider: z.enum(PROVIDERS),
   model_id: z.string(),
@@ -79,13 +90,19 @@ const modelCatalogRowSchema = z.object({
   // numeric(10,2) arrives as a string; the catalog only displays it, so a
   // Number here is safe where the billing path deliberately keeps the string.
   is_byok: z.boolean(),
-  credit_multiplier: numeric,
+  source_id: z.string().nullable(),
+  sources: sourceSchema.nullable(),
   input_per_mtok: numeric,
   output_per_mtok: numeric,
   cached_per_mtok: numeric,
 });
 
 export interface ModelCatalogEntry {
+  id: string;
+  sourceId: string | null;
+  sourceLabel: string;
+  sourceDescription: string;
+  family: Family | null;
   publicModelId: string;
   label: string;
   provider: Provider;
@@ -220,7 +237,7 @@ export async function listUsageEvents(filter: UsageFilter): Promise<UsageEventRo
   let query = supabase
     .from('usage_events')
     .select(
-      'request_id, channel_id, input_tokens, output_tokens, cached_tokens, latency_ms, status, cost_usd, credits_charged, created_at',
+      'request_id, channel_id, source_label, input_tokens, output_tokens, cached_tokens, latency_ms, status, cost_usd, credits_charged, created_at',
     )
     .order('created_at', { ascending: false })
     .limit(filter.limit);
@@ -255,7 +272,7 @@ export async function listChannelInfo(channelIds: readonly string[]): Promise<Ch
     batches.map(async (batch) => {
       const { data, error } = await service
         .from('channels')
-        .select('id, label, task, provider, model_id, status')
+        .select('id, label, task, provider, model_id:public_model_id, status')
         .in('id', batch);
       if (error) fail('channels', error.message);
       return z.array(channelInfoRowSchema).parse(data);
@@ -294,7 +311,9 @@ export async function listModelCatalog(): Promise<ModelCatalogEntry[]> {
   const { data, error } = await service
     .from('channels')
     .select(
-      'public_model_id, label, provider, model_id, status, min_plan, is_byok, credit_multiplier, input_per_mtok, output_per_mtok, cached_per_mtok',
+      'id, public_model_id, pricing_type, label, provider, model_id, status, min_plan, is_byok, source_id, input_per_mtok, output_per_mtok, cached_per_mtok, sources(' +
+        SOURCE_COLUMNS +
+        ')',
     )
     .not('public_model_id', 'is', null)
     .neq('status', 'off');
@@ -303,21 +322,38 @@ export async function listModelCatalog(): Promise<ModelCatalogEntry[]> {
   return z
     .array(modelCatalogRowSchema)
     .parse(data)
+    .filter(
+      (row) =>
+        row.pricing_type === 'token' &&
+        (row.is_byok || (row.sources !== null && row.sources.status !== 'off')),
+    )
     .map((row) => {
       const rates: TokenRates = {
         inputPerMTok: row.input_per_mtok,
         outputPerMTok: row.output_per_mtok,
         cachedPerMTok: row.cached_per_mtok,
       };
-      const multiplier = Number(row.credit_multiplier);
+      const multiplier = row.is_byok
+        ? 0
+        : Number(sourceSchema.parse(row.sources).credit_multiplier);
 
       return {
+        id: row.id,
+        sourceId: row.source_id,
+        sourceLabel: row.sources?.label ?? 'BYOK',
+        sourceDescription: row.sources?.description ?? '',
+        family: row.sources?.family ?? null,
         publicModelId: row.public_model_id,
         label: row.label,
         provider: row.provider,
         upstreamModelId: row.model_id,
         status: row.status,
-        minPlan: isPlanKey(row.min_plan) ? row.min_plan : 'free',
+        minPlan:
+          row.sources !== null && planMeetsMinimum(row.sources.min_plan, row.min_plan)
+            ? row.sources.min_plan
+            : isPlanKey(row.min_plan)
+              ? row.min_plan
+              : 'free',
         creditMultiplier: multiplier,
         isByok: row.is_byok,
         // Credits for a full million tokens of each kind, which is how the
@@ -328,4 +364,82 @@ export async function listModelCatalog(): Promise<ModelCatalogEntry[]> {
       };
     })
     .sort((left, right) => left.publicModelId.localeCompare(right.publicModelId));
+}
+
+/** Published rates use the same default → priority cascade, without user preferences. */
+export async function listPublicPrices(): Promise<import('./public-prices').PublicPrice[]> {
+  const { data, error } = await createServiceClient()
+    .from('channels')
+    .select(
+      'id, public_model_id, label, status, priority, vendor, context_window, endpoints, tags, pricing_type, input_per_mtok, output_per_mtok, cached_per_mtok, list_input_per_mtok, list_output_per_mtok, list_cached_per_mtok, sources!inner(' +
+        SOURCE_COLUMNS +
+        ')',
+    )
+    .not('public_model_id', 'is', null)
+    .neq('status', 'off')
+    .eq('is_byok', false);
+  if (error) fail('public prices', error.message);
+  const schema = z.object({
+    id: z.string(),
+    public_model_id: z.string(),
+    label: z.string(),
+    status: z.string(),
+    priority: numeric,
+    vendor: z.string().nullable(),
+    context_window: numeric.nullable(),
+    endpoints: z.array(z.string()),
+    tags: z.array(z.string()),
+    pricing_type: z.enum(['token', 'request']),
+    sources: sourceSchema,
+    input_per_mtok: numeric,
+    output_per_mtok: numeric,
+    cached_per_mtok: numeric,
+    list_input_per_mtok: numeric.nullable(),
+    list_output_per_mtok: numeric.nullable(),
+    list_cached_per_mtok: numeric.nullable(),
+  });
+  const rows = schema
+    .array()
+    .parse(data)
+    .filter((row) => row.sources.status !== 'off')
+    .sort(
+      (a, b) =>
+        Number(b.sources.is_default) - Number(a.sources.is_default) ||
+        b.priority - a.priority ||
+        Number(b.status === 'active') - Number(a.status === 'active') ||
+        a.id.localeCompare(b.id),
+    );
+  const seen = new Set<string>();
+  return rows
+    .filter((row) => {
+      if (seen.has(row.public_model_id)) return false;
+      seen.add(row.public_model_id);
+      return true;
+    })
+    .map((row) => {
+      const multiplier = Number(row.sources.credit_multiplier);
+      // Per-request rows reuse the numeric columns as a dollar amount per call.
+      // Conversion is therefore identical, but the unit is explicitly preserved.
+      const credits = (dollars: number) => creditsForUsage(dollars, multiplier);
+      const list = (dollars: number | null) =>
+        dollars === null ? null : creditsForUsage(dollars, 1);
+      return {
+        model: row.public_model_id,
+        label: row.label,
+        group: row.sources.family,
+        vendor: row.vendor ?? 'Unknown',
+        contextWindow: row.context_window,
+        endpoints: row.endpoints,
+        tags: row.tags,
+        pricingType: row.pricing_type,
+        sourceLabel: row.sources.label,
+        multiplier,
+        input: credits(row.input_per_mtok),
+        output: credits(row.output_per_mtok),
+        cached: credits(row.cached_per_mtok),
+        listInput: list(row.list_input_per_mtok),
+        listOutput: list(row.list_output_per_mtok),
+        listCached: list(row.list_cached_per_mtok),
+      };
+    });
 }
