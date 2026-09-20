@@ -48,7 +48,8 @@ interface Row {
   provider: string;
   base_url: string | null;
   model_id: string;
-  credit_multiplier: string | number;
+  source_id: string | null;
+  sources: { id: string; family: 'claude'; label: string; description: string; credit_multiplier: string | number; status: string; min_plan: string; is_default: boolean } | null;
   is_byok: boolean;
   status: string;
   min_plan: string;
@@ -60,6 +61,11 @@ interface Row {
   public_model_id: string | null;
 }
 
+function source(overrides: Partial<NonNullable<Row['sources']>> = {}): NonNullable<Row['sources']> {
+  return { id: 'source-1', family: 'claude', label: 'Source', description: '',
+    credit_multiplier: '1.00', status: 'active', min_plan: 'free', is_default: false, ...overrides };
+}
+
 function row(overrides: Partial<Row> = {}): Row {
   return {
     id: 'c1',
@@ -68,7 +74,8 @@ function row(overrides: Partial<Row> = {}): Row {
     provider: 'anthropic',
     base_url: null,
     model_id: 'claude-3-5-haiku-20241022',
-    credit_multiplier: '1.00',
+    source_id: 'source-1',
+    sources: source(),
     is_byok: false,
     status: 'active',
     min_plan: 'free',
@@ -129,7 +136,7 @@ describe('selectChannel', () => {
   });
 
   it('carries the credit multiplier through as a string', async () => {
-    state.result = { data: [row({ id: 'cheap', credit_multiplier: 1.2 })], error: null };
+    state.result = { data: [row({ id: 'cheap', sources: source({ credit_multiplier: 1.2 }) })], error: null };
     const channel = await selectChannel('site.spec', 'free');
     expect(channel?.creditMultiplier).toBe('1.2');
   });
@@ -209,5 +216,34 @@ describe('listPublicModels', () => {
       error: null,
     };
     expect(await listPublicModels('pro')).toEqual([]);
+  });
+});
+
+// A choice is best effort and cannot bypass source eligibility.
+describe('source cascade', () => {
+  const preferences = new Map<'claude', string>([['claude', 'chosen']]);
+  const chosen = () => row({ id: 'preferred', source_id: 'chosen', sources: source({ id: 'chosen', credit_multiplier: '1.85' }) });
+  const standard = () => row({ id: 'default', priority: 10, sources: source({ is_default: true }) });
+  it('prefers choice over default and priority', async () => {
+    state.result = { data: [chosen(), standard()], error: null };
+    expect(await selectChannelByModel('m', 'free', preferences)).toMatchObject({ id: 'preferred', creditMultiplier: '1.85' });
+  });
+  it('falls back to default when choice lacks model coverage', async () => {
+    state.result = { data: [standard(), row({ priority: 100 })], error: null };
+    expect((await selectChannelByModel('m', 'free', preferences))?.id).toBe('default');
+  });
+  it.each(['off', 'locked'])('excludes an %s source', async (reason) => {
+    const unavailable = chosen();
+    unavailable.sources = source({ status: reason === 'off' ? 'off' : 'active', min_plan: reason === 'locked' ? 'pro' : 'free' });
+    state.result = { data: [unavailable, standard()], error: null };
+    expect((await selectChannelByModel('m', 'free', preferences))?.id).toBe('default');
+  });
+  it('uses any eligible source without a covering default', async () => {
+    state.result = { data: [row({ id: 'any', priority: 20 }), row()], error: null };
+    expect((await selectChannelByModel('m', 'free', preferences))?.id).toBe('any');
+  });
+  it('deduplicates model names', async () => {
+    state.result = { data: [row({ public_model_id: 'm' }), row({ id: 'other', public_model_id: 'm' })], error: null };
+    expect(await listPublicModels('free', preferences)).toEqual(['m']);
   });
 });

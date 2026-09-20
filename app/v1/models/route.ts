@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { authenticateApiKey, requireScope } from '@/lib/api/api-key-auth';
 import { openAiErrorFrom } from '@/lib/api/openai-errors';
+import { loadRoutingPreferences } from '@/lib/ai/sources';
 import { listPublicModels } from '@/lib/ai/channels';
 import { isPlanKey, type PlanKey } from '@/lib/billing/plans';
 import { logger } from '@/lib/log';
@@ -40,7 +41,7 @@ export async function GET(req: Request): Promise<Response> {
     requireScope(auth, SCOPE);
 
     const planKey = await loadPlanKey(auth.ownerId);
-    const models = await listPublicModels(planKey);
+    const models = await listPublicModels(planKey, await loadRoutingPreferences(auth.ownerId));
 
     return Response.json({
       object: 'list',

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { z } from 'zod';
 
+import { loadRoutingPreferences } from '@/lib/ai/sources';
 import { resolveChannel, selectChannelByModel } from '@/lib/ai/channels';
 import type { ChannelRow } from '@/lib/ai/fallback';
 import { costUsd, creditsForUsage, type TokenRates } from '@/lib/ai/pricing';
@@ -107,7 +108,8 @@ export async function resolveChannelAndCreds(
   userId: string,
   planKey: string,
 ): Promise<ResolvedChannel | null> {
-  const channel = await selectChannelByModel(publicModelId, planKey);
+  const preferences = await loadRoutingPreferences(userId);
+  const channel = await selectChannelByModel(publicModelId, planKey, preferences);
   if (channel === null) return null;
 
   const userCred = await getUserCredential(userId);

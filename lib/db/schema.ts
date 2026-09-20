@@ -1,4 +1,4 @@
-import { pgTable, boolean, check, uuid, text, timestamp, bigserial, integer, numeric, jsonb, bigint, index, customType, type AnyPgColumn } from 'drizzle-orm/pg-core';
+import { pgTable, boolean, check, primaryKey, uniqueIndex, uuid, text, timestamp, bigserial, integer, numeric, jsonb, bigint, index, customType, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
 
 const bytea = customType<{ data: Uint8Array; driverData: Uint8Array }>({
@@ -32,6 +32,37 @@ export const apiKeys = pgTable('api_keys', {
   hashIdx: index('api_keys_key_hash_idx').on(table.keyHash),
 }));
 
+// Source metadata is independent of wire protocol: a compatible gateway can
+// serve several families. Keep that fact in one place, on the source.
+export const sources = pgTable('sources', {
+  id: text('id').primaryKey(),
+  family: text('family').notNull(),
+  label: text('label').notNull(),
+  description: text('description').notNull().default(''),
+  creditMultiplier: numeric('credit_multiplier', { precision: 10, scale: 2 }).notNull(),
+  status: text('status').notNull().default('active'),
+  minPlan: text('min_plan').notNull().default('free'),
+  isDefault: boolean('is_default').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  defaultFamily: uniqueIndex('sources_default_family_key').on(table.family).where(sql`${table.isDefault}`),
+  familyCheck: check('sources_family_check', sql`${table.family} IN ('gpt', 'claude', 'grok')`),
+  multiplierCheck: check('sources_credit_multiplier_check', sql`${table.creditMultiplier} > 0`),
+  statusCheck: check('sources_status_check', sql`${table.status} IN ('active', 'degraded', 'off')`),
+  planCheck: check('sources_min_plan_check', sql`${table.minPlan} IN ('free', 'starter', 'pro')`),
+}));
+
+export const userRoutingPreferences = pgTable('user_routing_preferences', {
+  userId: uuid('user_id').notNull().references(() => profiles.id, { onDelete: 'cascade' }),
+  family: text('family').notNull(),
+  sourceId: text('source_id').notNull().references(() => sources.id),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.userId, table.family] }),
+  familyCheck: check('user_routing_preferences_family_check', sql`${table.family} IN ('gpt', 'claude', 'grok')`),
+}));
+
 export const channels = pgTable('channels', {
   id: text('id').primaryKey(), // slug, e.g. 'spec-strong'
   label: text('label').notNull(),
@@ -39,6 +70,11 @@ export const channels = pgTable('channels', {
   provider: text('provider').notNull(), // see lib/ai/providers.ts PROVIDERS
   baseUrl: text('base_url'),
   modelId: text('model_id').notNull(),
+  sourceId: text('source_id').references(() => sources.id),
+  publicModelId: text('public_model_id'),
+  inputPerMTok: numeric('input_per_mtok', { precision: 12, scale: 6 }).notNull().default('0'),
+  outputPerMTok: numeric('output_per_mtok', { precision: 12, scale: 6 }).notNull().default('0'),
+  cachedPerMTok: numeric('cached_per_mtok', { precision: 12, scale: 6 }).notNull().default('0'),
   isByok: boolean('is_byok').notNull().default(false),
   creditMultiplier: numeric('credit_multiplier', { precision: 10, scale: 2 }).notNull().default('1.0'),
   status: text('status').notNull().default('active'), // active | degraded | off
@@ -49,7 +85,9 @@ export const channels = pgTable('channels', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   byokIdx: index('channels_is_byok_idx').on(table.isByok),
-  byokMultiplierCheck: check('channels_byok_multiplier_check', sql`NOT ${table.isByok} OR ${table.creditMultiplier} = 0`),
+  sourceIdx: index('channels_source_id_idx').on(table.sourceId),
+  publicModelIdx: index('channels_public_model_id_idx').on(table.publicModelId).where(sql`${table.publicModelId} IS NOT NULL`),
+  sourceCheck: check('channels_source_check', sql`(${table.isByok} AND ${table.sourceId} IS NULL) OR (NOT ${table.isByok} AND ${table.sourceId} IS NOT NULL)`),
 }));
 
 export const providerCredentials = pgTable('provider_credentials', {
