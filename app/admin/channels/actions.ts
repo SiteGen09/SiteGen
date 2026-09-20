@@ -53,6 +53,7 @@ const baseFields = {
     .transform((v) => (v.length === 0 ? null : v)),
   modelId: z.string().trim().min(1, 'model id is required').max(200),
   publicModelId,
+  isByok: z.string().transform((value) => value === 'on'),
   creditMultiplier: z.coerce
     .number()
     .refine(Number.isFinite, 'multiplier must be a number')
@@ -78,9 +79,12 @@ const baseFields = {
  * the channel would then match no credential at all.
  */
 function checkBaseUrl(
-  value: { provider: Provider; baseUrl: string | null },
+  value: { provider: Provider; baseUrl: string | null; isByok: boolean; creditMultiplier: number },
   ctx: z.RefinementCtx,
 ): void {
+  if (value.isByok && value.creditMultiplier !== 0) {
+    ctx.addIssue({ code: 'custom', path: ['creditMultiplier'], message: 'BYOK channels must have a zero multiplier' });
+  }
   if (requiresBaseUrl(value.provider) && value.baseUrl === null) {
     ctx.addIssue({
       code: 'custom',
@@ -123,6 +127,7 @@ function formValues(formData: FormData): Record<string, string> {
     'modelId',
     'publicModelId',
     'creditMultiplier',
+    'isByok',
     'status',
     'minPlan',
     'fallbackTo',
@@ -187,12 +192,12 @@ export async function createChannelAction(
       const rows = await tx`
         INSERT INTO channels
           (id, label, task, provider, base_url, model_id, public_model_id,
-           credit_multiplier, status, min_plan, fallback_to, priority,
+           credit_multiplier, is_byok, status, min_plan, fallback_to, priority,
            input_per_mtok, output_per_mtok, cached_per_mtok)
         VALUES (
           ${data.id}, ${data.label}, ${data.task}, ${data.provider}, ${data.baseUrl},
           ${data.modelId}, ${data.publicModelId},
-          ${toMultiplier(data.creditMultiplier)}, ${data.status},
+          ${toMultiplier(data.creditMultiplier)}, ${data.isByok}, ${data.status},
           ${data.minPlan}, ${data.fallbackTo}, ${data.priority},
           ${data.inputPerMTok}, ${data.outputPerMTok}, ${data.cachedPerMTok}
         )
@@ -262,6 +267,7 @@ export async function updateChannelAction(
           model_id = ${data.modelId},
           public_model_id = ${data.publicModelId},
           credit_multiplier = ${toMultiplier(data.creditMultiplier)},
+          is_byok = ${data.isByok},
           status = ${data.status},
           min_plan = ${data.minPlan},
           fallback_to = ${data.fallbackTo},

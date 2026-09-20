@@ -44,6 +44,7 @@ function cheapChannel(overrides: Partial<ChannelRow> = {}): ChannelRow {
     baseUrl: null,
     modelId: MODELS.cheap,
     creditMultiplier: '1.00',
+    isByok: false,
     status: 'active',
     fallbackTo: null,
     rates: CHEAP_RATES,
@@ -164,7 +165,7 @@ describe('estimateHoldCredits', () => {
   });
 
   it('holds nothing for a zero-multiplier BYOK channel', () => {
-    expect(estimateHoldCredits(cheapChannel({ creditMultiplier: '0' }))).toBe(0);
+    expect(estimateHoldCredits(cheapChannel({ creditMultiplier: '0', isByok: true }))).toBe(0);
   });
 
   it('rejects a channel with an invalid multiplier', () => {

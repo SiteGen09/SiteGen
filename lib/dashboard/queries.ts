@@ -78,6 +78,7 @@ const modelCatalogRowSchema = z.object({
   min_plan: z.string(),
   // numeric(10,2) arrives as a string; the catalog only displays it, so a
   // Number here is safe where the billing path deliberately keeps the string.
+  is_byok: z.boolean(),
   credit_multiplier: numeric,
   input_per_mtok: numeric,
   output_per_mtok: numeric,
@@ -92,7 +93,8 @@ export interface ModelCatalogEntry {
   upstreamModelId: string;
   status: string;
   minPlan: PlanKey;
-  /** 0 means BYOK-only: the channel bills the caller's own key, not credits. */
+  /** BYOK bills the caller's own key; the multiplier is only a price. */
+  isByok: boolean;
   creditMultiplier: number;
   inputCreditsPerMTok: number;
   outputCreditsPerMTok: number;
@@ -292,7 +294,7 @@ export async function listModelCatalog(): Promise<ModelCatalogEntry[]> {
   const { data, error } = await service
     .from('channels')
     .select(
-      'public_model_id, label, provider, model_id, status, min_plan, credit_multiplier, input_per_mtok, output_per_mtok, cached_per_mtok',
+      'public_model_id, label, provider, model_id, status, min_plan, is_byok, credit_multiplier, input_per_mtok, output_per_mtok, cached_per_mtok',
     )
     .not('public_model_id', 'is', null)
     .neq('status', 'off');
@@ -317,6 +319,7 @@ export async function listModelCatalog(): Promise<ModelCatalogEntry[]> {
         status: row.status,
         minPlan: isPlanKey(row.min_plan) ? row.min_plan : 'free',
         creditMultiplier: multiplier,
+        isByok: row.is_byok,
         // Credits for a full million tokens of each kind, which is how the
         // rates are quoted — per-call figures round up to 1 and say nothing.
         inputCreditsPerMTok: creditsPerMTok(rates, 'inputTokens', multiplier),

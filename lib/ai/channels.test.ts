@@ -49,6 +49,7 @@ interface Row {
   base_url: string | null;
   model_id: string;
   credit_multiplier: string | number;
+  is_byok: boolean;
   status: string;
   min_plan: string;
   fallback_to: string | null;
@@ -68,6 +69,7 @@ function row(overrides: Partial<Row> = {}): Row {
     base_url: null,
     model_id: 'claude-3-5-haiku-20241022',
     credit_multiplier: '1.00',
+    is_byok: false,
     status: 'active',
     min_plan: 'free',
     fallback_to: null,

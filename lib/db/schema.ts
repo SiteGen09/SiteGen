@@ -1,5 +1,5 @@
-import { pgTable, uuid, text, timestamp, bigserial, integer, numeric, jsonb, bigint, index, customType, type AnyPgColumn } from 'drizzle-orm/pg-core';
-import { relations } from 'drizzle-orm';
+import { pgTable, boolean, check, uuid, text, timestamp, bigserial, integer, numeric, jsonb, bigint, index, customType, type AnyPgColumn } from 'drizzle-orm/pg-core';
+import { relations, sql } from 'drizzle-orm';
 
 const bytea = customType<{ data: Uint8Array; driverData: Uint8Array }>({
   dataType() {
@@ -39,6 +39,7 @@ export const channels = pgTable('channels', {
   provider: text('provider').notNull(), // see lib/ai/providers.ts PROVIDERS
   baseUrl: text('base_url'),
   modelId: text('model_id').notNull(),
+  isByok: boolean('is_byok').notNull().default(false),
   creditMultiplier: numeric('credit_multiplier', { precision: 10, scale: 2 }).notNull().default('1.0'),
   status: text('status').notNull().default('active'), // active | degraded | off
   minPlan: text('min_plan').notNull().default('free'),
@@ -46,7 +47,10 @@ export const channels = pgTable('channels', {
   priority: integer('priority').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => ({
+  byokIdx: index('channels_is_byok_idx').on(table.isByok),
+  byokMultiplierCheck: check('channels_byok_multiplier_check', sql`NOT ${table.isByok} OR ${table.creditMultiplier} = 0`),
+}));
 
 export const providerCredentials = pgTable('provider_credentials', {
   id: uuid('id').primaryKey().defaultRandom(),

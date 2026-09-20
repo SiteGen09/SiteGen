@@ -13,7 +13,9 @@ export interface ChannelRow {
   provider: Provider;
   baseUrl: string | null;
   modelId: string;
-  /** Decimal string, e.g. '1.00'; '0' means BYOK (no credits charged). */
+  /** Eligibility is explicit; a price must never decide whose key is used. */
+  isByok: boolean;
+  /** Decimal string, e.g. '1.00'; BYOK channels carry '0'. */
   creditMultiplier: string;
   status: string;
   fallbackTo: string | null;

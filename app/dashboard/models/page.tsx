@@ -30,7 +30,7 @@ function planNote(entry: ModelCatalogEntry, planKey: PlanKey): string {
 }
 
 function credits(entry: ModelCatalogEntry, value: number): string {
-  return entry.creditMultiplier === 0 ? 'Your key' : formatCredits(value);
+  return entry.isByok ? 'Your key' : formatCredits(value);
 }
 
 export default async function ModelsPage() {

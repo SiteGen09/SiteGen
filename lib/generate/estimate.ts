@@ -25,7 +25,7 @@ export const HOLD_BUDGET_TOTAL = {
 /**
  * Credits to reserve before running `channel`.
  *
- * A zero multiplier (BYOK) holds nothing — the caller's own key pays. For a
+ * An explicit BYOK channel holds nothing — the caller's own key pays. For a
  * billable channel the rates come from the channel row itself, so adding a
  * model needs no code change.
  */
@@ -34,7 +34,7 @@ export function estimateHoldCredits(channel: ChannelRow): number {
   if (!Number.isFinite(multiplier) || multiplier < 0) {
     throw new ApiError('channel_unavailable', 'channel has an invalid credit multiplier', 503);
   }
-  if (multiplier === 0) return 0;
+  if (channel.isByok) return 0;
 
   const cost = costUsd(channel.rates, HOLD_BUDGET_TOTAL);
   return creditsForUsage(cost, multiplier);
@@ -62,7 +62,7 @@ export function estimateChatHoldCredits(
   if (!Number.isFinite(multiplier) || multiplier < 0) {
     throw new ApiError('channel_unavailable', 'channel has an invalid credit multiplier', 503);
   }
-  if (multiplier === 0) return 0;
+  if (channel.isByok) return 0;
 
   const estimatedInput = Math.ceil(Math.max(0, totalChars) / CHARS_PER_TOKEN);
   const cost = costUsd(channel.rates, {

@@ -19,6 +19,7 @@ const channelRowSchema = z.object({
   provider: z.enum(PROVIDERS),
   base_url: z.string().nullable(),
   model_id: z.string(),
+  is_byok: z.boolean(),
   credit_multiplier: z.union([z.string(), z.number()]).transform(String),
   status: z.string(),
   min_plan: z.string(),
@@ -33,7 +34,7 @@ const channelRowSchema = z.object({
 type ChannelDbRow = z.infer<typeof channelRowSchema>;
 
 const CHANNEL_COLUMNS =
-  'id, label, task, provider, base_url, model_id, credit_multiplier, status, min_plan, fallback_to, priority, input_per_mtok, output_per_mtok, cached_per_mtok, public_model_id';
+  'id, label, task, provider, base_url, model_id, is_byok, credit_multiplier, status, min_plan, fallback_to, priority, input_per_mtok, output_per_mtok, cached_per_mtok, public_model_id';
 const STATUS_RANK: Record<string, number> = { active: 2, degraded: 1 };
 
 function toChannelRow(row: ChannelDbRow): ChannelRow {
@@ -43,6 +44,7 @@ function toChannelRow(row: ChannelDbRow): ChannelRow {
     baseUrl: row.base_url,
     modelId: row.model_id,
     creditMultiplier: row.credit_multiplier,
+    isByok: row.is_byok,
     status: row.status,
     fallbackTo: row.fallback_to,
     rates: {
@@ -71,7 +73,7 @@ function bestOf(rows: ChannelDbRow[]): ChannelRow | null {
  * Picks the platform channel for `task` that `planKey` may use.
  *
  * Considers only channels that are on (`status != 'off'`), meet the plan's
- * minimum, and charge credits (`credit_multiplier > 0`). Zero-multiplier
+ * minimum, and are platform routes (`is_byok = false`). BYOK
  * channels are BYOK-only and would bill the platform's own key for free, so
  * they are excluded here and reached through {@link selectByokChannel}.
  */
@@ -85,7 +87,7 @@ export async function selectChannel(
     .select(CHANNEL_COLUMNS)
     .eq('task', task)
     .neq('status', 'off')
-    .gt('credit_multiplier', 0);
+    .eq('is_byok', false);
 
   if (error !== null) {
     throw new Error(`channel lookup failed: ${error.message}`);
@@ -118,7 +120,7 @@ export async function selectByokChannel(
     .eq('task', task)
     .eq('provider', provider)
     .neq('status', 'off')
-    .eq('credit_multiplier', 0);
+    .eq('is_byok', true);
 
   if (error !== null) {
     throw new Error(`byok channel lookup failed: ${error.message}`);
@@ -136,7 +138,7 @@ export async function selectByokChannel(
  * Picks the gateway channel a caller addressed by `publicModelId`.
  *
  * Deliberately mirrors {@link selectChannel}: `off` channels are excluded,
- * a zero multiplier means BYOK-only and is not billable here, and the plan
+ * BYOK-only channels are not billable here, and the plan
  * minimum is enforced. An unknown name and a name the caller's plan cannot
  * reach both return `null`, so the caller cannot tell "no such model" from
  * "your plan cannot use this model".
@@ -151,7 +153,7 @@ export async function selectChannelByModel(
     .select(CHANNEL_COLUMNS)
     .eq('public_model_id', publicModelId)
     .neq('status', 'off')
-    .gt('credit_multiplier', 0);
+    .eq('is_byok', false);
 
   if (error !== null) {
     throw new Error(`channel model lookup failed: ${error.message}`);
@@ -177,7 +179,7 @@ export async function listPublicModels(planKey: string): Promise<string[]> {
     .select(CHANNEL_COLUMNS)
     .not('public_model_id', 'is', null)
     .neq('status', 'off')
-    .gt('credit_multiplier', 0);
+    .eq('is_byok', false);
 
   if (error !== null) {
     throw new Error(`public model lookup failed: ${error.message}`);

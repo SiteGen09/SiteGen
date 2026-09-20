@@ -15,6 +15,7 @@ function channel(id: string, overrides: Partial<ChannelRow> = {}): ChannelRow {
     baseUrl: null,
     modelId: MODELS.cheap,
     creditMultiplier: '1.00',
+    isByok: false,
     status: 'active',
     fallbackTo: null,
     rates: CHEAP_RATES,

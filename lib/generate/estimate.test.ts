@@ -13,6 +13,7 @@ function channel(overrides: Partial<ChannelRow> = {}): ChannelRow {
     baseUrl: 'http://localhost:11435/v1',
     modelId: 'stub-fixture',
     creditMultiplier: '1.00',
+    isByok: false,
     status: 'active',
     fallbackTo: null,
     rates: RATES,
@@ -50,7 +51,7 @@ describe('estimateChatHoldCredits', () => {
   });
 
   it('holds nothing for a BYOK (zero-multiplier) channel', () => {
-    expect(estimateChatHoldCredits(channel({ creditMultiplier: '0' }), 4000, 2000)).toBe(0);
+    expect(estimateChatHoldCredits(channel({ creditMultiplier: '0', isByok: true }), 4000, 2000)).toBe(0);
   });
 
   it('rejects a channel with an invalid multiplier', () => {

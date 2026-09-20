@@ -25,6 +25,7 @@ export interface ChannelDefaults {
   modelId: string;
   publicModelId: string;
   creditMultiplier: string;
+  isByok: boolean;
   status: string;
   minPlan: string;
   fallbackTo: string;
@@ -158,6 +159,9 @@ function ChannelFields({ defaults, planKeys, fallbackOptions, lockId }: FieldsPr
           className={`${INPUT_CLASS} mt-1`}
         />
       </label>
+      <label className={LABEL_CLASS}>
+        <input type="checkbox" name="isByok" defaultChecked={defaults.isByok} /> BYOK only (requires a zero multiplier)
+      </label>
       <label className="block">
         <span className={LABEL_CLASS}>Credit multiplier</span>
         <input
@@ -233,6 +237,7 @@ export function CreateChannelForm({
     modelId: '',
     publicModelId: '',
     creditMultiplier: '1.00',
+    isByok: false,
     status: 'active',
     minPlan: 'free',
     fallbackTo: '',
