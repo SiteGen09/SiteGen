@@ -209,3 +209,18 @@ export const ledgerRelations = relations(ledger, ({ one }) => ({
     references: [channels.id],
   }),
 }));
+
+// Probes are service-only, just like usage aggregation; RLS lives in the DDL.
+export const modelHealthChecks = pgTable('model_health_checks', {
+  channelId: text('channel_id').notNull().references(() => channels.id, { onDelete: 'cascade' }),
+  bucketHour: timestamp('bucket_hour', { withTimezone: true }).notNull(),
+  status: text('status').notNull(),
+  latencyMs: integer('latency_ms'),
+  errorDetail: text('error_detail'),
+  checkedAt: timestamp('checked_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  channelHour: uniqueIndex('model_health_checks_channel_hour_key').on(table.channelId, table.bucketHour),
+  hourIdx: index('model_health_checks_hour_idx').on(table.bucketHour),
+  statusCheck: check('model_health_checks_status_check', sql.raw("status IN ('ok', 'error', 'timeout')")),
+  latencyCheck: check('model_health_checks_latency_ms_check', sql.raw('latency_ms >= 0')),
+}));

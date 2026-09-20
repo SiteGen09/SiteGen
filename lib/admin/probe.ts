@@ -48,6 +48,7 @@ export async function probeCredentials(
       model: ai.languageModel(modelId),
       prompt: 'Reply with the single word: ok',
       maxOutputTokens: PROBE_MAX_OUTPUT_TOKENS,
+      maxRetries: 0, // A probe measures this attempt; retries would hide an outage.
       abortSignal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
     const latencyMs = Date.now() - startedAt;

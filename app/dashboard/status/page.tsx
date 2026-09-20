@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import {
   STATUS_WINDOW_HOURS,
-  modelStatusBoard,
+  modelStatusHistory,
   type ModelHealth,
   type ModelStatusRow,
 } from '@/lib/dashboard/model-status';
@@ -45,7 +45,9 @@ function errorCell(row: ModelStatusRow): string {
 }
 
 function latencyCell(row: ModelStatusRow): string {
-  return row.p95LatencyMs === null ? '—' : `${Math.round(row.p95LatencyMs).toLocaleString('en-US')} ms`;
+  return row.p95LatencyMs === null
+    ? '—'
+    : `${Math.round(row.p95LatencyMs).toLocaleString('en-US')} ms`;
 }
 
 /** One line summarising the board, so the page answers "is anything broken?" first. */
@@ -54,11 +56,13 @@ function headline(rows: ModelStatusRow[]): string {
   const degraded = rows.filter((row) => row.health === 'degraded').length;
   if (outage > 0) return `${outage} model${outage === 1 ? '' : 's'} in outage`;
   if (degraded > 0) return `${degraded} model${degraded === 1 ? '' : 's'} degraded`;
-  return 'All models operational';
+  return rows.length === 0 || rows.every((row) => row.health === 'idle')
+    ? 'Awaiting observations'
+    : 'No measured outages';
 }
 
 export default async function StatusPage() {
-  const rows = await modelStatusBoard();
+  const { rows, sla } = await modelStatusHistory();
   const healthy = rows.filter((row) => row.health === 'operational').length;
   const totalRequests = rows.reduce((sum, row) => sum + row.requests, 0);
 
@@ -70,13 +74,67 @@ export default async function StatusPage() {
       />
 
       <div className="mb-6 grid gap-3 sm:grid-cols-2">
-        <Stat label="Overall" value={headline(rows)} hint={`${healthy} of ${rows.length} operational`} />
+        <Stat
+          label="Overall"
+          value={headline(rows)}
+          hint={`${healthy} of ${rows.length} operational`}
+        />
         <Stat
           label={`Requests (${STATUS_WINDOW_HOURS}h)`}
           value={totalRequests.toLocaleString('en-US')}
           hint="All callers, every model"
         />
       </div>
+
+      <Card className="mb-6">
+        <div className="mb-4 flex flex-wrap justify-between gap-2">
+          <h2 className="font-semibold text-zinc-900">Hourly availability · 24h</h2>
+          <p className="text-sm text-zinc-600">
+            Observed SLA: {sla === null ? 'No data' : sla.toFixed(2) + '%'}
+          </p>
+        </div>
+        <div className="space-y-4">
+          {rows.map((row) => (
+            <div key={row.publicModelId}>
+              <div className="mb-1 flex justify-between text-sm">
+                <span>{row.publicModelId}</span>
+                <span>
+                  {row.availability === null ? 'No data' : row.availability.toFixed(2) + '%'}
+                </span>
+              </div>
+              <div className="grid grid-cols-[repeat(24,minmax(0,1fr))] gap-1">
+                {row.buckets.map((bucket) => (
+                  <div
+                    key={bucket.hour}
+                    tabIndex={0}
+                    role="img"
+                    aria-label={bucket.hour + ': ' + HEALTH_COPY[bucket.health].label}
+                    title={
+                      bucket.hour +
+                      ' · ' +
+                      HEALTH_COPY[bucket.health].label +
+                      ' · ' +
+                      bucket.probes +
+                      ' probes · ' +
+                      bucket.requests +
+                      ' requests'
+                    }
+                    className={'h-7 rounded-sm ' + HEALTH_COPY[bucket.health].dot}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 flex justify-between text-xs text-zinc-500">
+          <span>23 hours ago · UTC</span>
+          <span>Current hour</span>
+        </div>
+        <p className="mt-3 text-xs text-zinc-500">
+          Green: operational · Amber: degraded · Red: outage · Gray: no evidence. Availability is
+          the percentage of observed model-hours that are operational; gray hours are excluded.
+        </p>
+      </Card>
 
       <Table head={HEAD} minWidth="min-w-[46rem]">
         {rows.length === 0 ? (
@@ -113,11 +171,11 @@ export default async function StatusPage() {
           <span className="font-medium text-zinc-700">How health is decided.</span> Over a rolling{' '}
           {STATUS_WINDOW_HOURS}-hour window: under 10% upstream failures is operational, 10% or more
           is degraded, 50% or more is an outage. A model needs at least 10 requests before the rate
-          is trusted — below that it reads as no recent traffic and falls back to whatever an
-          operator flagged on the channel. <span className="font-medium text-zinc-700">Errors</span>{' '}
-          counts upstream failures; rejected requests (bad input, moderation, or too few credits)
-          are listed separately because they are not the model faltering. p95 latency covers
-          successful requests only. See{' '}
+          is trusted. Each hourly probe contributes ten observations so unused models have a
+          measured signal. Hours with no evidence stay gray.{' '}
+          <span className="font-medium text-zinc-700">Errors</span> counts upstream failures;
+          rejected requests (bad input, moderation, or too few credits) are listed separately
+          because they are not the model faltering. p95 latency covers successful requests only. See{' '}
           <Link href="/dashboard/models" className="underline hover:text-zinc-700">
             Models
           </Link>{' '}
