@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ChannelRow } from '@/lib/ai/fallback';
 import { costUsd, creditsForUsage } from '@/lib/ai/pricing';
-import { estimateChatHoldCredits } from '@/lib/generate/estimate';
+import { estimateChatHoldCredits, estimateStoppedUsage } from '@/lib/generate/estimate';
 
 const RATES = { inputPerMTok: 0.5, outputPerMTok: 2, cachedPerMTok: 0.05 };
 
@@ -66,5 +66,19 @@ describe('estimateChatHoldCredits', () => {
       1,
     );
     expect(estimateChatHoldCredits(channel(), -100, 500)).toBe(zeroInput);
+  });
+});
+
+describe('estimateStoppedUsage', () => {
+  it('bills the prompt and the streamed text at ~4 characters per token', () => {
+    expect(estimateStoppedUsage(401, 9, 1000)).toEqual({ inputTokens: 101, outputTokens: 3, cachedTokens: 0 });
+  });
+
+  it('bills only the prompt when stopped before any text', () => {
+    expect(estimateStoppedUsage(40, 0, 1000).outputTokens).toBe(0);
+  });
+
+  it('never bills more output than the hold covered', () => {
+    expect(estimateStoppedUsage(40, 100_000, 64).outputTokens).toBe(64);
   });
 });

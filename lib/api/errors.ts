@@ -25,12 +25,19 @@ export function apiError(
   return Response.json({ error: { code, message, request_id: requestId } }, { status });
 }
 
+/** Figures a person-facing message can quote, such as a credit shortfall. */
+export interface ErrorDetails {
+  required?: number;
+  balance?: number;
+}
+
 /** Thrown internally and converted to a response by route handlers via `apiError`. */
 export class ApiError extends Error {
   constructor(
     public code: ErrorCode,
     message: string,
     public status: number,
+    public details?: ErrorDetails,
   ) {
     super(message);
     this.name = 'ApiError';

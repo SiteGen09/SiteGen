@@ -188,6 +188,7 @@ export async function createMediaJob(input: CreateJobInput): Promise<MediaJob> {
       'insufficient_credits',
       `not enough credits: ${reserved} required, ${hold.balance ?? 0} available`,
       402,
+      { required: reserved, balance: hold.balance ?? 0 },
     );
   }
 

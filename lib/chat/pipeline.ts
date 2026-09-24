@@ -196,7 +196,7 @@ export interface PreflightInput {
 }
 
 export type Preflight =
-  | { ok: false; response: IdempotentResponse }
+  | { ok: false; response: IdempotentResponse; error: ApiError }
   | {
       ok: true;
       plan: { key: PlanKey; maxOutputTokens: number };
@@ -205,8 +205,13 @@ export type Preflight =
       held: boolean;
     };
 
-function failure(response: IdempotentResponse): Preflight {
-  return { ok: false, response };
+/** The stored gateway response, plus the structured error dashboard routes reword. */
+function failure(error: ApiError, requestId: string): Preflight {
+  return {
+    ok: false,
+    response: errorResponse(error.code, error.message, requestId, error.status),
+    error,
+  };
 }
 
 /**
@@ -225,12 +230,11 @@ export async function prepareCall(input: PreflightInput): Promise<Preflight> {
   // Enforce the plan's output ceiling — reject, never clamp.
   const requestedMax = maxOutputTokens ?? plan.maxOutputTokens;
   if (requestedMax > plan.maxOutputTokens) {
-    return failure(errorResponse(
+    return failure(new ApiError(
       'invalid_request',
       `${maxOutputField} ${requestedMax} exceeds the ${plan.key} plan limit of ${plan.maxOutputTokens}`,
-      requestId,
       400,
-    ));
+    ), requestId);
   }
 
   // Moderation — before any upstream call, so a flagged prompt is never billed.
@@ -261,19 +265,19 @@ export async function prepareCall(input: PreflightInput): Promise<Preflight> {
         detail: err instanceof Error ? err.message : String(err),
       });
     }
-    return failure(errorResponse(
+    return failure(new ApiError(
       'content_policy_violation',
       'the prompt was flagged by content moderation',
-      requestId,
       400,
-    ));
+    ), requestId);
   }
 
   // Resolve the channel by public model name.
   const resolved = await resolveChannelAndCreds(model, auth.ownerId, plan.key);
   if (resolved === null) {
     return failure(
-      errorResponse('model_not_found', `the model '${model}' does not exist`, requestId, 404),
+      new ApiError('model_not_found', `the model '${model}' does not exist`, 404),
+      requestId,
     );
   }
 
@@ -291,12 +295,13 @@ export async function prepareCall(input: PreflightInput): Promise<Preflight> {
     if (!hold.success) {
       log.warn('chat.insufficient_credits', { required: estimated, balance: hold.balance });
       return failure(
-        errorResponse(
+        new ApiError(
           'insufficient_credits',
           `insufficient credits: need ${estimated}, balance ${hold.balance ?? 0}`,
-          requestId,
           402,
+          { required: estimated, balance: hold.balance ?? 0 },
         ),
+        requestId,
       );
     }
     held = true;
@@ -318,6 +323,8 @@ export interface SettleInput {
   rates: TokenRates;
   usage: NormalizedUsage;
   latencyMs: number;
+  /** The usage is an estimate: the caller stopped the stream before the provider reported it. */
+  estimated?: boolean;
 }
 
 export async function settleCall(input: SettleInput): Promise<{ creditsCharged: number; costUsd: number }> {
@@ -330,6 +337,7 @@ export async function settleCall(input: SettleInput): Promise<{ creditsCharged: 
       output_tokens: input.usage.outputTokens,
       cached_tokens: input.usage.cachedTokens,
       ...(input.usage.cacheWriteTokens ? { cache_write_tokens: input.usage.cacheWriteTokens } : {}),
+      ...(input.estimated ? { estimated: true } : {}),
     });
   }
 

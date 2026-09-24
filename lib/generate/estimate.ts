@@ -2,6 +2,7 @@ import type { ChannelRow } from '@/lib/ai/fallback';
 import { costUsd, creditsForUsage } from '@/lib/ai/pricing';
 import { ApiError } from '@/lib/api/errors';
 import { MAX_ROUNDS } from '@/lib/generate/generate';
+import type { NormalizedUsage } from '@/lib/generate/usage';
 
 /**
  * Worst-case token budget for a single generation round. Deliberately
@@ -76,4 +77,29 @@ export function estimateChatHoldCredits(
     cachedTokens: 0,
   });
   return creditsForUsage(cost, multiplier);
+}
+
+/**
+ * Usage to bill for a chat stream the caller stopped part-way.
+ *
+ * An aborted stream never receives the provider's usage report, yet the
+ * provider still bills the prompt and every token produced before the abort.
+ * Charging nothing would make stopping just before the end a free answer, so
+ * this uses the same coarse ~4 characters per token for the prompt and for the
+ * text that was actually streamed. Output is capped at the request's ceiling,
+ * which the hold already covers.
+ */
+export function estimateStoppedUsage(
+  promptChars: number,
+  outputChars: number,
+  maxOutputTokens: number,
+): NormalizedUsage {
+  return {
+    inputTokens: Math.ceil(Math.max(0, promptChars) / CHARS_PER_TOKEN),
+    outputTokens: Math.min(
+      Math.max(0, maxOutputTokens),
+      Math.ceil(Math.max(0, outputChars) / CHARS_PER_TOKEN),
+    ),
+    cachedTokens: 0,
+  };
 }

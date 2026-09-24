@@ -1,4 +1,4 @@
-import { listMediaModels, listPublicModels } from '@/lib/ai/channels';
+import { listMediaModelOptions, listPublicModelOptions } from '@/lib/ai/channels';
 import { loadRoutingPreferences } from '@/lib/ai/sources';
 import { loadPlan } from '@/lib/chat/pipeline';
 import { conversationSchema } from '@/lib/chat/conversations';
@@ -17,10 +17,10 @@ export default async function ChatPage() {
     loadRoutingPreferences(user.id),
     createClient(),
   ]);
-  const [models, imageModels, videoModels, conversations] = await Promise.all([
-    listPublicModels(plan.key, preferences),
-    mediaAvailability('image').enabled ? listMediaModels(plan.key, 'image', preferences) : Promise.resolve([]),
-    mediaAvailability('video').enabled ? listMediaModels(plan.key, 'video', preferences) : Promise.resolve([]),
+  const [chatOptions, imageOptions, videoOptions, conversations] = await Promise.all([
+    listPublicModelOptions(plan.key, preferences),
+    mediaAvailability('image').enabled ? listMediaModelOptions(plan.key, 'image', preferences) : Promise.resolve([]),
+    mediaAvailability('video').enabled ? listMediaModelOptions(plan.key, 'video', preferences) : Promise.resolve([]),
     session
       .from('chat_conversations')
       .select('id, title, model, updated_at')
@@ -28,6 +28,10 @@ export default async function ChatPage() {
       .limit(100),
   ]);
   if (conversations.error) throw new Error('Could not load conversations');
+  // Public names and their family only; nothing about sources or upstream ids.
+  const families = Object.fromEntries(
+    [...chatOptions, ...imageOptions, ...videoOptions].map((option) => [option.id, option.family]),
+  );
   return (
     <>
       <PageHeader
@@ -35,9 +39,10 @@ export default async function ChatPage() {
         description="Chat, share files, and choose a model. Visual generation will appear here after its safety checks are enabled."
       />
       <ChatWorkspace
-        models={models}
-        imageModels={imageModels}
-        videoModels={videoModels}
+        models={chatOptions.map((option) => option.id)}
+        imageModels={imageOptions.map((option) => option.id)}
+        videoModels={videoOptions.map((option) => option.id)}
+        families={families}
         initialConversations={conversationSchema.array().parse(conversations.data)}
       />
     </>

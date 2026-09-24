@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { z } from 'zod';
+import { isPolicyRejection } from '@/lib/guardrails/policy';
 import { GenerationProgress } from './generation-progress';
 import { GeneratedImage } from './generated-image';
 
@@ -88,10 +89,18 @@ export function MediaBubble({ jobId, startedAt }: { jobId: string; startedAt: st
   }
 
   if (job.status === 'failed') {
+    // Provider text is often an internal status line; the stored code is for support.
+    const declined = isPolicyRejection(job.error);
     return (
-      <p role="alert" className="text-sm text-red-700">
-        {job.error?.message ?? 'This render failed.'} Your credits were returned.
-      </p>
+      <div role="alert" className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+        <p className="font-medium text-red-900">{declined ? 'Declined by the provider' : `This ${job.kind} couldn't be created`}</p>
+        <p className="mt-1 leading-6">
+          {declined
+            ? 'The AI provider declined this prompt under its content policy. Try rephrasing it.'
+            : "The provider couldn't finish this render. Try again, or choose a different model."}{' '}
+          Your credits were returned.
+        </p>
+      </div>
     );
   }
 

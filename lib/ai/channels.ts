@@ -9,6 +9,7 @@ import {
   type Modality,
   type RoutingPreferences,
 } from '@/lib/ai/sources';
+import type { Family } from '@/lib/ai/source-types';
 import { MAX_CHAIN_DEPTH, type ChannelRow } from '@/lib/ai/fallback';
 import type { TaskAlias } from '@/lib/ai/provider';
 import { planMeetsMinimum } from '@/lib/billing/plans';
@@ -301,10 +302,40 @@ export async function selectChatRoute(
  * Returns only `public_model_id` values: the upstream `model_id`, base URL,
  * and multiplier must never reach a caller.
  */
+/** A public model name with the family it belongs to, for grouping in a picker. */
+export interface ModelOption {
+  id: string;
+  family: Family;
+}
+
+/**
+ * Enumerates each servable public name once, using precisely the same
+ * eligibility and cascade as the dispatch path. Family is model identity, so
+ * any row serving a name carries the right one.
+ */
+function optionsOf(rows: ChannelDbRow[], modality: Modality, preferences: RoutingPreferences): ModelOption[] {
+  return [
+    ...new Set(rows.flatMap((row) => (row.public_model_id === null ? [] : [row.public_model_id]))),
+  ]
+    .sort()
+    .flatMap((id) => {
+      const serving = rows.filter((row) => row.public_model_id === id);
+      if (preferredOf(serving, preferences, modality) === null) return [];
+      return [{ id, family: serving.find((row) => row.sources !== null)?.sources?.family ?? 'other' }];
+    });
+}
+
 export async function listPublicModels(
   planKey: string,
   preferences: RoutingPreferences = new Map(),
 ): Promise<string[]> {
+  return (await listPublicModelOptions(planKey, preferences)).map((option) => option.id);
+}
+
+export async function listPublicModelOptions(
+  planKey: string,
+  preferences: RoutingPreferences = new Map(),
+): Promise<ModelOption[]> {
   const { data, error } = await createServiceClient()
     .from('channels')
     .select(PLATFORM_COLUMNS)
@@ -316,20 +347,8 @@ export async function listPublicModels(
     .array()
     .parse(data ?? [])
     .filter((row) => eligibleForPlan(row, planKey));
-  // Several sources can serve the same public name; enumerate names once using
-  // precisely the same eligibility and cascade as the dispatch path.
-  return [
-    ...new Set(rows.flatMap((row) => (row.public_model_id === null ? [] : [row.public_model_id]))),
-  ]
-    .filter(
-      (id) =>
-        preferredOf(
-          rows.filter((row) => row.public_model_id === id),
-          preferences,
-          'chat',
-        ) !== null,
-    )
-    .sort();
+  // Several sources can serve the same public name.
+  return optionsOf(rows, 'chat', preferences);
 }
 
 /**
@@ -450,6 +469,14 @@ export async function listMediaModels(
   kind: 'image' | 'video',
   preferences: RoutingPreferences = new Map(),
 ): Promise<string[]> {
+  return (await listMediaModelOptions(planKey, kind, preferences)).map((option) => option.id);
+}
+
+export async function listMediaModelOptions(
+  planKey: string,
+  kind: 'image' | 'video',
+  preferences: RoutingPreferences = new Map(),
+): Promise<ModelOption[]> {
   const { data, error } = await createServiceClient()
     .from('channels')
     .select(PLATFORM_COLUMNS)
@@ -464,16 +491,5 @@ export async function listMediaModels(
     .parse(data ?? [])
     .filter((row) => eligibleForPlan(row, planKey, 'request') && row.request_price_usd !== null);
 
-  return [
-    ...new Set(rows.flatMap((row) => (row.public_model_id === null ? [] : [row.public_model_id]))),
-  ]
-    .filter(
-      (id) =>
-        preferredOf(
-          rows.filter((row) => row.public_model_id === id),
-          preferences,
-          kind,
-        ) !== null,
-    )
-    .sort();
+  return optionsOf(rows, kind, preferences);
 }

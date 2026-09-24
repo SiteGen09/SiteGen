@@ -32,6 +32,12 @@ export interface ChatStreamParams {
   stop?: string | string[] | undefined;
   tools?: readonly ChatTool[] | undefined;
   toolChoice?: ChatToolChoice | undefined;
+  /**
+   * Stops the upstream request. The part stream then simply ends and
+   * `completion` rejects with the abort reason, because the provider never
+   * sends its usage report; the caller decides what the partial turn costs.
+   */
+  abortSignal?: AbortSignal | undefined;
 }
 
 /** Settlement figures, available only once the upstream stream has ended. */
@@ -190,6 +196,7 @@ export async function streamChat(params: ChatStreamParams): Promise<ChatStreamHa
             : [params.stop],
       tools: toToolSet(params.tools),
       toolChoice: toToolChoice(params.toolChoice),
+      abortSignal: params.abortSignal,
       onError({ error }) {
         state.failure ??= { error };
       },

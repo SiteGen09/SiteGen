@@ -69,3 +69,30 @@ export type RoutingPreferences = ReadonlyMap<string, string>;
 export function taskForModality(modality: Modality): string {
   return modality === 'chat' ? 'chat.completions' : `${modality}.generate`;
 }
+
+/** How a family is named to people choosing a model: vendor, then model line. */
+export const FAMILY_LABELS: Record<Family, string> = {
+  gpt: 'OpenAI · GPT',
+  claude: 'Anthropic · Claude',
+  grok: 'xAI · Grok',
+  deepseek: 'DeepSeek',
+  qwen: 'Alibaba · Qwen',
+  gemini: 'Google · Gemini',
+  zhipu: 'Zhipu · GLM',
+  moonshot: 'Moonshot · Kimi',
+  minimax: 'MiniMax',
+  tencent: 'Tencent · Hunyuan',
+  xiaomi: 'Xiaomi · MiMo',
+  bytedance: 'ByteDance',
+  kling: 'Kling',
+  wan: 'Wan',
+  runway: 'Runway',
+  pixverse: 'PixVerse',
+  ideogram: 'Ideogram',
+  flux: 'FLUX',
+  topaz: 'Topaz',
+  elevenlabs: 'ElevenLabs',
+  suno: 'Suno',
+  alibaba: 'Alibaba',
+  other: 'Other',
+};

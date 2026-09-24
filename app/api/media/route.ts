@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 
 import { z } from 'zod';
 
-import { ApiError, apiError } from '@/lib/api/errors';
+import { dashboardErrorFrom } from '@/lib/api/dashboard-errors';
+import { ApiError } from '@/lib/api/errors';
 import { loadPlan } from '@/lib/chat/pipeline';
 import { createMediaJob, mediaMarker } from '@/lib/media/jobs';
 import { mediaAvailability } from '@/lib/media/availability';
@@ -44,7 +45,7 @@ async function handlePost(request: Request): Promise<Response> {
     const session = await createClient();
     const { data: userData, error: userError } = await session.auth.getUser();
     if (userError !== null || userData.user === null) {
-      return apiError('unauthorized', 'sign in to generate media', requestId, 401);
+      throw new ApiError('unauthorized', 'sign in to generate media', 401);
     }
     const userId = userData.user.id;
     const origin = request.headers.get('origin');
@@ -52,17 +53,17 @@ async function handlePost(request: Request): Promise<Response> {
 
     const parsed = requestSchema.safeParse(await request.json().catch(() => null));
     if (!parsed.success) {
-      const issue = parsed.error.issues[0];
-      return apiError(
+      const field = parsed.error.issues[0]?.path[0];
+      throw new ApiError(
         'invalid_request',
-        issue === undefined ? 'invalid request body' : `${issue.path.join('.')}: ${issue.message}`,
-        requestId,
+        field === 'prompt' ? 'Image and video prompts can be up to 5,000 characters.'
+          : field === 'model' ? 'Choose a model.' : 'Reload the page and try again.',
         400,
       );
     }
     const availability = mediaAvailability(parsed.data.kind);
     if (!availability.enabled) {
-      return apiError('channel_unavailable', availability.reason ?? 'media generation is unavailable', requestId, 503);
+      throw new ApiError('channel_unavailable', availability.reason ?? `${parsed.data.kind} generation is unavailable`, 503);
     }
     await admitGeneration(userId);
 
@@ -80,7 +81,7 @@ async function handlePost(request: Request): Promise<Response> {
         .select('id')
         .single();
       if (error !== null) {
-        return apiError('internal_error', 'could not start a conversation', requestId, 500);
+        throw new ApiError('internal_error', 'could not start a conversation', 500);
       }
       conversationId = z.object({ id: z.string() }).parse(data).id;
     } else {
@@ -92,7 +93,7 @@ async function handlePost(request: Request): Promise<Response> {
         .eq('user_id', userId)
         .maybeSingle();
       if (data === null) {
-        return apiError('not_found', 'no such conversation', requestId, 404);
+        throw new ApiError('not_found', 'no such conversation', 404);
       }
     }
 
@@ -135,18 +136,13 @@ async function handlePost(request: Request): Promise<Response> {
       { status: 202, headers: { 'x-conversation-id': conversationId } },
     );
   } catch (err) {
-    if (err instanceof ApiError) {
-      return apiError(err.code, err.message, requestId, err.status);
+    if (!(err instanceof ApiError)) {
+      log.error('media_job.dashboard_failed', {
+        reason: err instanceof Error ? err.message : 'unknown error',
+      });
     }
-    log.error('media_job.dashboard_failed', {
-      reason: err instanceof Error ? err.message : 'unknown error',
-    });
-    return apiError('internal_error', 'could not start the render', requestId, 500);
+    return dashboardErrorFrom(err, requestId);
   }
 }
 
-function guardError(error: unknown, id: string): Response {
-  return error instanceof ApiError ? apiError(error.code, error.message, id, error.status) : apiError('internal_error', 'request failed', id, 500);
-}
-
-export const POST = guardedRoute(handlePost, guardError);
+export const POST = guardedRoute(handlePost, dashboardErrorFrom);
