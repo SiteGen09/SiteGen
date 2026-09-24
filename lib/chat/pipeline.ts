@@ -157,13 +157,18 @@ export interface UsageEventInput {
    * source and admin reporting would count the caller's provider bill as ours.
    */
   byok?: boolean;
+  /**
+   * Leave an event already written for this request untouched. Used by the
+   * catch-all failure log, so it never overwrites a more specific record.
+   */
+  keepExisting?: boolean;
   log: Logger;
 }
 
 /** Records the outcome of a call; a failed audit write must not mask the result. */
 export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
   const service = createServiceClient();
-  const { error } = await service.from('usage_events').upsert({
+  const row = {
     request_id: input.requestId,
     user_id: input.userId,
     api_key_id: input.apiKeyId,
@@ -177,9 +182,51 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
     credits_charged: input.creditsCharged,
     // An explicit label is kept by the snapshot triggers instead of the channel's source.
     ...(input.byok ? { source_id: null, source_label: 'BYOK' } : {}),
-  });
+  };
+  const { error } = input.keepExisting
+    ? await service.from('usage_events').upsert(row, { onConflict: 'request_id', ignoreDuplicates: true })
+    : await service.from('usage_events').upsert(row);
   if (error !== null) {
     input.log.error('usage_event.write_failed', { db_error: error.code });
+  }
+}
+
+/**
+ * Logs a request that ended without an answer, so every failure appears in
+ * the caller's usage history at zero credits. A refusal of the request itself
+ * (a 4xx of ours: bad input, policy, credits, rate limit) is `rejected`;
+ * anything else, including every provider error, is `failed`.
+ *
+ * Never throws and never overwrites an event already written for the request.
+ */
+export async function recordRequestFailure(input: {
+  requestId: string;
+  auth: CallIdentity;
+  log: Logger;
+  error: unknown;
+  channelId?: string | null;
+}): Promise<void> {
+  const rejected = input.error instanceof ApiError && input.error.status < 500;
+  try {
+    await recordUsageEvent({
+      requestId: input.requestId,
+      userId: input.auth.ownerId,
+      apiKeyId: input.auth.apiKeyId,
+      channelId: input.channelId ?? null,
+      status: rejected ? 'rejected' : 'failed',
+      latencyMs: null,
+      inputTokens: null,
+      outputTokens: null,
+      cachedTokens: null,
+      costUsd: null,
+      creditsCharged: 0,
+      keepExisting: true,
+      log: input.log,
+    });
+  } catch (err) {
+    input.log.error('usage_event.write_failed', {
+      detail: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
@@ -224,6 +271,20 @@ function failure(error: ApiError, requestId: string): Preflight {
  * to happen here where a plain JSON error is still possible.
  */
 export async function prepareCall(input: PreflightInput): Promise<Preflight> {
+  const { requestId, auth, log } = input;
+  let prepared: Preflight;
+  try {
+    prepared = await preflight(input);
+  } catch (err) {
+    await recordRequestFailure({ requestId, auth, log, error: err });
+    throw err;
+  }
+  // Every refusal is logged, so the caller's usage history shows it too.
+  if (!prepared.ok) await recordRequestFailure({ requestId, auth, log, error: prepared.error });
+  return prepared;
+}
+
+async function preflight(input: PreflightInput): Promise<Preflight> {
   const { requestId, auth, log, model, messages, tools, maxOutputTokens, maxOutputField } = input;
   const plan = await loadPlan(auth.ownerId);
 
@@ -242,20 +303,6 @@ export async function prepareCall(input: PreflightInput): Promise<Preflight> {
   await enforceLocalPolicy(prompt + '\n' + policyText(tools));
   const moderation = await checkContent(prompt, log);
   if (moderation.flagged) {
-    await recordUsageEvent({
-      requestId,
-      userId: auth.ownerId,
-      apiKeyId: auth.apiKeyId,
-      channelId: null,
-      status: 'rejected',
-      latencyMs: null,
-      inputTokens: null,
-      outputTokens: null,
-      cachedTokens: null,
-      costUsd: null,
-      creditsCharged: 0,
-      log,
-    });
     try {
       await recordStrikeAndMaybeSuspend(auth.ownerId, requestId, moderation.categories, log);
     } catch (err) {
@@ -323,8 +370,6 @@ export interface SettleInput {
   rates: TokenRates;
   usage: NormalizedUsage;
   latencyMs: number;
-  /** The usage is an estimate: the caller stopped the stream before the provider reported it. */
-  estimated?: boolean;
 }
 
 export async function settleCall(input: SettleInput): Promise<{ creditsCharged: number; costUsd: number }> {
@@ -337,7 +382,6 @@ export async function settleCall(input: SettleInput): Promise<{ creditsCharged: 
       output_tokens: input.usage.outputTokens,
       cached_tokens: input.usage.cachedTokens,
       ...(input.usage.cacheWriteTokens ? { cache_write_tokens: input.usage.cacheWriteTokens } : {}),
-      ...(input.estimated ? { estimated: true } : {}),
     });
   }
 
@@ -368,19 +412,24 @@ export async function recordCallFailure(input: {
   channelId: string | null;
   held: boolean;
 }): Promise<void> {
-  if (input.held) await releaseCredits(input.requestId);
-  await recordUsageEvent({
-    requestId: input.requestId,
-    userId: input.auth.ownerId,
-    apiKeyId: input.auth.apiKeyId,
-    channelId: input.channelId,
-    status: 'failed',
-    latencyMs: null,
-    inputTokens: null,
-    outputTokens: null,
-    cachedTokens: null,
-    costUsd: null,
-    creditsCharged: 0,
-    log: input.log,
-  });
+  try {
+    if (input.held) await releaseCredits(input.requestId);
+  } finally {
+    // Logged even when the release fails: the cron reclaims a stranded hold,
+    // but a missing event would hide the failure from the caller's history.
+    await recordUsageEvent({
+      requestId: input.requestId,
+      userId: input.auth.ownerId,
+      apiKeyId: input.auth.apiKeyId,
+      channelId: input.channelId,
+      status: 'failed',
+      latencyMs: null,
+      inputTokens: null,
+      outputTokens: null,
+      cachedTokens: null,
+      costUsd: null,
+      creditsCharged: 0,
+      log: input.log,
+    });
+  }
 }

@@ -112,8 +112,8 @@ describe('generateSpec', () => {
     });
 
     expect(result.spec).toBe(FAKE_SPEC);
-    // Usage from the failed attempt is still counted for settlement.
-    expect(result.usage).toEqual({ inputTokens: 1100, outputTokens: 500, cachedTokens: 0 });
+    // The failed attempt delivered nothing, so only the successful round is billed.
+    expect(result.usage).toEqual({ inputTokens: 1000, outputTokens: 500, cachedTokens: 0 });
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
 
     const secondCall = generateObjectMock.mock.calls[1]?.[0];
@@ -153,15 +153,15 @@ describe('generateSpec', () => {
 });
 
 describe('estimateHoldCredits', () => {
-  it('sizes the hold from the worst-case budget across every billable round', () => {
-    // Two rounds of (10000*0.8 + 8000*4)/1e6 = 0.08 USD -> ceil(800 * 1.0) = 800.
-    expect(estimateHoldCredits(cheapChannel())).toBe(800);
+  it('sizes the hold from the worst-case budget of the billed round', () => {
+    // (10000*0.8 + 8000*4)/1e6 = 0.04 USD -> ceil(400 * 1.0) = 400.
+    expect(estimateHoldCredits(cheapChannel())).toBe(400);
   });
 
   it('applies the channel multiplier', () => {
-    // Two rounds of (10000*15 + 8000*75)/1e6 = 1.5 USD -> ceil(15000 * 1.2) = 18000.
+    // (10000*15 + 8000*75)/1e6 = 0.75 USD -> ceil(7500 * 1.2) = 9000.
     const strong = cheapChannel({ rates: STRONG_RATES, creditMultiplier: '1.20' });
-    expect(estimateHoldCredits(strong)).toBe(18000);
+    expect(estimateHoldCredits(strong)).toBe(9000);
   });
 
   it('holds nothing for a zero-multiplier BYOK channel', () => {
@@ -184,15 +184,12 @@ describe('estimateHoldCredits', () => {
 });
 
 /**
- * Regression: a call that fails schema validation once and succeeds on the
- * retry settles usage from *both* attempts. The hold is placed once, before
- * either attempt, so it must cover the worst case for every round
- * `generateSpec` can run — otherwise settle drives the balance negative, which
- * is exactly the overdraw `hold_credits` refuses to allow but `settle_credits`
- * would happily write.
+ * A call that fails schema validation once and succeeds on the retry is billed
+ * only for the round that produced the spec: the failed round delivered
+ * nothing. The single-round hold therefore still covers the worst case.
  */
-describe('hold covers every round that settles', () => {
-  it('a worst-case retry settles within the pre-flight hold', async () => {
+describe('hold covers the round that settles', () => {
+  it('a worst-case retry bills one round, within the pre-flight hold', async () => {
     const channel = cheapChannel();
     const held = estimateHoldCredits(channel);
 
@@ -212,10 +209,10 @@ describe('hold covers every round that settles', () => {
       maxOutputTokens: HOLD_BUDGET.outputTokens,
     });
 
-    // Both rounds are billed, at the full worst-case budget for each.
+    // Only the successful round is billed.
     expect(result.usage).toEqual({
-      inputTokens: 20_000,
-      outputTokens: 16_000,
+      inputTokens: 10_000,
+      outputTokens: 8_000,
       cachedTokens: 0,
     });
 

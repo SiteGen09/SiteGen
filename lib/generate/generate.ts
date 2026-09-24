@@ -15,13 +15,8 @@ import { normalizeUsage } from '@/lib/generate/usage';
 import type { SiteSpec } from '@/lib/spec/schema';
 import { siteSpecSchema } from '@/lib/spec/schema';
 
-/**
- * Total tries: the first attempt plus one validation-feedback retry.
- *
- * Exported because the pre-flight hold must cover every round that can bill,
- * not just the last one — usage from a failed attempt is still settled.
- */
-export const MAX_ROUNDS = 2;
+/** Total tries: the first attempt plus one validation-feedback retry. */
+const MAX_ROUNDS = 2;
 const MAX_VALIDATION_MESSAGE_CHARS = 800;
 
 export interface SpecGenerationResult {
@@ -34,7 +29,10 @@ export interface SpecGenerationResult {
   modelId: string;
   /** USD rates of the serving channel, for cost calculation. */
   rates: TokenRates;
-  /** Token usage summed across every attempt, including failed ones. */
+  /**
+   * Token usage of the attempt that produced the spec. A round that failed
+   * schema validation delivered nothing to the caller, so it is not billed.
+   */
   usage: NormalizedUsage;
   latencyMs: number;
 }
@@ -45,12 +43,6 @@ export interface GenerateSpecParams {
   buildCreds: (channel: ChannelRow) => Promise<ProviderCreds>;
   prompt: string;
   maxOutputTokens: number;
-}
-
-function addUsage(into: NormalizedUsage, more: NormalizedUsage): void {
-  into.inputTokens += more.inputTokens;
-  into.outputTokens += more.outputTokens;
-  into.cachedTokens += more.cachedTokens;
 }
 
 /** Pulls a concise validation reason out of a `NoObjectGeneratedError`. */
@@ -64,12 +56,12 @@ function validationMessage(err: NoObjectGeneratedError): string {
  * Generates a site spec, walking the channel fallback chain per attempt and
  * retrying once with the schema-validation error fed back into the prompt.
  *
- * Token usage from a failed attempt is still counted so the caller settles the
- * real cost. A second validation failure is terminal: the model could not
- * produce a conforming spec, surfaced as `generation_failed`.
+ * Only the attempt that produced the spec is billed: a round that failed
+ * validation delivered nothing. A second validation failure is terminal: the
+ * model could not produce a conforming spec, surfaced as `generation_failed`,
+ * and the caller releases the hold.
  */
 export async function generateSpec(params: GenerateSpecParams): Promise<SpecGenerationResult> {
-  const usage: NormalizedUsage = { inputTokens: 0, outputTokens: 0, cachedTokens: 0 };
   const startedAt = Date.now();
   let prompt = params.prompt;
 
@@ -90,21 +82,19 @@ export async function generateSpec(params: GenerateSpecParams): Promise<SpecGene
         });
       });
 
-      addUsage(usage, normalizeUsage(result.value.usage, result.value.providerMetadata));
       return {
         spec: result.value.object,
         channelId: servingChannel.id,
         multiplier: Number(servingChannel.creditMultiplier),
         modelId: servingChannel.modelId,
         rates: servingChannel.rates,
-        usage,
+        usage: normalizeUsage(result.value.usage, result.value.providerMetadata),
         latencyMs: Date.now() - startedAt,
       };
     } catch (err) {
       await observePolicyRejection(err);
       if (isPolicyRejection(err)) throw err;
       if (!NoObjectGeneratedError.isInstance(err)) throw err;
-      if (err.usage !== undefined) addUsage(usage, normalizeUsage(err.usage, undefined));
       if (round === MAX_ROUNDS - 1) break;
       prompt = withValidationFeedback(params.prompt, validationMessage(err));
     }

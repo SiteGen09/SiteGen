@@ -159,7 +159,7 @@ describe('chat streaming through the real provider SDK', () => {
     });
   });
 
-  it.each([['stop', 'stop'], ['length', 'length'], ['content_filter', 'content-filter']])(
+  it.each([['stop', 'stop'], ['length', 'length']])(
     'preserves the upstream finish reason %s',
     async (upstream, expected) => {
       mockStream(textEvent() + finishEvent(upstream) + usageEvent + doneEvent);
@@ -184,11 +184,18 @@ describe('chat streaming through the real provider SDK', () => {
     expect((await handle.completion).finishReason).toBe('tool-calls');
   });
 
-  it('still accepts an explicitly completed empty response', async () => {
+  it('fails a content-filtered response so it is released, not billed', async () => {
+    mockStream(textEvent() + finishEvent('content_filter') + usageEvent + doneEvent);
+    const handle = await start();
+    await collect(handle);
+    await expect(handle.completion).rejects.toMatchObject({ code: 'generation_failed' });
+  });
+
+  it('fails an explicitly completed empty response so it is released, not billed', async () => {
     mockStream(finishEvent('stop') + usageEvent + doneEvent);
     const handle = await start();
     expect(await collect(handle)).toEqual([]);
-    expect((await handle.completion).finishReason).toBe('stop');
+    await expect(handle.completion).rejects.toMatchObject({ code: 'generation_failed' });
   });
 
   it('rejects EOF without a finish reason or a completed DONE event', async () => {

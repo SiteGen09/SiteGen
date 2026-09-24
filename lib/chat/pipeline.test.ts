@@ -1,16 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChannelRow } from '@/lib/ai/fallback';
-import { prepareCall, resolveChannelAndCreds, settleCall } from './pipeline';
+import { prepareCall, recordCallFailure, resolveChannelAndCreds, settleCall } from './pipeline';
 
 const state = vi.hoisted(() => ({
-  select: vi.fn(), credential: vi.fn(), hold: vi.fn(), platform: vi.fn(), settle: vi.fn(),
+  select: vi.fn(), credential: vi.fn(), hold: vi.fn(), platform: vi.fn(), settle: vi.fn(), release: vi.fn(),
   upsert: vi.fn(async () => ({ error: null })),
 }));
 vi.mock('@/lib/ai/channels', () => ({ selectChatRoute: state.select }));
 vi.mock('@/lib/ai/sources', () => ({ loadRoutingPreferences: async () => new Map() }));
 vi.mock('@/lib/generate/credentials', () => ({ getUserCredential: state.credential }));
 vi.mock('@/lib/admin/credentials', () => ({ resolvePlatformCreds: state.platform }));
-vi.mock('@/lib/generate/ledger', () => ({ holdCredits: state.hold, settleCredits: state.settle }));
+vi.mock('@/lib/generate/ledger', () => ({
+  holdCredits: state.hold, settleCredits: state.settle, releaseCredits: state.release,
+}));
 vi.mock('@/lib/guardrails/runtime', () => ({ enforceLocalPolicy: async () => undefined }));
 vi.mock('@/lib/moderation/check', () => ({ checkContent: async () => ({ flagged: false }) }));
 vi.mock('@/lib/supabase/service', () => ({
@@ -103,5 +105,43 @@ describe('usage source for personal keys', () => {
     expect(row).toMatchObject({ credits_charged: 30, cost_usd: 0.003 });
     expect(row).not.toHaveProperty('source_label');
     expect(row).not.toHaveProperty('source_id');
+  });
+});
+
+describe('failed requests are always logged to usage', () => {
+  it('logs a preflight refusal as rejected at zero credits, without overwriting', async () => {
+    state.hold.mockResolvedValue({ success: false, balance: 3 });
+    const result = await prepareCall(input);
+    expect(result).toMatchObject({ ok: false });
+    expect(state.upsert).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ request_id: 'test-request', status: 'rejected', credits_charged: 0 }),
+      { onConflict: 'request_id', ignoreDuplicates: true },
+    );
+  });
+
+  it('logs an unknown model as rejected', async () => {
+    state.select.mockResolvedValue(null);
+    expect(await prepareCall(input)).toMatchObject({ ok: false });
+    expect(state.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'rejected' }), expect.anything(),
+    );
+  });
+
+  it('logs an unexpected preflight fault as failed and rethrows it', async () => {
+    state.select.mockRejectedValue(new Error('db down'));
+    await expect(prepareCall(input)).rejects.toThrow('db down');
+    expect(state.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed', credits_charged: 0 }), expect.anything(),
+    );
+  });
+
+  it('logs a provider failure even when releasing the hold fails', async () => {
+    state.release.mockRejectedValue(new Error('release failed'));
+    await expect(recordCallFailure({
+      requestId: 'test-request', auth: input.auth, log: input.log, channelId: 'primary', held: true,
+    })).rejects.toThrow('release failed');
+    expect(state.upsert).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ status: 'failed', credits_charged: 0, channel_id: 'primary' }),
+    );
   });
 });

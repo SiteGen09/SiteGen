@@ -26,6 +26,7 @@ import {
   releaseCredits,
   settleCredits,
 } from '@/lib/generate/ledger';
+import { recordRequestFailure } from '@/lib/chat/pipeline';
 import { buildSpecPrompt } from '@/lib/generate/prompt';
 import { generateRequestSchema, requestHash, type GenerateRequest } from '@/lib/generate/request';
 import type { Logger } from '@/lib/log';
@@ -206,7 +207,9 @@ async function runGeneration(ctx: GenerationContext): Promise<IdempotentResponse
       });
     }
 
-    const balanceAfter = await getBalance(auth.ownerId);
+    // Informational only. The call is already charged, so a failed read must
+    // not turn a delivered answer into an error (and a refund attempt).
+    const balanceAfter = await getBalance(auth.ownerId).catch(() => null);
 
     await recordUsageEvent({
       requestId,
@@ -301,14 +304,21 @@ async function handlePost(req: Request): Promise<Response> {
   const startedAt = Date.now();
   log.info('generate.start');
 
+  // Known once the key checks out; from then on every failure is logged to
+  // the caller's usage history.
+  let caller: AuthenticatedKey | undefined;
   try {
     const auth = await authenticateApiKey(req.headers.get('authorization'), log);
+    caller = auth;
     requireScope(auth, 'generate');
     await admitGeneration(auth.ownerId);
 
     const limit = await consumeRateLimit(auth.apiKeyId, auth.rateLimitRpm);
     if (!limit.allowed) {
       log.warn('generate.rate_limited', { retry_after: limit.retryAfterSeconds });
+      await recordRequestFailure({
+        requestId, auth, log, error: new ApiError('rate_limited', 'rate limit exceeded', 429),
+      });
       return Response.json(
         {
           error: {
@@ -328,6 +338,13 @@ async function handlePost(req: Request): Promise<Response> {
     const outcome = await withIdempotency(auth.ownerId, idempotencyKey, hash, () =>
       runGeneration({ requestId, auth, body, log }),
     );
+    // Refusals such as insufficient credits come back as a stored response
+    // rather than a throw; they are logged like any other failure.
+    if (!outcome.replay && outcome.status >= 400) {
+      await recordRequestFailure({
+        requestId, auth, log, error: new ApiError('invalid_request', 'refused', outcome.status),
+      });
+    }
 
     log.info('generate.end', { status: outcome.status, latency_ms: Date.now() - startedAt, replay: outcome.replay });
     return Response.json(outcome.body, {
@@ -335,6 +352,7 @@ async function handlePost(req: Request): Promise<Response> {
       headers: outcome.replay ? { 'Idempotency-Replay': 'true' } : undefined,
     });
   } catch (err) {
+    if (caller !== undefined) await recordRequestFailure({ requestId, auth: caller, log, error: err });
     if (err instanceof ApiError) {
       log.warn('generate.error', { code: err.code, latency_ms: Date.now() - startedAt });
       return apiError(err.code, err.message, requestId, err.status);

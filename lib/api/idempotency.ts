@@ -126,7 +126,11 @@ export async function withIdempotency(
     return { ...response, replay: false };
   }
 
-  const { error } = await service
+  // A failed write is ignored: the work is done and possibly billed, so the
+  // response must still reach the caller. The reservation then stays
+  // `in_progress`, and a retry with this key gets a 409 rather than running,
+  // and being charged, a second time.
+  await service
     .from('idempotency_keys')
     .update({
       status: 'completed',
@@ -135,8 +139,6 @@ export async function withIdempotency(
     })
     .eq('key', key)
     .eq('user_id', userId);
-
-  if (error !== null) throw storeUnavailable();
 
   return { ...response, replay: false };
 }

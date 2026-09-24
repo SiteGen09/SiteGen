@@ -16,6 +16,7 @@ import {
   prepareCall,
   settleCall,
   recordCallFailure,
+  recordRequestFailure,
   type Preflight,
 } from '@/lib/chat/pipeline';
 import {
@@ -128,7 +129,9 @@ async function runResponse(ctx: ResponseContext): Promise<IdempotentResponse> {
       latencyMs: generation.latencyMs,
     });
 
-    const balanceAfter = await getBalance(auth.ownerId);
+    // Informational only. The call is already charged, so a failed read must
+    // not turn a delivered answer into an error (and a refund attempt).
+    const balanceAfter = await getBalance(auth.ownerId).catch(() => null);
 
     log.info('responses.ok', {
       channel_id: generation.channelId,
@@ -351,13 +354,20 @@ async function handlePost(req: Request): Promise<Response> {
   const startedAt = Date.now();
   log.info('responses.start');
 
+  // Known once the key checks out; from then on every failure is logged to
+  // the caller's usage history.
+  let caller: AuthenticatedKey | undefined;
   try {
     const auth = await authenticateApiKey(req.headers.get('authorization'), log);
+    caller = auth;
     requireScope(auth, SCOPE);
     await admitGeneration(auth.ownerId);
 
     const limit = await consumeRateLimit(auth.apiKeyId, auth.rateLimitRpm);
     if (!limit.allowed) {
+      await recordRequestFailure({
+        requestId, auth, log, error: new ApiError('rate_limited', 'rate limit exceeded', 429),
+      });
       log.warn('responses.rate_limited', { retry_after: limit.retryAfterSeconds });
       return openAiError('rate_limited', 'rate limit exceeded', requestId, 429, {
         'Retry-After': String(limit.retryAfterSeconds),
@@ -392,6 +402,7 @@ async function handlePost(req: Request): Promise<Response> {
       headers: outcome.replay ? { 'Idempotency-Replay': 'true' } : undefined,
     });
   } catch (err) {
+    if (caller !== undefined) await recordRequestFailure({ requestId, auth: caller, log, error: err });
     // Classified for the log as well as the response: a provider outage
     // logged at error level charges their downtime to our error budget and
     // buries the genuine bugs it is meant to surface.

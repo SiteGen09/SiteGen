@@ -11,11 +11,8 @@ import { savedMessageSchema, type SavedMessage } from '@/lib/chat/conversations'
 import { attachmentsSchema, decodeTurn, encodeTurn, supportsImages, turnText } from '@/lib/chat/composer';
 import { describeError, type ChatError } from '@/lib/chat/errors';
 import { parseMediaMarker } from '@/lib/media/marker';
-import { prepareCall, settleCall, recordCallFailure, SSE_HEADERS } from '@/lib/chat/pipeline';
-import { totalMessageChars } from '@/lib/chat/request';
-import { streamChat } from '@/lib/chat/stream';
-import { estimateStoppedUsage } from '@/lib/generate/estimate';
-import { releaseCredits } from '@/lib/generate/ledger';
+import { prepareCall, settleCall, recordCallFailure, recordRequestFailure, SSE_HEADERS } from '@/lib/chat/pipeline';
+import { streamChat, type ChatStreamCompletion } from '@/lib/chat/stream';
 import { logger } from '@/lib/log';
 import { createClient } from '@/lib/supabase/server';
 import { createServiceClient } from '@/lib/supabase/service';
@@ -54,7 +51,7 @@ const CLAIM_ATTEMPTS = 16;
 const CLAIM_RETRY_MS = 300;
 
 function interruption(err: unknown, requestId: string): ChatError {
-  const upstream = asUpstreamError(err);
+  const upstream = err instanceof ApiError ? err : asUpstreamError(err);
   const cause = upstream === null ? null
     : describeError({ code: upstream.code, message: upstream.message, status: upstream.status });
   return {
@@ -71,7 +68,6 @@ async function handlePost(req: Request): Promise<Response> {
   const requestId = randomUUID();
   const log = logger({ request_id: requestId, route: 'dashboard.chat' });
   const service = createServiceClient();
-  const startedAt = Date.now();
   let conversationId: string | undefined;
   let ownerId: string | undefined;
   let created = false;
@@ -79,10 +75,11 @@ async function handlePost(req: Request): Promise<Response> {
   let held = false;
   let channelId: string | null = null;
   let lease = false;
-  // The browser leaving stops the upstream, and so does a failure of ours
-  // after the upstream has started.
+  // Only a failure of ours stops the upstream. Once it is answering, the
+  // provider bills the turn whether or not anyone reads it, so the browser
+  // leaving (or Stop) lets it finish and the turn is billed on the provider's
+  // exact usage report rather than on an estimate that could fall short.
   const halt = new AbortController();
-  const upstreamSignal = AbortSignal.any([req.signal, halt.signal]);
 
   async function unlock(): Promise<void> {
     if (!lease || !conversationId || !ownerId) return;
@@ -111,12 +108,18 @@ async function handlePost(req: Request): Promise<Response> {
    */
   async function cancel(): Promise<Response> {
     halt.abort();
-    if (held) {
-      await releaseCredits(requestId).catch(() => {
-        log.error('dashboard.chat_release_failed', { alert: true });
-      });
-      held = false;
+    // Still logged, at zero credits, so the stopped request shows in usage.
+    if (ownerId) {
+      const auth = { ownerId, apiKeyId: null };
+      if (held) {
+        await recordCallFailure({ requestId, auth, log, channelId, held }).catch(() => {
+          log.error('dashboard.chat_release_failed', { alert: true });
+        });
+      } else {
+        await recordRequestFailure({ requestId, auth, log, channelId, error: new Error('cancelled') });
+      }
     }
+    held = false;
     await unlock();
     await discardCreated();
     log.info('dashboard.chat_cancelled', { channel_id: channelId });
@@ -249,12 +252,39 @@ async function handlePost(req: Request): Promise<Response> {
       messages,
       modelMessages,
       maxOutputTokens: prepared.requestedMax,
-      abortSignal: upstreamSignal,
+      abortSignal: halt.signal,
     });
     channelId = handle.channel.id;
     // Observe rejection immediately; iteration will report it in-band too.
     void handle.completion.catch(() => undefined);
-    if (req.signal.aborted) return await cancel();
+    const settle = (done: ChatStreamCompletion) => settleCall({
+      requestId,
+      auth,
+      log,
+      channelId: handle.channel.id,
+      held,
+      multiplier: Number(handle.channel.creditMultiplier),
+      byok: handle.channel.isByok,
+      rates: handle.channel.rates,
+      usage: done.usage,
+      latencyMs: done.latencyMs,
+    });
+    if (req.signal.aborted) {
+      // Left while the upstream was starting to answer: nothing is saved, but
+      // the reply finishes and is billed on its exact usage, since the
+      // provider charges for it either way.
+      after(async () => {
+        try {
+          await settle(await handle.completion);
+        } catch {
+          await recordCallFailure({ requestId, auth, log, channelId, held }).catch(() => undefined);
+        }
+      });
+      await unlock();
+      await discardCreated();
+      log.info('dashboard.chat_cancelled', { channel_id: channelId });
+      return new Response(null, { status: 499 });
+    }
     // Accepted: the upstream is answering and the browser is still waiting.
     // Only now may an edit discard the turns it replaces, and only now is the
     // prompt saved, so a refusal above leaves the conversation as it was.
@@ -288,6 +318,48 @@ async function handlePost(req: Request): Promise<Response> {
     }
     let disconnected = false;
     let work: Promise<void> = Promise.resolve();
+    const userId = user.id;
+    let content = '';
+    let stopped = false;
+    /** Saves the reply and frees the conversation, once: at Stop or at the end. */
+    let saving: Promise<void> | undefined;
+    function saveReply(tokens: number | null): Promise<void> {
+      saving ??= (async () => {
+        if (content.trim() !== '') {
+          const saved = await service.from('chat_messages').insert({
+            id: assistantMessageId,
+            conversation_id: conversationId,
+            role: 'assistant',
+            content,
+            model: responseModel,
+            tokens,
+          });
+          if (saved.error) throw new Error('Could not save assistant response');
+        }
+        const updated = await service
+          .from('chat_conversations')
+          .update({ model: responseModel, updated_at: new Date().toISOString() })
+          .eq('id', conversationId)
+          .eq('user_id', userId);
+        if (updated.error) throw new Error('Could not update conversation');
+        await unlock();
+      })();
+      return saving;
+    }
+    /**
+     * Stop (or a dropped connection): what the person saw is saved and the
+     * chat freed straight away, so they can carry on. The upstream is left to
+     * finish only so the turn is billed on its exact usage.
+     */
+    function stop(): void {
+      if (stopped) return;
+      stopped = true;
+      log.info('dashboard.chat_stopped', { output_chars: content.length });
+      void saveReply(null).catch((err: unknown) => {
+        log.error('dashboard.chat_stop_save_failed', { detail: err instanceof Error ? err.message : 'unknown' });
+      });
+    }
+    req.signal.addEventListener('abort', stop, { once: true });
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -302,62 +374,20 @@ async function handlePost(req: Request): Promise<Response> {
         work = (async () => {
           let settled = false;
           try {
-            let content = '';
-            try {
-              for await (const part of handle.partStream) {
-                if (part.type !== 'text') continue;
-                content += part.text;
-                send({
-                  model: responseModel,
-                  choices: [{ index: 0, delta: { content: part.text }, finish_reason: null }],
-                });
-              }
-            } catch (err) {
-              // An abort normally just ends the stream, but a read in flight
-              // can also reject with it.
-              if (!req.signal.aborted) throw err;
-            }
-            // Stop (or a dropped connection) aborts the upstream, which then
-            // never reports usage. The provider still bills the prompt and the
-            // text produced so far, so the turn is settled on an estimate.
-            const done = await handle.completion.catch((err: unknown) => {
-              if (req.signal.aborted) return null;
-              throw err;
-            });
-            const usage = done?.usage
-              ?? estimateStoppedUsage(totalMessageChars(messages), content.length, prepared.requestedMax);
-            await settleCall({
-              requestId,
-              auth,
-              log,
-              channelId: handle.channel.id,
-              held,
-              multiplier: Number(handle.channel.creditMultiplier),
-              byok: handle.channel.isByok,
-              rates: handle.channel.rates,
-              usage,
-              latencyMs: done?.latencyMs ?? Date.now() - startedAt,
-              estimated: done === null,
-            });
-            settled = true;
-            if (done !== null || content.trim() !== '') {
-              const saved = await service.from('chat_messages').insert({
-                id: assistantMessageId,
-                conversation_id: conversationId,
-                role: 'assistant',
-                content,
+            for await (const part of handle.partStream) {
+              // After Stop the rest is only drained, never shown or saved.
+              if (part.type !== 'text' || stopped) continue;
+              content += part.text;
+              send({
                 model: responseModel,
-                tokens: usage.outputTokens,
+                choices: [{ index: 0, delta: { content: part.text }, finish_reason: null }],
               });
-              if (saved.error) throw new Error('Could not save assistant response');
             }
-            const updated = await service
-              .from('chat_conversations')
-              .update({ model: responseModel, updated_at: new Date().toISOString() })
-              .eq('id', conversationId)
-              .eq('user_id', user.id);
-            if (updated.error) throw new Error('Could not update conversation');
-            if (done === null) log.info('dashboard.chat_stopped', { output_chars: content.length });
+            const done = await handle.completion;
+            const { creditsCharged } = await settle(done);
+            settled = true;
+            log.info('dashboard.chat_settled', { credits_charged: creditsCharged, stopped });
+            await saveReply(stopped ? null : done.usage.outputTokens);
             send({ model: responseModel, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
           } catch (err) {
             log.error('dashboard.chat_failed', {
@@ -390,6 +420,7 @@ async function handlePost(req: Request): Promise<Response> {
       // that promise alive even when the browser abandons the response body.
       cancel() {
         disconnected = true;
+        stop();
       },
     });
     after(async () => {
@@ -414,6 +445,8 @@ async function handlePost(req: Request): Promise<Response> {
         channelId,
         held,
       }).catch(() => undefined);
+    else if (ownerId)
+      await recordRequestFailure({ requestId, auth: { ownerId, apiKeyId: null }, log, channelId, error: err });
     await unlock();
     await discardCreated();
     if (!(err instanceof ApiError))

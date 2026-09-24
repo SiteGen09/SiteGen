@@ -5,6 +5,7 @@ import type { ChannelRow } from '@/lib/ai/fallback';
 import { callWithFallback } from '@/lib/ai/fallback';
 import type { ProviderCreds } from '@/lib/ai/provider';
 import { buildAI } from '@/lib/ai/provider';
+import { assertDelivered } from '@/lib/chat/generate';
 import type { ChatMessage, ChatTool, ChatToolChoice } from '@/lib/chat/request';
 import { toModelMessages, toToolChoice, toToolSet } from '@/lib/chat/tools';
 import type { NormalizedUsage } from '@/lib/generate/usage';
@@ -222,10 +223,12 @@ export async function streamChat(params: ChatStreamParams): Promise<ChatStreamHa
   const { result, iterator, primed, state } = attempt.value;
 
   const completion: Promise<ChatStreamCompletion> = (async () => {
-    const [usage, finishReason, providerMetadata] = await Promise.all([
+    const [usage, finishReason, providerMetadata, text, toolCalls] = await Promise.all([
       result.usage,
       result.finishReason,
       result.providerMetadata,
+      result.text,
+      result.toolCalls,
     ]);
     // The SDK can resolve usage even after emitting an error part. Billing
     // awaits this promise independently of partStream, so both must fail.
@@ -234,7 +237,9 @@ export async function streamChat(params: ChatStreamParams): Promise<ChatStreamHa
       throw state.failure.error;
     }
     await observePolicyRejection({ finishReason });
-    if (finishReason === 'error') throw new Error('The upstream stream finished with an error.');
+    // Settlement follows only a delivered answer; an empty or withheld one is
+    // a provider failure and releases the hold.
+    assertDelivered(finishReason, text, toolCalls.length);
     return {
       finishReason,
       usage: normalizeUsage(usage, providerMetadata),

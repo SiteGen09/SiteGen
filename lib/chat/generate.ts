@@ -5,6 +5,7 @@ import type { ChannelRow } from '@/lib/ai/fallback';
 import { callWithFallback } from '@/lib/ai/fallback';
 import type { ProviderCreds } from '@/lib/ai/provider';
 import { buildAI } from '@/lib/ai/provider';
+import { ApiError } from '@/lib/api/errors';
 import type { TokenRates } from '@/lib/ai/pricing';
 import type { ChatMessage, ChatTool, ChatToolChoice } from '@/lib/chat/request';
 import type { OpenAiToolCall } from '@/lib/chat/tools';
@@ -46,6 +47,26 @@ export interface ChatGenerationParams {
 }
 
 /**
+ * Refuses an upstream answer that gave the caller nothing usable, so the call
+ * is treated as a provider failure and its hold released instead of settled.
+ *
+ * A provider can end a call "successfully" yet deliver nothing: an error or
+ * content-filter finish, or an empty reply with no tool call. Billing only
+ * ever follows a delivered answer, so these must fail rather than settle.
+ */
+export function assertDelivered(finishReason: string, text: string, toolCallCount: number): void {
+  if (finishReason === 'error') {
+    throw new ApiError('generation_failed', 'the provider failed to complete the response', 502);
+  }
+  if (finishReason === 'content-filter') {
+    throw new ApiError('generation_failed', 'the provider withheld the response (content filter)', 502);
+  }
+  if (text.trim() === '' && toolCallCount === 0) {
+    throw new ApiError('generation_failed', 'the provider returned an empty response', 502);
+  }
+}
+
+/**
  * Runs a non-streaming chat completion, walking the channel fallback chain.
  *
  * Mirrors {@link generateSpec} but returns free-form text rather than a
@@ -79,6 +100,7 @@ export async function generateChat(params: ChatGenerationParams): Promise<ChatGe
   });
 
   await observePolicyRejection({ finishReason: result.value.finishReason });
+  assertDelivered(result.value.finishReason, result.value.text, result.value.toolCalls.length);
   const usage = normalizeUsage(result.value.usage, result.value.providerMetadata);
 
   return {

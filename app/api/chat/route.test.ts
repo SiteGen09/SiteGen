@@ -162,7 +162,13 @@ describe('dashboard chat settlement after a Kie stream', () => {
     }));
     expect(response.status).toBe(400);
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(state.writes).toHaveLength(0);
+    // Nothing is saved, but the refusal is still listed in usage.
+    expect(state.writes).toEqual([
+      expect.objectContaining({
+        table: 'usage_events',
+        value: expect.objectContaining({ status: 'rejected', credits_charged: 0 }),
+      }),
+    ]);
   });
 
   it('saves the answer, settles tokens and records success once Kie sends DONE', async () => {
@@ -185,6 +191,29 @@ describe('dashboard chat settlement after a Kie stream', () => {
       table: 'chat_messages', operation: 'insert',
       value: expect.objectContaining({ role: 'assistant', content: 'OK', tokens: 1 }),
     }));
+  });
+
+  it('releases the hold when the provider completes with an empty reply', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response([
+      'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"stop"}]}',
+      'data: {"choices":[],"usage":{"prompt_tokens":84,"completion_tokens":0,"total_tokens":84}}',
+      'data: [DONE]',
+    ].join('\n\n') + '\n\n', { headers: { 'content-type': 'text/event-stream' } })));
+    const response = await POST(new Request('http://localhost/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'public-gemini', content: 'Reply with OK' }),
+    }));
+    const body = await response.text();
+    for (const callback of state.after) await callback();
+
+    expect(body).toContain('The model returned an empty or unreadable response.');
+    expect(body).toContain('You were not charged for this reply.');
+    expect(state.rpc.mock.calls.some(([name]) => name === 'settle_credits')).toBe(false);
+    expect(state.rpc).toHaveBeenCalledWith('release_credits', expect.any(Object));
+    expect(state.writes.filter((write) => write.table === 'usage_events')).toEqual([
+      expect.objectContaining({ value: expect.objectContaining({ status: 'failed', credits_charged: 0 }) }),
+    ]);
   });
 
   it('releases the hold and records failure when the same response is cut off before DONE', async () => {
@@ -264,21 +293,32 @@ describe('dashboard chat errors people can act on', () => {
 });
 
 describe('stopping a reply', () => {
-  it('stops the upstream, keeps the partial reply and bills an estimate for it', async () => {
-    let upstreamSignal: AbortSignal | undefined;
+  /**
+   * An upstream that streams `first`, then waits for `finish()` before sending
+   * `rest`, its usage report and DONE. Records whether it was ever aborted.
+   */
+  function heldUpstream(first: string, rest: string) {
+    const upstream = { aborted: false, finish: () => undefined as void };
     vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init?: RequestInit) => {
-      const signal = init?.signal ?? undefined;
-      upstreamSignal = signal;
+      init?.signal?.addEventListener('abort', () => { upstream.aborted = true; });
       return new Response(new ReadableStream<Uint8Array>({
         start(controller) {
-          controller.enqueue(new TextEncoder().encode(
-            'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"Partial answer"}}]}\n\n',
-          ));
-          // Never finishes on its own: only the abort ends this reply.
-          signal?.addEventListener('abort', () => controller.error(signal.reason));
+          const encode = (text: string) => controller.enqueue(new TextEncoder().encode(text));
+          encode('data: {"choices":[{"index":0,"delta":{"role":"assistant","content":' + JSON.stringify(first) + '}}]}\n\n');
+          upstream.finish = () => {
+            encode('data: {"choices":[{"index":0,"delta":{"content":' + JSON.stringify(rest) + '},"finish_reason":"stop"}]}\n\n');
+            encode('data: {"choices":[],"usage":{"prompt_tokens":84,"completion_tokens":40,"total_tokens":124}}\n\n');
+            encode('data: [DONE]\n\n');
+            controller.close();
+          };
         },
       }), { headers: { 'content-type': 'text/event-stream' } });
     }));
+    return upstream;
+  }
+
+  it('keeps the partial reply, frees the chat, and bills the exact usage once the upstream finishes', async () => {
+    const upstream = heldUpstream('Partial answer', ' and the rest');
     const browser = new AbortController();
     const response = await post({}, browser.signal);
     expect(response.status).toBe(200);
@@ -287,23 +327,55 @@ describe('stopping a reply', () => {
     while (!seen.includes('Partial answer')) seen += new TextDecoder().decode((await reader.read()).value);
     browser.abort();
     await reader.cancel();
-    for (const callback of state.after) await callback();
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(upstreamSignal?.aborted).toBe(true);
-    // 13 prompt characters and 14 streamed characters, at ~4 per token.
-    expect(state.rpc).toHaveBeenCalledWith('settle_credits', expect.objectContaining({
-      p_meta: { input_tokens: 4, output_tokens: 4, cached_tokens: 0, estimated: true },
-    }));
-    expect(state.rpc.mock.calls.some(([name]) => name === 'release_credits')).toBe(false);
+    // Saved and unlocked at Stop, before the upstream has finished.
     expect(state.writes).toContainEqual(expect.objectContaining({
       table: 'chat_messages', operation: 'insert',
       value: expect.objectContaining({
-        id: response.headers.get('x-assistant-message-id'), role: 'assistant', content: 'Partial answer', tokens: 4,
+        id: response.headers.get('x-assistant-message-id'), role: 'assistant', content: 'Partial answer', tokens: null,
       }),
     }));
+    expect(state.writes).toContainEqual(expect.objectContaining({
+      table: 'chat_conversations', operation: 'update', value: { active_request_id: null, locked_until: null },
+    }));
+    expect(state.rpc.mock.calls.some(([name]) => name === 'settle_credits')).toBe(false);
+
+    upstream.finish();
+    for (const callback of state.after) await callback();
+
+    expect(upstream.aborted).toBe(false);
+    // Billed on the provider's report, not on what was shown.
+    expect(state.rpc).toHaveBeenCalledWith('settle_credits', expect.objectContaining({
+      p_meta: { input_tokens: 84, output_tokens: 40, cached_tokens: 0 },
+    }));
+    expect(state.rpc.mock.calls.some(([name]) => name === 'release_credits')).toBe(false);
+    // The rest of the reply is never saved.
+    expect(state.writes.filter((write) => write.table === 'chat_messages' && write.value.role === 'assistant'))
+      .toHaveLength(1);
     expect(state.writes.filter((write) => write.table === 'usage_events')).toEqual([
-      expect.objectContaining({ value: expect.objectContaining({ status: 'ok', output_tokens: 4 }) }),
+      expect.objectContaining({ value: expect.objectContaining({ status: 'ok', output_tokens: 40 }) }),
     ]);
+  });
+
+  it('bills the exact usage when Stop comes before any text reached the person', async () => {
+    const upstream = heldUpstream(' ', 'Answer');
+    const browser = new AbortController();
+    const response = await post({}, browser.signal);
+    expect(response.status).toBe(200);
+    browser.abort();
+    await response.body!.cancel();
+    upstream.finish();
+    for (const callback of state.after) await callback();
+
+    expect(upstream.aborted).toBe(false);
+    expect(state.rpc).toHaveBeenCalledWith('settle_credits', expect.objectContaining({
+      p_meta: { input_tokens: 84, output_tokens: 40, cached_tokens: 0 },
+    }));
+    expect(state.rpc.mock.calls.some(([name]) => name === 'release_credits')).toBe(false);
+    expect(state.writes).not.toContainEqual(expect.objectContaining({
+      table: 'chat_messages', value: expect.objectContaining({ role: 'assistant' }),
+    }));
   });
 
   it('saves and charges nothing when the browser leaves before the reply starts', async () => {
@@ -319,7 +391,11 @@ describe('stopping a reply', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(state.rpc).toHaveBeenCalledWith('release_credits', expect.any(Object));
     expect(state.writes).toContainEqual(expect.objectContaining({ table: 'chat_conversations', operation: 'delete' }));
-    expect(state.writes.some((write) => write.table === 'chat_messages' || write.table === 'usage_events')).toBe(false);
+    expect(state.writes.some((write) => write.table === 'chat_messages')).toBe(false);
+    // Still listed in usage, at zero credits.
+    expect(state.writes.filter((write) => write.table === 'usage_events')).toEqual([
+      expect.objectContaining({ value: expect.objectContaining({ status: 'failed', credits_charged: 0 }) }),
+    ]);
   });
 });
 
