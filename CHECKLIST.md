@@ -27,7 +27,7 @@ Before deploying to production, verify every line is true:
 - [ ] Primary model provider: ____
 - [ ] MODELS.strong (model id): **claude-opus-4-20250514**
 - [ ] MODELS.cheap  (model id): **claude-3-5-haiku-20241022**
-- [ ] Whop app id / plan ids: ____
+- [ ] Whop account/product/plan ids: `biz_w9or6ImVajOjNM`, `prod_2XCm77DPpKsPC`, and the three renewal plan ids
 - [ ] Base domain: ____
 
 ### Environment Variables (production)
@@ -59,7 +59,7 @@ WHOP_API_KEY=your-whop-api-key-here
 WHOP_WEBHOOK_SECRET=your-webhook-secret-here
 WHOP_PLAN_STARTER=plan_XXXXXXXXXXXX
 WHOP_PLAN_PRO=plan_XXXXXXXXXXXX
-WHOP_PLAN_TOPUP=plan_XXXXXXXXXXXX
+WHOP_PRODUCT_CREDITS=prod_2XCm77DPpKsPC
 
 # Cron auth (generate fresh)
 CRON_SECRET=$(node -e "console.log(require('crypto').randomBytes(24).toString('hex'))")
@@ -80,7 +80,7 @@ CRON_SECRET=$(node -e "console.log(require('crypto').randomBytes(24).toString('h
    - [ ] Verified channel test button succeeds
 
 3. **Whop configuration**
-   - [ ] Created products for starter/pro/topup in Whop dashboard
+   - [ ] Configured the existing Starter/Pro/Max plans and the existing credits product in Whop
    - [ ] Added plan ids to environment variables
    - [ ] Configured webhook endpoint: `https://your-domain.com/api/webhooks/whop`
    - [ ] Verified webhook signature validation works
@@ -134,7 +134,7 @@ After first deploy:
 - [ ] Sign up flow works end-to-end
 - [ ] Whop checkout redirects back correctly
 - [ ] First webhook delivery succeeds
-- [ ] Credits granted on membership activation
+- [ ] Credits granted only after `payment.succeeded`
 - [ ] /v1/generate call succeeds with valid API key
 - [ ] Usage appears in dashboard immediately
 - [ ] Credits deducted correctly

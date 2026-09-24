@@ -46,6 +46,10 @@ pnpm dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+Email signup requires a six-digit verification code. Local emails appear in
+[Mailpit](http://127.0.0.1:54324). See [AUTH_SETUP.md](./AUTH_SETUP.md) for auth details and
+[DOMAIN_EMAIL_SETUP.md](./DOMAIN_EMAIL_SETUP.md) and [CLOUDFLARE_TUNNEL_SETUP.md](./CLOUDFLARE_TUNNEL_SETUP.md) for the gensite.tech and Titan Email setup.
+
 ## Development
 
 ### Running tests
@@ -78,17 +82,40 @@ pnpm typecheck
 UPDATE profiles SET role = 'admin' WHERE email = 'your-email@example.com';
 ```
 
-## Production deployment
+## Production deployment on the local Cloudflare Tunnel
 
-1. Create a Supabase project in ap-southeast-1
-2. Link: `supabase link --project-ref your-ref`
-3. Push migrations: `supabase db push`
-4. Set environment variables in Vercel (use `.env.example` as reference)
-5. Deploy: `vercel --prod`
+The supported gensite.tech arrangement keeps the complete Next.js app on the
+Windows computer and exposes it through the named Cloudflare Tunnel. Supabase
+should still be hosted, because visitors cannot reach a Supabase instance on
+`127.0.0.1`. Titan SMTP, Google OAuth, and Whop all call the public HTTPS URL.
+
+1. Create a hosted Supabase project and record its project ref, API keys, and
+   production database URL.
+2. Review the migration filenames, link the CLI to that project, and push only
+   after confirming the target project is correct: `supabase link --project-ref
+   your-ref`, then `supabase db push`.
+3. Configure Titan SMTP and the `gensite.tech` DKIM record, then configure
+   Supabase Auth using [DOMAIN_EMAIL_SETUP.md](./DOMAIN_EMAIL_SETUP.md).
+4. Configure Google OAuth and Whop using [AUTH_SETUP.md](./AUTH_SETUP.md) and
+   [WHOP_BILLING.md](./WHOP_BILLING.md).
+5. Fill the production values in `.env.local` and run
+   `pnpm check:production`. Use the hosted Supabase URL and database URL; do
+   not leave the local defaults.
+6. Build and start Next.js, run the tunnel, and verify
+   `https://gensite.tech/healthz`. The full runbook is
+   [CLOUDFLARE_TUNNEL_SETUP.md](./CLOUDFLARE_TUNNEL_SETUP.md).
+7. Schedule `/api/cron/reconcile`, `/api/cron/probe-models`, and
+   `/api/cron/sweep-media` through Windows Task Scheduler or an external
+   scheduler. Vercel cron does not run on a local tunnel.
+
+To move production to a rented Linux VPS, follow [DEPLOY_VPS.md](./DEPLOY_VPS.md).
+
+If you later move the frontend to Vercel, treat that as a different topology;
+the current app uses same-origin `/api` and `/v1` routes.
 
 ## Architecture
 
-- **Auth**: Supabase email auth, RLS-protected tables
+- **Auth**: Supabase email/password with email code verification, Google OAuth, RLS-protected tables
 - **Billing**: Whop webhooks → entitlements + credit ledger
 - **Credits**: Hold/settle pattern with concurrency safety
 - **AI**: Vercel AI SDK with Anthropic native SDK for prompt caching

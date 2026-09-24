@@ -4,6 +4,35 @@ Implemented on 2026-09-20. The BYOK refactor is isolated in `184df98`; source
 migration and dispatch land together in `a389433`. The remaining implementation
 adds the admin/dashboard surfaces, synthetic status probes, session chat and prices.
 
+## Provider routing update — 2026-09-21
+
+The Routing dashboard now groups model routes by upstream provider. Each provider
+has one expandable entry with a description, model search, model-type filter and
+its own configured model prices. relay.fast and kie.ai each appear once even when
+they serve several model families and modalities. Prices retain each model's
+multiplier and billing tiers.
+
+Auto tries eligible providers for the same public model before existing configured
+chat backups. Plan, status and modality restrictions remain enforced. A chat stream
+that has already produced output is never replayed. Media Auto retries only an
+explicit refusal before a job is accepted; accepted jobs and ambiguous timeouts
+are never resubmitted. Credit reservations cover the same-model alternatives, and
+settlement uses the serving provider's rates. Personal-key chat requests have no
+platform hold or fallback.
+
+Apply `supabase/migrations/20260921100000_routing_price_history.sql` with this
+release. The service-only history table records actual source-multiplier and
+model-rate changes from both admin edits and catalog imports. It backfills audited
+repricing where snapshots exist; unrecorded earlier prices cannot be reconstructed.
+The migration has been applied locally; production has not been changed.
+
+Verification: 136 targeted tests passed, including the local database trigger and
+permissions test. Type checking and lint for the changed routing files passed.
+`pnpm exec tsx scripts/verify-routing-providers.mts` verified authenticated rendering
+of unique provider cards, prices, Auto and the history tab at localhost:3001. The
+verification account is deleted afterward. Interactive browser verification was
+unavailable because the browser integration could not obtain its Codex auth token.
+
 ## Deployment requirements
 
 **Hourly probes require a paid Vercel plan or an external hourly scheduler.
@@ -57,12 +86,16 @@ databases without replaying the backfill.
   guessing from today's configuration. Null-channel moderation events render
   correctly. Dashboard clients receive public model names only.
 - The 24 buckets include the current UTC hour and previous 23 hours. Usage and
-  probes aggregate independently to avoid double-counting joins. Each probe
-  supplies ten observations toward the minimum sample, so an unused successfully
-  probed model is green, but a probe failure counts only once. If every probe
-  fails and no real request succeeds, an explicit outage rule applies. No
-  observations remain gray. Availability and observed SLA count operational
-  observed model-hours;
+  probes aggregate independently to avoid double-counting joins. Every
+  observation counts once, whatever its source. A probe does not carry extra
+  weight; what it changes is the sample gate. Organic traffic still needs the
+  minimum sample before a rate is trusted, while a single probe is a deliberate
+  check of that model and is reported on its own, which is what lets an unused
+  but healthy model read green. Earlier revisions multiplied each probe into ten
+  synthetic observations; that let one failed probe outvote successful traffic
+  and, once the multiplier applied to successes alone, let a majority of probes
+  fail while the hour still read operational. Hours with no observations remain
+  gray. Availability and observed SLA count operational observed model-hours;
   gray hours are excluded and degraded hours are not operational. This is an
   observed status statistic, not a contractual uptime guarantee.
 - Chat uses verified Supabase sessions and the shared moderation, plan ceiling,
