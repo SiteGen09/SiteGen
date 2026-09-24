@@ -9,13 +9,14 @@ ALTER TABLE user_routing_preferences ADD CONSTRAINT user_routing_preferences_fam
   CHECK (family IN ('gpt', 'claude', 'grok', 'deepseek', 'qwen'));
 
 -- Several sources may serve a public model, but one source must have only one
--- route for it. Block writes between the diagnostic and index creation so a
--- concurrent assignment cannot turn a clear configuration error into a race.
-LOCK TABLE channels IN SHARE ROW EXCLUSIVE MODE;
+-- route for it. Keep the lock, diagnostic and index creation in one DO block.
+-- Supabase CLI executes top-level migration statements separately, so a
+-- standalone LOCK TABLE would fail outside an explicit transaction.
 DO $$
 DECLARE
   duplicate record;
 BEGIN
+  EXECUTE 'LOCK TABLE channels IN SHARE ROW EXCLUSIVE MODE';
   SELECT source_id, public_model_id, string_agg(id, ', ' ORDER BY id) AS channel_ids
     INTO duplicate
     FROM channels
@@ -29,7 +30,7 @@ BEGIN
       duplicate.source_id, duplicate.public_model_id, duplicate.channel_ids
       USING HINT = 'Reassign or remove duplicate channel routes, then rerun this migration. Disabled channels also count.';
   END IF;
+  EXECUTE 'CREATE UNIQUE INDEX channels_source_public_model_key
+    ON channels (source_id, public_model_id)
+    WHERE public_model_id IS NOT NULL AND source_id IS NOT NULL';
 END $$;
-CREATE UNIQUE INDEX channels_source_public_model_key
-  ON channels (source_id, public_model_id)
-  WHERE public_model_id IS NOT NULL AND source_id IS NOT NULL;
