@@ -1,4 +1,5 @@
-import { streamText, type TextStreamPart, type ToolSet } from 'ai';
+import { observePolicyRejection, trackGeneration } from '@/lib/guardrails/runtime';
+import { streamText, type ModelMessage, type TextStreamPart, type ToolSet } from 'ai';
 
 import type { ChannelRow } from '@/lib/ai/fallback';
 import { callWithFallback } from '@/lib/ai/fallback';
@@ -23,6 +24,8 @@ export interface ChatStreamParams {
   resolve: (id: string) => Promise<ChannelRow | null>;
   buildCreds: (channel: ChannelRow) => Promise<ProviderCreds>;
   messages: ChatMessage[];
+  /** Dashboard attachments, already validated and converted at the boundary. */
+  modelMessages?: ModelMessage[];
   maxOutputTokens: number;
   temperature?: number | undefined;
   topP?: number | undefined;
@@ -168,10 +171,12 @@ export async function streamChat(params: ChatStreamParams): Promise<ChatStreamHa
     servingChannel = channel;
     const creds = await params.buildCreds(channel);
     const ai = buildAI(creds);
+    const state: { failure?: { error: unknown } } = {};
 
     const result = streamText({
       model: ai.languageModel(channel.modelId),
-      messages: toModelMessages(params.messages),
+      maxRetries: 0,
+      messages: params.modelMessages ?? toModelMessages(params.messages),
       // See generateChat: system turns are carried positionally in `messages`.
       allowSystemInMessages: true,
       maxOutputTokens: params.maxOutputTokens,
@@ -185,6 +190,9 @@ export async function streamChat(params: ChatStreamParams): Promise<ChatStreamHa
             : [params.stop],
       tools: toToolSet(params.tools),
       toolChoice: toToolChoice(params.toolChoice),
+      onError({ error }) {
+        state.failure ??= { error };
+      },
     });
 
     // `streamText` returns before the request is made, so an unreachable
@@ -201,10 +209,10 @@ export async function streamChat(params: ChatStreamParams): Promise<ChatStreamHa
       primed.push(next.value);
       if (LOCAL_LIFECYCLE_PARTS[next.value.type] !== true) break;
     }
-    return { result, iterator, primed };
+    return { result, iterator, primed, state };
   });
 
-  const { result, iterator, primed } = attempt.value;
+  const { result, iterator, primed, state } = attempt.value;
 
   const completion: Promise<ChatStreamCompletion> = (async () => {
     const [usage, finishReason, providerMetadata] = await Promise.all([
@@ -212,6 +220,14 @@ export async function streamChat(params: ChatStreamParams): Promise<ChatStreamHa
       result.finishReason,
       result.providerMetadata,
     ]);
+    // The SDK can resolve usage even after emitting an error part. Billing
+    // awaits this promise independently of partStream, so both must fail.
+    if (state.failure) {
+      await observePolicyRejection(state.failure.error);
+      throw state.failure.error;
+    }
+    await observePolicyRejection({ finishReason });
+    if (finishReason === 'error') throw new Error('The upstream stream finished with an error.');
     return {
       finishReason,
       usage: normalizeUsage(usage, providerMetadata),
@@ -219,6 +235,7 @@ export async function streamChat(params: ChatStreamParams): Promise<ChatStreamHa
     };
   })();
 
+  trackGeneration(completion);
   return {
     channel: servingChannel,
     partStream: toChatParts(replay(primed, iterator)),

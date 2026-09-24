@@ -57,7 +57,9 @@ describe('synthetic evidence', () => {
       failed: 0,
       probes: 1,
       probeFailures: 1,
-      health: 'operational',
+      // One failure in six observations. Amber, not red: the failed check is
+      // real evidence, but it no longer outvotes five successful requests.
+      health: 'degraded',
     },
     {
       name: '20 real requests, 2 failed, no probe',
@@ -100,11 +102,35 @@ describe('synthetic evidence', () => {
       health: 'degraded',
     },
     {
-      name: 'successful and failed probes without traffic',
+      name: 'half of the probes failed, no traffic',
       requests: 0,
       failed: 0,
       probes: 2,
       probeFailures: 1,
+      health: 'outage',
+    },
+    {
+      name: 'most probes failed, no traffic',
+      requests: 0,
+      failed: 0,
+      probes: 6,
+      probeFailures: 5,
+      health: 'outage',
+    },
+    {
+      name: 'one probe of six failed, no traffic',
+      requests: 0,
+      failed: 0,
+      probes: 6,
+      probeFailures: 1,
+      health: 'degraded',
+    },
+    {
+      name: 'all probes succeeded, no traffic',
+      requests: 0,
+      failed: 0,
+      probes: 6,
+      probeFailures: 0,
       health: 'operational',
     },
   ])('$name → $health', ({ requests, failed, probes, probeFailures, health }) => {
@@ -117,10 +143,25 @@ describe('synthetic evidence', () => {
     expect(classifyObservedHealth('degraded', 0, 0, 0, 0).health).toBe('idle');
     expect(availabilityOf([{ health: 'idle' }])).toBeNull();
   });
-  it('combines real failures with probes through the shared classifier', () => {
-    expect(classifyObservedHealth('active', 10, 5, 1, 0)).toEqual(
-      classifyModelHealth('active', 20, 5),
-    );
+  it('counts a probe as one observation, not a synthetic sample', () => {
+    // 11 observations, 5 failures — the probe adds evidence, not weight.
+    expect(classifyObservedHealth('active', 10, 5, 1, 0)).toEqual({
+      health: 'degraded',
+      errorRate: 5 / 11,
+    });
+    // Probe-only hours are read on their own rate rather than a capped one.
+    expect(classifyObservedHealth('active', 0, 0, 4, 3)).toEqual({
+      health: 'outage',
+      errorRate: 0.75,
+    });
+  });
+  it('still needs a real sample when no probe vouches for the hour', () => {
+    expect(classifyObservedHealth('active', 5, 5, 0, 0).health).toBe('idle');
+    expect(classifyObservedHealth('degraded', 5, 0, 0, 0).health).toBe('degraded');
+  });
+  it('treats an operator flag as a floor, never an upgrade', () => {
+    expect(classifyObservedHealth('degraded', 0, 0, 1, 0).health).toBe('degraded');
+    expect(classifyObservedHealth('degraded', 0, 0, 1, 1).health).toBe('outage');
     expect(
       availabilityOf([{ health: 'idle' }, { health: 'operational' }, { health: 'outage' }]),
     ).toBe(50);

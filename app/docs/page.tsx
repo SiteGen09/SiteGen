@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { ERROR_CODES } from '@/lib/api/errors';
 import { FONT_PAIRINGS, TONES } from '@/lib/spec/schema';
 import { ThemeToggle } from '../theme-toggle';
+import { SitegenLogo } from '../_components/sitegen-logo';
 
 export const metadata = {
   title: 'API reference — sitegen',
@@ -141,9 +142,14 @@ export default function DocsPage() {
       <div className="mx-auto max-w-3xl px-4 py-10 sm:px-6 sm:py-14">
         <header>
           <div className="flex items-center justify-between gap-4">
-            <Link href="/" className="text-sm text-zinc-500 underline hover:text-zinc-800">
-              sitegen
-            </Link>
+            <div className="flex items-center gap-4">
+              <Link href="/" aria-label="sitegen home" className="inline-flex shrink-0 text-xl text-zinc-900">
+                <SitegenLogo />
+              </Link>
+              <Link href="/setup" className="text-sm text-zinc-500 underline hover:text-zinc-800">
+                Setup
+              </Link>
+            </div>
             <ThemeToggle />
           </div>
           <h1 className="mt-3 text-2xl font-semibold tracking-tight text-zinc-900 sm:text-3xl">
@@ -158,7 +164,8 @@ export default function DocsPage() {
           {[
             ['authentication', 'Authentication'],
             ['generate', 'POST /v1/generate'],
-            ['chat', 'POST /v1/chat/completions'],
+            ['chat', 'POST /v1/chat/completions, /v1/responses and /v1/messages'],
+            ['media', 'Media endpoints (currently unavailable)'],
             ['models', 'GET /v1/models'],
             ['idempotency', 'Idempotency'],
             ['errors', 'Errors'],
@@ -180,7 +187,12 @@ export default function DocsPage() {
                 Dashboard → API keys
               </Link>
               ; the full key is shown once at creation and only its prefix and last four digits are
-              stored afterwards.
+              stored afterwards. For per-application instructions — Claude Code, Codex, Cursor and
+              the rest — see{' '}
+              <Link href="/setup" className="underline">
+                Setup
+              </Link>
+              .
             </p>
             <Code>{`Authorization: Bearer sk_live_YOUR_API_KEY_HERE`}</Code>
             <p>
@@ -236,11 +248,32 @@ export default function DocsPage() {
 
           <Section id="endpoint-types" title="Endpoint types">
             <p className="text-sm leading-6 text-zinc-600">
-              OpenAI-compatible chat models use POST /v1/chat/completions or POST /v1/responses.
-              Other endpoint labels on the prices page describe provider capabilities; this gateway
-              currently exposes chat and site generation. A listed capability does not create
-              an additional gateway endpoint. Request-priced entries are catalog information only;
-              token-billed routes and dashboard chat exclude them.
+              Chat models are reachable through three wire formats over the same channels and the
+              same billing: POST /v1/chat/completions, POST /v1/responses, and POST /v1/messages —
+              the Anthropic Messages API, which Claude Code and the Anthropic SDKs speak, and which
+              accepts an x-api-key header as well as a bearer token. Which format you send is
+              independent of what a model runs on upstream. Other endpoint labels on the prices page
+              describe provider capabilities; this gateway currently exposes chat and site
+              generation, and a listed capability does not create an additional gateway endpoint.
+              Request-priced capabilities will be billed per completed job rather than per token
+              when they are enabled. They are separate from the chat routes, which route only
+              token-priced channels.
+            </p>
+          </Section>
+
+
+          <Section id="media" title="Media endpoints">
+            <p>
+              Image and video generation are currently unavailable. The safety gate returns{' '}
+              <Tok>503 channel_unavailable</Tok> for <Tok>POST /v1/images</Tok>,{' '}
+              <Tok>POST /v1/videos</Tok>, and the dashboard media action while output moderation and
+              provider checks are being completed. These endpoints will be documented here again
+              after generated outputs are screened and the full flow has passed verification.
+            </p>
+            <p>
+              Chat and site generation remain available through the endpoints documented above.
+              Do not build a paid integration against the media routes until the availability status
+              changes.
             </p>
           </Section>
 

@@ -11,6 +11,8 @@ export const profiles = pgTable('profiles', {
   id: uuid('id').primaryKey(), // references auth.users(id) via trigger
   email: text('email').notNull(),
   role: text('role').notNull().default('developer'), // developer | admin
+  credits: bigint('credits', { mode: 'bigint' }).notNull().default(0n),
+  subscriptionTier: text('subscription_tier').notNull().default('free'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -50,7 +52,7 @@ export const sources = pgTable('sources', {
   familyCheck: check('sources_family_check', sql`${table.family} IN ('gpt', 'claude', 'grok', 'deepseek', 'qwen')`),
   multiplierCheck: check('sources_credit_multiplier_check', sql`${table.creditMultiplier} > 0`),
   statusCheck: check('sources_status_check', sql`${table.status} IN ('active', 'degraded', 'off')`),
-  planCheck: check('sources_min_plan_check', sql`${table.minPlan} IN ('free', 'starter', 'pro')`),
+  planCheck: check('sources_min_plan_check', sql`${table.minPlan} IN ('free', 'starter', 'pro', 'max')`),
 }));
 
 export const userRoutingPreferences = pgTable('user_routing_preferences', {
@@ -77,6 +79,7 @@ export const channels = pgTable('channels', {
   endpoints: text('endpoints').array().notNull().default([]),
   tags: text('tags').array().notNull().default([]),
   pricingType: text('pricing_type').notNull().default('token'),
+  billingPolicy: jsonb('billing_policy'),
   listInputPerMTok: numeric('list_input_per_mtok', { precision: 12, scale: 6 }),
   listOutputPerMTok: numeric('list_output_per_mtok', { precision: 12, scale: 6 }),
   listCachedPerMTok: numeric('list_cached_per_mtok', { precision: 12, scale: 6 }),
@@ -162,7 +165,7 @@ export const usageEvents = pgTable('usage_events', {
   creditsCharged: bigint('credits_charged', { mode: 'number' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
-  userIdx: index('usage_events_user_id_idx').on(table.userId),
+  userCreatedIdx: index('usage_events_user_created_idx').on(table.userId, table.createdAt.desc()),
 }));
 
 export const billingEvents = pgTable('billing_events', {
@@ -171,6 +174,32 @@ export const billingEvents = pgTable('billing_events', {
   kind: text('kind').notNull(),
   payload: jsonb('payload').notNull(),
   processedAt: timestamp('processed_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const paymentsLog = pgTable('payments_log', {
+  id: text('id').primaryKey(),
+  deliveryId: text('delivery_id').notNull().unique(),
+  paymentId: text('payment_id'),
+  userId: uuid('user_id').references(() => profiles.id, { onDelete: 'set null' }),
+  eventType: text('event_type').notNull(),
+  amount: numeric('amount', { precision: 14, scale: 2 }).notNull().default('0'),
+  creditsAdded: bigint('credits_added', { mode: 'bigint' }).notNull().default(0n),
+  payloadHash: text('payload_hash').notNull(),
+  handled: boolean('handled').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Service-only historical serving metadata used by the admin usage monitor.
+// This is intentionally separate from usage_events: consumers may read their
+// own usage rows, while upstream model and route identifiers remain private.
+export const usageRouteSnapshots = pgTable('usage_route_snapshots', {
+  requestId: text('request_id').primaryKey().references(() => usageEvents.requestId, { onDelete: 'cascade' }),
+  modelId: text('model_id').notNull(),
+  channelLabel: text('channel_label').notNull(),
+  sourceId: text('source_id'),
+  sourceLabel: text('source_label'),
+  provider: text('provider').notNull(),
+  task: text('task').notNull(),
 });
 
 export const adminAuditLog = pgTable('admin_audit_log', {
@@ -183,6 +212,19 @@ export const adminAuditLog = pgTable('admin_audit_log', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   actorIdx: index('admin_audit_log_actor_id_idx').on(table.actorId),
+}));
+
+// Price-only snapshots; RLS and write triggers live in the migration.
+export const routingPriceHistory = pgTable('routing_price_history', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+  action: text('action').notNull(),
+  target: text('target').notNull(),
+  before: jsonb('before').notNull(),
+  after: jsonb('after').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  targetIdx: index('routing_price_history_target_idx').on(table.target, table.id.desc()),
+  actionCheck: check('routing_price_history_action_check', sql.raw("action IN ('source.update', 'channel.update')")),
 }));
 
 // Relations

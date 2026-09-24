@@ -3,15 +3,8 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 
 import { requireAdmin, type AdminContext } from '@/lib/api/admin';
-
-const NAV = [
-  { href: '/admin', label: 'Overview' },
-  { href: '/admin/channels', label: 'Channels' },
-  { href: '/admin/sources', label: 'Sources' },
-  { href: '/admin/users', label: 'Users' },
-  { href: '/admin/credentials', label: 'Credentials' },
-  { href: '/admin/audit', label: 'Audit Log' },
-] as const;
+import { AdminNav } from './_components/admin-nav';
+import { SitegenLogo } from '../_components/sitegen-logo';
 
 export default async function AdminLayout({ children }: { children: ReactNode }) {
   let ctx: AdminContext | null = null;
@@ -32,26 +25,16 @@ export default async function AdminLayout({ children }: { children: ReactNode })
       <header className="border-b border-zinc-800 bg-zinc-900">
         <div className="mx-auto flex max-w-6xl flex-col gap-2 px-4 py-3 sm:px-6 md:flex-row md:items-center md:gap-6">
           <div className="flex min-w-0 items-center justify-between gap-4">
-            <span className="shrink-0 text-sm font-semibold tracking-tight text-zinc-50">
-              sitegen admin
-            </span>
+            <Link href="/admin" aria-label="sitegen admin" className="inline-flex shrink-0 items-center gap-2.5 text-xl text-zinc-50">
+              <SitegenLogo />
+              <span className="rounded border border-zinc-700 px-1.5 py-1 text-[10px] font-medium tracking-wider text-zinc-400">ADMIN</span>
+            </Link>
             <span className="truncate text-xs text-zinc-500 md:hidden">
               {ctx.user.email ?? ctx.user.id}
             </span>
           </div>
-          {/* Below `md` the tabs scroll sideways instead of wrapping into rows. */}
-          <nav className="-mx-4 flex items-center gap-1 overflow-x-auto px-4 text-sm sm:-mx-6 sm:px-6 md:mx-0 md:flex-1 md:overflow-x-visible md:px-0">
-            {NAV.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                className="shrink-0 whitespace-nowrap rounded px-3 py-1.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
-              >
-                {item.label}
-              </Link>
-            ))}
-          </nav>
-          <span className="hidden shrink-0 text-xs text-zinc-500 md:inline">
+          <AdminNav />
+          <span className="hidden shrink-0 text-xs text-zinc-500 xl:inline">
             {ctx.user.email ?? ctx.user.id}
           </span>
         </div>

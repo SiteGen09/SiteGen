@@ -1,9 +1,11 @@
+import { enforceLocalPolicy } from '@/lib/guardrails/runtime';
+import { policyText } from '@/lib/guardrails/policy';
 import { randomUUID } from 'node:crypto';
 
 import { z } from 'zod';
 
 import { loadRoutingPreferences } from '@/lib/ai/sources';
-import { resolveChannel, selectChannelByModel } from '@/lib/ai/channels';
+import { selectChatRoute } from '@/lib/ai/channels';
 import type { ChannelRow } from '@/lib/ai/fallback';
 import { costUsd, creditsForUsage, type TokenRates } from '@/lib/ai/pricing';
 import type { ProviderCreds } from '@/lib/ai/provider';
@@ -96,6 +98,7 @@ export async function loadPlan(userId: string): Promise<{ key: PlanKey; maxOutpu
 
 export interface ResolvedChannel {
   start: ChannelRow;
+  holdChannels?: ChannelRow[];
   resolve: (id: string) => Promise<ChannelRow | null>;
   buildCreds: (channel: ChannelRow) => Promise<ProviderCreds>;
 }
@@ -114,17 +117,24 @@ export async function resolveChannelAndCreds(
   planKey: string,
 ): Promise<ResolvedChannel | null> {
   const preferences = await loadRoutingPreferences(userId);
-  const channel = await selectChannelByModel(publicModelId, planKey, preferences);
-  if (channel === null) return null;
+  const route = await selectChatRoute(publicModelId, planKey, preferences);
+  if (route === null) return null;
+  const channel = route.start;
 
-  const userCred = await getUserCredential(userId);
-  if (userCred !== null && userCred.provider === channel.provider) {
-    return { start: channel, resolve: async () => null, buildCreds: async () => userCred };
+  // Scoped to the channel's provider so a credential for a different one is
+  // never even decrypted, let alone allowed to fail the call.
+  const userCred = await getUserCredential(userId, channel.provider);
+  if (userCred !== null) {
+    return {
+      start: { ...channel, isByok: true, creditMultiplier: '0', fallbackTo: null, automaticRouting: false, automaticFallbackIds: [] },
+      resolve: async () => null, buildCreds: async () => userCred,
+    };
   }
 
   return {
     start: channel,
-    resolve: resolveChannel,
+    holdChannels: route.holdChannels,
+    resolve: route.resolve,
     buildCreds: (c) => resolvePlatformCreds(c.provider, c.baseUrl),
   };
 }
@@ -141,6 +151,12 @@ export interface UsageEventInput {
   cachedTokens: number | null;
   costUsd: number | null;
   creditsCharged: number | null;
+  /**
+   * The call ran on the caller's own provider key. The serving channel is a
+   * platform row, so without this the source snapshot would name the platform
+   * source and admin reporting would count the caller's provider bill as ours.
+   */
+  byok?: boolean;
   log: Logger;
 }
 
@@ -159,6 +175,8 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
     status: input.status,
     cost_usd: input.costUsd,
     credits_charged: input.creditsCharged,
+    // An explicit label is kept by the snapshot triggers instead of the channel's source.
+    ...(input.byok ? { source_id: null, source_label: 'BYOK' } : {}),
   });
   if (error !== null) {
     input.log.error('usage_event.write_failed', { db_error: error.code });
@@ -217,6 +235,7 @@ export async function prepareCall(input: PreflightInput): Promise<Preflight> {
 
   // Moderation — before any upstream call, so a flagged prompt is never billed.
   const prompt = moderationText(messages);
+  await enforceLocalPolicy(prompt + '\n' + policyText(tools));
   const moderation = await checkContent(prompt, log);
   if (moderation.flagged) {
     await recordUsageEvent({
@@ -261,11 +280,11 @@ export async function prepareCall(input: PreflightInput): Promise<Preflight> {
   // Dynamic hold sized from the messages, the client's tool schemas and the
   // effective output ceiling. Tool definitions are prompt input the caller is
   // billed for, so the hold has to cover them too.
-  const estimated = estimateChatHoldCredits(
-    resolved.start,
+  const estimated = Math.max(...(resolved.holdChannels ?? [resolved.start]).map((channel) => estimateChatHoldCredits(
+    channel,
     totalMessageChars(messages) + totalToolChars(tools),
     requestedMax,
-  );
+  )));
   let held = false;
   if (estimated > 0) {
     const hold = await holdCredits(auth.ownerId, requestId, estimated, resolved.start.id);
@@ -294,6 +313,8 @@ export interface SettleInput {
   channelId: string;
   held: boolean;
   multiplier: number;
+  /** Whether the serving channel ran on the caller's own key; see {@link UsageEventInput.byok}. */
+  byok: boolean;
   rates: TokenRates;
   usage: NormalizedUsage;
   latencyMs: number;
@@ -308,6 +329,7 @@ export async function settleCall(input: SettleInput): Promise<{ creditsCharged: 
       input_tokens: input.usage.inputTokens,
       output_tokens: input.usage.outputTokens,
       cached_tokens: input.usage.cachedTokens,
+      ...(input.usage.cacheWriteTokens ? { cache_write_tokens: input.usage.cacheWriteTokens } : {}),
     });
   }
 
@@ -323,6 +345,7 @@ export async function settleCall(input: SettleInput): Promise<{ creditsCharged: 
     cachedTokens: input.usage.cachedTokens,
     costUsd: roundCost(cost),
     creditsCharged,
+    byok: input.byok,
     log: input.log,
   });
 

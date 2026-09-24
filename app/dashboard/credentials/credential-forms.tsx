@@ -1,7 +1,14 @@
 'use client';
 
 import { useActionState, useState } from 'react';
-import { isProvider, PROVIDERS, PROVIDER_LABELS, requiresBaseUrl, type Provider } from '@/lib/ai/providers';
+import {
+  isProvider,
+  PROVIDERS,
+  PROVIDER_ENDPOINT_PATH,
+  PROVIDER_LABELS,
+  requiresBaseUrl,
+  type Provider,
+} from '@/lib/ai/providers';
 import {
   addCredential,
   revokeCredential,
@@ -19,6 +26,7 @@ export function AddCredentialForm() {
   });
   const [provider, setProvider] = useState<Provider>('anthropic');
   const needsBaseUrl = requiresBaseUrl(provider);
+  const endpointPath = PROVIDER_ENDPOINT_PATH[provider];
 
   return (
     <form action={action} className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -42,6 +50,11 @@ export function AddCredentialForm() {
             </option>
           ))}
         </select>
+        <p className="text-xs text-zinc-500">
+          {needsBaseUrl
+            ? `Requests go to your base URL + ${endpointPath}.`
+            : `Requests go to api.anthropic.com/v1${endpointPath}.`}
+        </p>
       </div>
 
       <div className="flex flex-col gap-1.5">
@@ -74,6 +87,28 @@ export function AddCredentialForm() {
           placeholder="https://api.example.com/v1"
           className={`${INPUT_CLASS} font-mono`}
         />
+        <p className="text-xs text-zinc-500">
+          Ending in /v1, without {endpointPath} — that is appended for you.
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="model_id" className="text-sm font-medium text-zinc-700">
+          Model ID (optional)
+        </label>
+        <input
+          id="model_id"
+          name="model_id"
+          placeholder="gpt-6-astra"
+          autoComplete="off"
+          spellCheck={false}
+          className={`${INPUT_CLASS} font-mono`}
+        />
+        <p className="text-xs text-zinc-500">
+          Leave blank to verify against /models. If your gateway has no /models
+          endpoint, name a model and the key is verified with a real call to{' '}
+          {endpointPath} instead.
+        </p>
       </div>
 
       <div className="flex items-center gap-3 sm:col-span-2 xl:col-span-3">

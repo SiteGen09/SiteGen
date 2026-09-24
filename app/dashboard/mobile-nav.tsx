@@ -3,6 +3,8 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState, type ReactNode } from 'react';
+import { DashboardNav } from './dashboard-nav';
+import { SitegenLogo } from '../_components/sitegen-logo';
 
 /**
  * Narrow-viewport counterpart to the dashboard sidebar, which is hidden below
@@ -10,10 +12,8 @@ import { useState, type ReactNode } from 'react';
  * navigation lands — a plain <details> would stay open across it.
  */
 export function MobileNav({
-  items,
   children,
 }: {
-  items: readonly { readonly href: string; readonly label: string }[];
   children: ReactNode;
 }) {
   const pathname = usePathname();
@@ -27,9 +27,10 @@ export function MobileNav({
       <div className="flex items-center justify-between gap-3 px-4 py-2">
         <Link
           href="/dashboard"
-          className="-ml-1 inline-flex min-h-11 items-center rounded-md px-1 text-sm font-semibold tracking-tight text-zinc-900"
+          aria-label="sitegen dashboard"
+          className="-ml-1 inline-flex min-h-11 items-center rounded-md px-1 text-xl text-zinc-900"
         >
-          sitegen
+          <SitegenLogo />
         </Link>
         <button
           type="button"
@@ -54,18 +55,8 @@ export function MobileNav({
         </button>
       </div>
 
-      <div id="dashboard-mobile-nav" hidden={!open} className="border-t border-zinc-200 px-2 py-2">
-        <nav className="flex flex-col gap-0.5">
-          {items.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              className="flex min-h-11 items-center rounded-md px-3 text-sm text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900"
-            >
-              {item.label}
-            </Link>
-          ))}
-        </nav>
+      <div id="dashboard-mobile-nav" hidden={!open} className="border-t border-zinc-200 px-2 py-4">
+        <DashboardNav onNavigate={() => setOpenedOn(null)} />
         <div className="mt-2 border-t border-zinc-200 px-3 pt-3">{children}</div>
       </div>
     </div>

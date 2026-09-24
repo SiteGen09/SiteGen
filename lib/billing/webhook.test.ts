@@ -5,13 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET as reconcileGET } from '@/app/api/cron/reconcile/route';
 import { POST } from '@/app/api/webhooks/whop/route';
 import { verifyWhopSignature } from '@/lib/billing/whop';
+import { topupMetadata } from '@/lib/billing/purchases';
 
 /**
- * Webhook contract tests. The fake service client is an in-memory store with
- * the two constraints this flow leans on: `billing_events.event_id` primary key
- * (delivery dedupe) and `ledger.request_id` unique (grant dedupe). Both report
- * Postgres 23505 on collision, which is the path the route treats as
- * "already processed".
+ * Webhook contract tests. The fake service client models payment-ID dedupe;
+ * scripts/verify-whop-billing.mts exercises the actual SQL function under
+ * concurrent delivery and cumulative refunds.
  */
 
 type Row = Record<string, unknown>;
@@ -28,6 +27,10 @@ interface QueryResult<T> {
 
 const UNIQUE_VIOLATION = '23505';
 
+function isRow(value: unknown): value is Row {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 /** Unique/primary key per table, mirroring the migrations. */
 const UNIQUE_KEYS: Record<string, string> = {
   profiles: 'id',
@@ -39,6 +42,124 @@ const UNIQUE_KEYS: Record<string, string> = {
 class FakeDb {
   private readonly tables = new Map<string, Row[]>();
   readonly writes: string[] = [];
+
+  async rpc(name: string, args: Row) {
+    if (name !== 'fulfill_whop_event') return { data: [], error: null };
+
+    const purchase = isRow(args.p_purchase) ? args.p_purchase : null;
+    const membership = isRow(args.p_membership) ? args.p_membership : null;
+    const dispute = isRow(args.p_dispute) ? args.p_dispute : null;
+    const eventId = String(args.p_id);
+    const deliveryId = String(args.p_delivery_id);
+    const eventType = String(args.p_type);
+    const paymentId = purchase !== null
+      ? String(purchase.payment_id)
+      : dispute !== null && typeof dispute.payment_id === 'string' ? dispute.payment_id : null;
+
+    // The SQL function serializes successful deliveries for the same payment,
+    // even when Whop sends them with different event ids.
+    if (paymentId !== null && ['payment.succeeded', 'payment_succeeded'].includes(eventType)) {
+      const previousPayment = this.rows('payments_log').find(
+        (row) => row.payment_id === paymentId &&
+          ['payment.succeeded', 'payment_succeeded'].includes(String(row.event_type)) &&
+          row.handled === true,
+      );
+      if (previousPayment !== undefined) {
+        return { data: { duplicate: true, handled: true, creditsAdded: 0 }, error: null };
+      }
+    }
+
+    const previous = this.rows('payments_log').find(
+      (row) => row.id === eventId || row.delivery_id === deliveryId,
+    );
+    if (previous !== undefined) {
+      return {
+        data: { duplicate: true, handled: previous.handled === true, creditsAdded: 0 },
+        error: null,
+      };
+    }
+
+    let creditsAdded = 0;
+    let owner: string | null = null;
+    if (purchase !== null) {
+      owner = String(purchase.user_id);
+      const purchaseKey = `whop-payment-${String(purchase.payment_id)}`;
+      const original = this.rows('ledger').find((row) => row.request_id === purchaseKey);
+      if (original === undefined && typeof purchase.credits === 'number') {
+        this.rows('ledger').push({
+          user_id: owner,
+          request_id: purchaseKey,
+          kind: purchase.kind,
+          credits: purchase.credits,
+          meta: purchase.meta,
+        });
+        creditsAdded += purchase.credits;
+      }
+
+      const reversed = typeof purchase.reversed === 'number' ? purchase.reversed : 0;
+      if (reversed > 0) {
+        const grant = this.rows('ledger').find((row) => row.request_id === purchaseKey);
+        if (grant !== undefined) {
+          const alreadyReversed = -this.rows('ledger')
+            .filter((row) => row.kind === 'refund' && isRow(row.meta) && row.meta.payment_id === purchase.payment_id)
+            .reduce((sum, row) => sum + (typeof row.credits === 'number' ? row.credits : 0), 0);
+          if (reversed > alreadyReversed) {
+            const refundKey = `whop-refund-${String(purchase.payment_id)}-${reversed}`;
+            if (!this.rows('ledger').some((row) => row.request_id === refundKey)) {
+              this.rows('ledger').push({
+                user_id: owner,
+                request_id: refundKey,
+                kind: 'refund',
+                credits: -(reversed - alreadyReversed),
+                meta: purchase.meta,
+              });
+              creditsAdded -= reversed - alreadyReversed;
+            }
+          }
+        }
+      }
+    }
+
+    if (membership !== null) {
+      const membershipOwner = String(membership.user_id);
+      if (owner !== null && owner !== membershipOwner) {
+        return { data: null, error: { message: 'Membership attribution mismatch' } };
+      }
+      owner = membershipOwner;
+      const existing = this.entitlement(membershipOwner);
+      const inactive = membership.status === 'inactive';
+      const row: Row = {
+        user_id: membershipOwner,
+        plan_key: inactive && existing !== undefined ? existing.plan_key : membership.plan_key,
+        status: membership.status,
+        provider: 'whop',
+        external_id: membership.external_id,
+        current_period_end: membership.current_period_end ?? existing?.current_period_end ?? null,
+        monthly_credits: inactive && existing !== undefined ? existing.monthly_credits : membership.monthly_credits,
+      };
+      if (existing === undefined) this.rows('entitlements').push(row);
+      else Object.assign(existing, row);
+    }
+
+    const handled = purchase !== null || membership !== null || dispute !== null;
+    this.rows('payments_log').push({
+      id: eventId,
+      delivery_id: deliveryId,
+      payment_id: paymentId,
+      event_type: eventType,
+      payload_hash: args.p_hash,
+      user_id: owner,
+      credits_added: creditsAdded,
+      handled,
+    });
+    this.rows('billing_events').push({
+      event_id: eventId,
+      provider: 'whop',
+      kind: eventType,
+      payload: args.p_payload,
+    });
+    return { data: { duplicate: false, handled, creditsAdded }, error: null };
+  }
 
   rows(table: string): Row[] {
     const existing = this.tables.get(table);
@@ -203,7 +324,7 @@ vi.mock('@/lib/log', () => {
   const make = (): unknown => ({
     info: () => undefined,
     warn: () => undefined,
-    error: () => undefined,
+     error: () => undefined,
     child: () => make(),
   });
   return { logger: () => make() };
@@ -214,11 +335,11 @@ const USER_ID = '11111111-1111-4111-8111-111111111111';
 const EMAIL = 'dev@example.com';
 const PLAN_STARTER = 'plan_starter_test';
 const PLAN_PRO = 'plan_pro_test';
-const PLAN_TOPUP = 'plan_topup_test';
 const API_KEY = 'whop_api_key_test';
 const CRON_SECRET = 'cron_secret_test';
 
 let db: FakeDb;
+let latestWebhookEvent: Row | null = null;
 
 function signature(rawBody: string, webhookId: string, timestamp: string, secret: string): string {
   const digest = createHmac('sha256', secret)
@@ -237,6 +358,7 @@ function webhookRequest(
     timestamp?: string;
   } = {},
 ): Request {
+  latestWebhookEvent = event;
   const rawBody = JSON.stringify(event);
   const webhookId = `msg_${String(event['id'])}`;
   const timestamp = overrides.timestamp ?? String(Math.floor(Date.now() / 1000));
@@ -340,7 +462,7 @@ function membershipRow(options: {
  * Stands in for the Whop REST API: `pages` is keyed by billing status for
  * List Memberships, `byId` serves Retrieve Membership.
  */
-function stubWhopApi(stub: { pages?: Record<string, Row[]>; byId?: Record<string, Row> }): {
+function stubWhopApi(stub: { pages?: Record<string, Row[]>; byId?: Record<string, Row>; payments?: Record<string, Row> }): {
   paths: string[];
 } {
   const paths: string[] = [];
@@ -353,10 +475,33 @@ function stubWhopApi(stub: { pages?: Record<string, Row[]>; byId?: Record<string
           : (input as Request).url;
     const url = new URL(href);
     paths.push(`${url.pathname}${url.search}`);
+    const payment = /\/payments\/([^/?]+)$/.exec(url.pathname);
+    if (payment) {
+      const row = stub.payments?.[payment[1]!];
+      return Promise.resolve(row ? Response.json(row) : new Response('not found', { status: 404 }));
+    }
 
     const single = /\/memberships\/([^/?]+)$/.exec(url.pathname);
     if (single !== null) {
-      const row = stub.byId?.[single[1] as string];
+      const explicitById = stub.byId !== undefined;
+      const row = stub.byId?.[single[1] as string] ?? (() => {
+        if (explicitById || latestWebhookEvent === null) return undefined;
+        const data = isRow(latestWebhookEvent.data) ? latestWebhookEvent.data : {};
+        const type = String(latestWebhookEvent.type);
+        const status = type === 'payment.failed' || type === 'payment_failed'
+          ? 'past_due'
+          : type === 'membership.went_invalid' || type === 'membership_went_invalid' || type === 'membership.deactivated'
+            ? 'canceled'
+            : typeof data.status === 'string' ? data.status : 'active';
+        return membershipRow({
+          id: single[1]!,
+          planId: typeof data.plan_id === 'string' ? data.plan_id : PLAN_STARTER,
+          status,
+          periodEnd: typeof data.current_period_end === 'string' ? data.current_period_end : null,
+          metadata: data.metadata === null ? null : isRow(data.metadata) ? data.metadata : { userId: USER_ID },
+          email: isRow(data.user) && typeof data.user.email === 'string' ? data.user.email : null,
+        });
+      })();
       if (row === undefined) return Promise.resolve(new Response('not found', { status: 404 }));
       return Promise.resolve(Response.json(row));
     }
@@ -390,10 +535,11 @@ beforeEach(() => {
   process.env.WHOP_WEBHOOK_SECRET = SECRET;
   process.env.WHOP_PLAN_STARTER = PLAN_STARTER;
   process.env.WHOP_PLAN_PRO = PLAN_PRO;
-  process.env.WHOP_PLAN_TOPUP = PLAN_TOPUP;
   process.env.WHOP_API_KEY = API_KEY;
   process.env.CRON_SECRET = CRON_SECRET;
-  delete process.env.WHOP_ACCOUNT_ID;
+  process.env.WHOP_ACCOUNT_ID = 'biz_test';
+  process.env.WHOP_PRODUCT_CREDITS = 'prod_credits';
+  stubWhopApi({});
 });
 
 afterEach(() => {
@@ -461,7 +607,7 @@ describe('POST /api/webhooks/whop signature gate', () => {
 });
 
 describe('POST /api/webhooks/whop delivery dedupe', () => {
-  it('acks a repeated event_id without reprocessing it', async () => {
+  it('can replay a delivery without minting credits from membership access', async () => {
     const event = membershipEvent({
       eventId: 'evt_dupe',
       type: 'membership.activated',
@@ -473,9 +619,9 @@ describe('POST /api/webhooks/whop delivery dedupe', () => {
 
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
-    expect(second.body['duplicate']).toBe(true);
-    expect(db.writeCount('entitlements.upsert')).toBe(1);
-    expect(db.ledger('grant')).toHaveLength(1);
+    expect(second.body['handled']).toBe(true);
+    expect(db.rows('billing_events')).toHaveLength(1);
+    expect(db.ledger('grant')).toHaveLength(0);
   });
 });
 
@@ -498,7 +644,7 @@ describe('POST /api/webhooks/whop membership transitions', () => {
       status: 'active',
       external_id: 'mem_1',
       current_period_end: '2026-10-01T00:00:00.000Z',
-      monthly_credits: 2_500_000,
+      monthly_credits: 299_000,
       provider: 'whop',
     });
   });
@@ -529,7 +675,7 @@ describe('POST /api/webhooks/whop membership transitions', () => {
       status: 'active',
       external_id: 'mem_1',
       current_period_end: '2026-10-01T00:00:00.000Z',
-      monthly_credits: 2_500_000,
+      monthly_credits: 299_000,
     });
 
     const event = membershipEvent({
@@ -545,7 +691,7 @@ describe('POST /api/webhooks/whop membership transitions', () => {
       plan_key: 'pro',
       status: 'inactive',
       current_period_end: '2026-10-01T00:00:00.000Z',
-      monthly_credits: 2_500_000,
+      monthly_credits: 299_000,
     });
     expect(db.ledger('grant')).toHaveLength(0);
   });
@@ -557,7 +703,7 @@ describe('POST /api/webhooks/whop membership transitions', () => {
       status: 'active',
       external_id: 'mem_1',
       current_period_end: '2026-10-01T00:00:00.000Z',
-      monthly_credits: 500_000,
+      monthly_credits: 149_000,
     });
 
     const event = paymentEvent({ eventId: 'evt_failed', type: 'payment.failed' });
@@ -567,7 +713,7 @@ describe('POST /api/webhooks/whop membership transitions', () => {
     expect(db.entitlement(USER_ID)).toMatchObject({
       plan_key: 'starter',
       status: 'past_due',
-      monthly_credits: 500_000,
+      monthly_credits: 149_000,
     });
   });
 
@@ -621,7 +767,25 @@ describe('POST /api/webhooks/whop membership transitions', () => {
 });
 
 describe('POST /api/webhooks/whop credit grants', () => {
-  it('grants the monthly allotment once per period, then dedupes on request_id', async () => {
+  it('rejects signed events from another merchant account', async () => {
+    const event = membershipEvent({ eventId: 'evt_wrong_account', type: 'membership.activated' });
+    event.account_id = 'biz_other';
+    expect((await post(webhookRequest(event))).status).toBe(403);
+    expect(db.writes).toHaveLength(0);
+  });
+
+  it('does not mark a subscription past due when a top-up fails', async () => {
+    await post(webhookRequest(paymentEvent({ eventId: 'evt_topup_failed', type: 'payment.failed', planId: 'plan_unrelated' })));
+    expect(db.writeCount('entitlements.upsert')).toBe(0);
+  });
+
+  it('re-reads the payment for a refund event', async () => {
+    const api = stubWhopApi({ payments: { pay_refund: { id: 'pay_refund', status: 'paid', account_id: 'biz_test', currency: 'usd', subtotal: 10, total: 10, refunded_amount: 10, product_id: 'prod_credits', metadata: topupMetadata(USER_ID, 1000) } } });
+    const event = { id: 'evt_refund', type: 'refund.updated', account_id: 'biz_test', data: { id: 'ref_test', payment_id: 'pay_refund' } };
+    expect((await post(webhookRequest(event))).status).toBe(200);
+    expect(api.paths).toContain('/api/v1/payments/pay_refund');
+  });
+  it('does not grant credits for activation or an activation replay', async () => {
     const periodEnd = '2026-10-01T00:00:00.000Z';
     const first = await post(
       webhookRequest(
@@ -640,16 +804,10 @@ describe('POST /api/webhooks/whop credit grants', () => {
     expect(replay.status).toBe(200);
 
     const grants = db.ledger('grant');
-    expect(grants).toHaveLength(1);
-    expect(grants[0]).toMatchObject({
-      user_id: USER_ID,
-      request_id: `whop-renewal-mem_1-${periodEnd}`,
-      kind: 'grant',
-      credits: 500_000,
-    });
+    expect(grants).toHaveLength(0);
   });
 
-  it('grants again when the period end moves forward', async () => {
+  it('updates access without granting credits when the period advances', async () => {
     await post(
       webhookRequest(
         membershipEvent({
@@ -670,11 +828,7 @@ describe('POST /api/webhooks/whop credit grants', () => {
     );
 
     const grants = db.ledger('grant');
-    expect(grants).toHaveLength(2);
-    expect(grants.map((row) => row['request_id'])).toEqual([
-      'whop-renewal-mem_1-2026-10-01T00:00:00.000Z',
-      'whop-renewal-mem_1-2026-11-01T00:00:00.000Z',
-    ]);
+    expect(grants).toHaveLength(0);
     expect(db.entitlement(USER_ID)).toMatchObject({
       current_period_end: '2026-11-01T00:00:00.000Z',
     });
@@ -687,7 +841,7 @@ describe('POST /api/webhooks/whop credit grants', () => {
       status: 'active',
       external_id: 'mem_1',
       current_period_end: '2026-11-01T00:00:00.000Z',
-      monthly_credits: 500_000,
+      monthly_credits: 149_000,
     });
 
     await post(
@@ -704,10 +858,10 @@ describe('POST /api/webhooks/whop credit grants', () => {
   });
 
   it('credits a top-up purchase once per payment id', async () => {
+    stubWhopApi({ payments: { pay_topup_1: { id: 'pay_topup_1', status: 'paid', account_id: 'biz_test', currency: 'usd', subtotal: { amount: '10.00', currency: 'usd' }, total: { amount: '10.00', currency: 'usd' }, product_id: 'prod_credits', metadata: topupMetadata(USER_ID, 1000) } } });
     const topup = paymentEvent({
       eventId: 'evt_topup',
       type: 'payment.succeeded',
-      planId: PLAN_TOPUP,
       paymentId: 'pay_topup_1',
       membershipId: null,
     });
@@ -719,7 +873,6 @@ describe('POST /api/webhooks/whop credit grants', () => {
     const replay = paymentEvent({
       eventId: 'evt_topup_replay',
       type: 'payment.succeeded',
-      planId: PLAN_TOPUP,
       paymentId: 'pay_topup_1',
       membershipId: null,
     });
@@ -729,7 +882,7 @@ describe('POST /api/webhooks/whop credit grants', () => {
     expect(topups).toHaveLength(1);
     expect(topups[0]).toMatchObject({
       user_id: USER_ID,
-      request_id: 'whop-topup-pay_topup_1',
+      request_id: 'whop-payment-pay_topup_1',
       kind: 'topup',
       credits: 100_000,
     });
@@ -762,9 +915,10 @@ describe('subscription payment renewal', () => {
       provider: 'whop',
       external_id: 'mem_1',
       current_period_end: '2026-10-01T00:00:00.000Z',
-      monthly_credits: 500_000,
+      monthly_credits: 149_000,
     });
     const api = stubWhopApi({
+      payments: { pay_1: { id: 'pay_1', status: 'paid', account_id: 'biz_test', currency: 'usd', subtotal: { amount: '14.99', currency: 'usd' }, total: { amount: '14.99', currency: 'usd' }, plan_id: PLAN_STARTER, membership_id: 'mem_1', metadata: { userId: USER_ID } } },
       byId: {
         mem_1: membershipRow({ id: 'mem_1', periodEnd: '2026-11-01T00:00:00.000Z' }),
       },
@@ -779,8 +933,8 @@ describe('subscription payment renewal', () => {
     const grants = db.ledger('grant');
     expect(grants).toHaveLength(1);
     expect(grants[0]).toMatchObject({
-      request_id: 'whop-renewal-mem_1-2026-11-01T00:00:00.000Z',
-      credits: 500_000,
+      request_id: 'whop-payment-pay_1',
+      credits: 149_000,
     });
     expect(db.entitlement(USER_ID)).toMatchObject({
       status: 'active',
@@ -796,7 +950,7 @@ describe('subscription payment renewal', () => {
     expect(db.ledger('grant')).toHaveLength(1);
   });
 
-  it('skips the grant when the membership read fails', async () => {
+  it('requests redelivery when the payment read fails', async () => {
     stubWhopApi({ byId: {} });
 
     const { status, body } = await post(
@@ -805,8 +959,8 @@ describe('subscription payment renewal', () => {
       ),
     );
 
-    expect(status).toBe(200);
-    expect(body['handled']).toBe(false);
+    expect(status).toBe(500);
+    expect(body['handled']).toBeUndefined();
     expect(db.rows('ledger')).toHaveLength(0);
     expect(db.writeCount('entitlements.upsert')).toBe(0);
   });
@@ -830,7 +984,7 @@ describe('reconciliation', () => {
       provider: 'whop',
       external_id: 'mem_1',
       current_period_end: '2026-09-01T00:00:00.000Z',
-      monthly_credits: 500_000,
+      monthly_credits: 149_000,
     });
     stubWhopApi({
       pages: {
@@ -852,7 +1006,7 @@ describe('reconciliation', () => {
       status: 'active',
       external_id: 'mem_1',
       current_period_end: '2026-10-01T00:00:00.000Z',
-      monthly_credits: 2_500_000,
+      monthly_credits: 299_000,
     });
     expect(db.rows('ledger')).toHaveLength(0);
   });
@@ -865,7 +1019,7 @@ describe('reconciliation', () => {
       provider: 'whop',
       external_id: 'mem_1',
       current_period_end: '2026-10-01T00:00:00.000Z',
-      monthly_credits: 500_000,
+      monthly_credits: 149_000,
     });
     stubWhopApi({
       pages: {

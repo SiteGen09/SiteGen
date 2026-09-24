@@ -1,8 +1,10 @@
 import { createAnthropic } from '@ai-sdk/anthropic';
+import { createOpenAI } from '@ai-sdk/openai';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { LanguageModel } from 'ai';
 
 import type { Provider } from '@/lib/ai/providers';
+import { kieChatFetch } from '@/lib/ai/kie-chat';
 
 /** Logical unit of work a channel is asked to perform. */
 export type TaskAlias = 'site.spec' | 'site.copy' | 'interview';
@@ -42,6 +44,17 @@ function requireBaseUrl(creds: ProviderCreds): string {
  * guess.
  */
 export function buildAI(creds: ProviderCreds): AI {
+  if (creds.provider === 'openai_images') {
+    throw new Error('openai_images has no language model');
+  }
+  // Not an oversight: `kie_jobs` is an async job queue with no language-model
+  // surface, so there is nothing to return. Throwing keeps it from falling
+  // through to the OpenAI-compatible branch and posting chat completions at an
+  // image endpoint. Image traffic goes through `lib/images/kie.ts` instead.
+  if (creds.provider === 'kie_jobs') {
+    throw new Error('kie_jobs is an async image job API and has no language model');
+  }
+
   if (creds.provider === 'anthropic') {
     return createAnthropic({ apiKey: creds.apiKey });
   }
@@ -52,10 +65,23 @@ export function buildAI(creds: ProviderCreds): AI {
     return createAnthropic({ apiKey: creds.apiKey, baseURL });
   }
 
+  // The Responses API is a different endpoint under the same base URL, not a
+  // dialect of chat-completions: `/responses` takes `input` items where
+  // `/chat/completions` takes `messages`. `@ai-sdk/openai-compatible` only
+  // knows the latter, so this kind goes through the full OpenAI provider,
+  // which is also what carries `reasoning.effort` and the built-in web-search
+  // tool through as provider options.
+  if (creds.provider === 'openai_responses') {
+    const provider = createOpenAI({ apiKey: creds.apiKey, baseURL });
+    return { languageModel: (modelId) => provider.responses(modelId) };
+  }
+
   return createOpenAICompatible<string, string, string, string>({
     name: 'custom',
     apiKey: creds.apiKey,
     baseURL,
+    includeUsage: true,
+    fetch: new URL(baseURL).hostname === 'api.kie.ai' ? kieChatFetch : undefined,
   });
 }
 

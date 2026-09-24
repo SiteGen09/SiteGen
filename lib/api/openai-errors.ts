@@ -1,4 +1,5 @@
 import { ApiError, type ErrorCode } from '@/lib/api/errors';
+import { asUpstreamError } from '@/lib/api/upstream';
 
 /**
  * Renders an {@link ApiError} into OpenAI's error envelope, used only by the
@@ -23,6 +24,7 @@ const TYPE_BY_CODE: Record<ErrorCode, string> = {
   generation_failed: 'api_error',
   not_found: 'invalid_request_error',
   model_not_found: 'invalid_request_error',
+  not_ready: 'invalid_request_error',
   content_policy_violation: 'invalid_request_error',
   internal_error: 'api_error',
 };
@@ -83,6 +85,12 @@ export function openAiError(
 export function openAiErrorFrom(err: unknown, requestId: string): Response {
   if (err instanceof ApiError) {
     return openAiError(err.code, err.message, requestId, err.status);
+  }
+  // A provider fault is not our fault: reporting it as 500 tells the caller to
+  // stop retrying and charges a provider outage to our own error budget.
+  const upstream = asUpstreamError(err);
+  if (upstream !== null) {
+    return openAiError(upstream.code, upstream.message, requestId, upstream.status);
   }
   return openAiError('internal_error', 'an unexpected error occurred', requestId, 500);
 }

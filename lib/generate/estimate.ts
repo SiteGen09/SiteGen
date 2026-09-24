@@ -64,8 +64,13 @@ export function estimateChatHoldCredits(
   }
   if (channel.isByok) return 0;
 
-  const estimatedInput = Math.ceil(Math.max(0, totalChars) / CHARS_PER_TOKEN);
-  const cost = costUsd(channel.rates, {
+  // Reserve conservatively for Relay tiers and cache writes. Other estimates stay unchanged.
+  const advanced = channel.rates.longContext !== undefined || channel.rates.cacheWritePerMTok !== undefined;
+  const estimatedInput = Math.ceil(Math.max(0, totalChars) / (advanced ? 1 : CHARS_PER_TOKEN));
+  const selected = channel.rates.longContext && estimatedInput > channel.rates.longContext.threshold
+    ? channel.rates.longContext : channel.rates;
+  const rates = advanced ? { ...selected, inputPerMTok: Math.max(selected.inputPerMTok, selected.cacheWritePerMTok ?? 0) } : selected;
+  const cost = costUsd(rates, {
     inputTokens: estimatedInput,
     outputTokens: Math.max(0, maxOutputTokens),
     cachedTokens: 0,

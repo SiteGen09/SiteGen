@@ -1,16 +1,43 @@
-import type { ReactNode } from 'react';
-import Link from 'next/link';
+import type { ReactNode } from "react";
+import Link from "next/link";
 
-export function PageTitle({ title, subtitle }: { title: string; subtitle?: string }) {
+import {
+  ALL,
+  PAGE_SIZE_OPTIONS,
+  clampPage,
+  formatPageSize,
+  pageCount,
+  pageHref,
+  pageRange,
+  type PageSize,
+} from "@/lib/ui/pagination";
+
+export function PageTitle({
+  title,
+  subtitle,
+}: {
+  title: string;
+  subtitle?: string;
+}) {
   return (
     <div className="mb-6">
-      <h1 className="text-xl font-semibold tracking-tight text-zinc-50">{title}</h1>
-      {subtitle !== undefined && <p className="mt-1 text-sm text-zinc-400">{subtitle}</p>}
+      <h1 className="text-xl font-semibold tracking-tight text-zinc-50">
+        {title}
+      </h1>
+      {subtitle !== undefined && (
+        <p className="mt-1 text-sm text-zinc-400">{subtitle}</p>
+      )}
     </div>
   );
 }
 
-export function Card({ title, children }: { title?: string; children: ReactNode }) {
+export function Card({
+  title,
+  children,
+}: {
+  title?: string;
+  children: ReactNode;
+}) {
   return (
     <section className="rounded-lg border border-zinc-800 bg-zinc-900">
       {title !== undefined && (
@@ -23,32 +50,53 @@ export function Card({ title, children }: { title?: string; children: ReactNode 
   );
 }
 
-export function Stat({ label, value, tone }: { label: string; value: string; tone?: 'alert' }) {
+export function Stat({
+  label,
+  value,
+  tone,
+  detail,
+}: {
+  label: string;
+  value: string;
+  tone?: "alert" | "good";
+  /** One short line under the value, such as the basis of a figure. */
+  detail?: string;
+}) {
   return (
     <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-      <div className="text-xs uppercase tracking-wide text-zinc-500">{label}</div>
+      <div className="text-xs uppercase tracking-wide text-zinc-500">
+        {label}
+      </div>
       <div
         className={`mt-1 text-2xl font-semibold ${
-          tone === 'alert' ? 'text-rose-400' : 'text-zinc-50'
+          tone === "alert"
+            ? "text-rose-400"
+            : tone === "good"
+              ? "text-emerald-300"
+              : "text-zinc-50"
         }`}
       >
         {value}
       </div>
+      {detail !== undefined && (
+        <div className="mt-1 text-xs text-zinc-500">{detail}</div>
+      )}
     </div>
   );
 }
 
 const STATUS_TONES: Record<string, string> = {
-  active: 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30',
-  ok: 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30',
-  degraded: 'bg-amber-500/15 text-amber-300 ring-amber-500/30',
-  off: 'bg-zinc-500/15 text-zinc-300 ring-zinc-500/30',
-  revoked: 'bg-rose-500/15 text-rose-300 ring-rose-500/30',
-  inactive: 'bg-zinc-500/15 text-zinc-300 ring-zinc-500/30',
+  active: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
+  ok: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
+  degraded: "bg-amber-500/15 text-amber-300 ring-amber-500/30",
+  off: "bg-zinc-500/15 text-zinc-300 ring-zinc-500/30",
+  revoked: "bg-rose-500/15 text-rose-300 ring-rose-500/30",
+  inactive: "bg-zinc-500/15 text-zinc-300 ring-zinc-500/30",
 };
 
 export function Badge({ value }: { value: string }) {
-  const tone = STATUS_TONES[value] ?? 'bg-zinc-500/15 text-zinc-300 ring-zinc-500/30';
+  const tone =
+    STATUS_TONES[value] ?? "bg-zinc-500/15 text-zinc-300 ring-zinc-500/30";
   return (
     <span
       className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${tone}`}
@@ -70,10 +118,19 @@ export function Td({ children }: { children: ReactNode }) {
   return <td className="px-3 py-2 align-top text-zinc-200">{children}</td>;
 }
 
-export function EmptyRow({ colSpan, label }: { colSpan: number; label: string }) {
+export function EmptyRow({
+  colSpan,
+  label,
+}: {
+  colSpan: number;
+  label: string;
+}) {
   return (
     <tr>
-      <td colSpan={colSpan} className="px-3 py-8 text-center text-sm text-zinc-500">
+      <td
+        colSpan={colSpan}
+        className="px-3 py-8 text-center text-sm text-zinc-500"
+      >
         {label}
       </td>
     </tr>
@@ -85,36 +142,69 @@ export function Pager({
   page,
   pageSize,
   total,
+  query,
+  label = "rows",
+  params,
 }: {
   basePath: string;
   page: number;
-  pageSize: number;
+  pageSize: PageSize;
   total: number;
+  query?: Readonly<Record<string, string | number | undefined>>;
+  label?: string;
+  params?: { page?: string; size?: string };
 }) {
-  const pages = Math.max(1, Math.ceil(total / pageSize));
-  const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
-  const to = Math.min(page * pageSize, total);
+  const pages = pageCount(total, pageSize);
+  const current = clampPage(page, total, pageSize);
+  const { from, to } = pageRange(current, pageSize, total);
   const linkClass =
-    'rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800';
-  const mutedClass = 'rounded-md border border-zinc-800 px-3 py-1.5 text-sm text-zinc-600';
+    "rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800";
+  const mutedClass =
+    "rounded-md border border-zinc-800 px-3 py-1.5 text-sm text-zinc-600";
+  const href = (nextPage: number, nextSize: PageSize) =>
+    pageHref(basePath, nextPage, nextSize, query, params);
   return (
-    <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-sm text-zinc-400">
-      <span>
-        {from}–{to} of {total.toLocaleString()}
-      </span>
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-3 text-sm text-zinc-400">
+      <div className="flex flex-wrap items-center gap-3">
+        <span>
+          {from}–{to} of {total.toLocaleString()} {label}
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="text-xs uppercase tracking-wide text-zinc-500">
+            Show
+          </span>
+          {[...PAGE_SIZE_OPTIONS, ALL].map((option) => {
+            const active = option === pageSize;
+            return (
+              <Link
+                key={option}
+                href={href(1, option)}
+                aria-current={active ? "page" : undefined}
+                className={`rounded px-1.5 py-0.5 text-xs ${
+                  active
+                    ? "bg-zinc-100 font-medium text-zinc-900"
+                    : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                }`}
+              >
+                {formatPageSize(option)}
+              </Link>
+            );
+          })}
+        </span>
+      </div>
       <div className="flex flex-wrap items-center gap-2">
-        {page > 1 ? (
-          <Link href={`${basePath}?page=${page - 1}`} className={linkClass}>
+        {current > 1 ? (
+          <Link href={href(current - 1, pageSize)} className={linkClass}>
             Previous
           </Link>
         ) : (
           <span className={mutedClass}>Previous</span>
         )}
         <span className="text-zinc-500">
-          Page {page} / {pages}
+          Page {current} / {pages}
         </span>
-        {page < pages ? (
-          <Link href={`${basePath}?page=${page + 1}`} className={linkClass}>
+        {current < pages ? (
+          <Link href={href(current + 1, pageSize)} className={linkClass}>
             Next
           </Link>
         ) : (

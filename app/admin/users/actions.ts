@@ -70,6 +70,7 @@ async function setStatusAction(
     });
 
     revalidatePath('/admin/users');
+    revalidatePath(`/admin/users/${userId}`);
     return {
       status: 'success',
       message: next === 'suspended' ? 'user suspended' : 'user unsuspended',
@@ -128,6 +129,7 @@ export async function grantCreditsAction(
     });
 
     revalidatePath('/admin/users');
+    revalidatePath(`/admin/users/${userId}`);
     return { status: 'success', message: `granted ${amount.toLocaleString()} credits` };
   } catch (err) {
     return { status: 'error', message: err instanceof ApiError ? err.message : 'grant failed' };

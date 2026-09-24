@@ -5,8 +5,9 @@ import { z } from 'zod';
 import { requireAdmin } from '@/lib/api/admin';
 import { PLAN_KEYS } from '@/lib/billing/plans';
 import { createServiceClient } from '@/lib/supabase/service';
+import { clampPage, pageSlice, parsePage, parsePageSize } from '@/lib/ui/pagination';
 
-import { Badge, Card, EmptyRow, PageTitle, Td, Th } from '../_components/ui';
+import { Badge, Card, EmptyRow, PageTitle, Pager, Td, Th } from '../_components/ui';
 import { BUTTON_SUBTLE_CLASS } from '../_components/action-state';
 import {
   CreateChannelForm,
@@ -77,9 +78,15 @@ function toDefaults(row: z.infer<typeof channelRowSchema>): ChannelDefaults {
   };
 }
 
-export default async function ChannelsPage() {
+export default async function ChannelsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string; size?: string }>;
+}) {
   await requireAdmin();
 
+  const sp = await searchParams;
+  const size = parsePageSize(sp.size);
   const sources = await listSources();
   const service = createServiceClient();
   const { data, error } = await service
@@ -92,8 +99,12 @@ export default async function ChannelsPage() {
     throw new Error(`failed to load channels: ${error.message}`);
   }
 
-  const rows = z.array(channelRowSchema).parse(data ?? []);
-  const channelIds = rows.map((r) => r.id);
+  const all = z.array(channelRowSchema).parse(data ?? []);
+  // Fallback targets are chosen across the whole catalogue, not just the page
+  // being viewed, so the select stays complete however the table is sliced.
+  const channelIds = all.map((r) => r.id);
+  const page = clampPage(parsePage(sp.page), all.length, size);
+  const rows = pageSlice(all, page, size);
 
   return (
     <>
@@ -208,6 +219,13 @@ export default async function ChannelsPage() {
             </tbody>
           </table>
         </div>
+        <Pager
+          basePath="/admin/channels"
+          page={page}
+          pageSize={size}
+          total={all.length}
+          label="channels"
+        />
       </Card>
     </>
   );

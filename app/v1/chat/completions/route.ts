@@ -1,7 +1,9 @@
+import { guardedRoute, admitGeneration } from '@/lib/guardrails/runtime';
 import { randomUUID } from 'node:crypto';
 
 import { authenticateApiKey, requireScope, type AuthenticatedKey } from '@/lib/api/api-key-auth';
 import { ApiError } from '@/lib/api/errors';
+import { asUpstreamError } from '@/lib/api/upstream';
 import { openAiErrorFrom, openAiError, openAiErrorBody } from '@/lib/api/openai-errors';
 import { withIdempotency, type IdempotentResponse } from '@/lib/api/idempotency';
 import { generateChat } from '@/lib/chat/generate';
@@ -103,6 +105,7 @@ async function runChat(ctx: ChatContext): Promise<IdempotentResponse> {
       channelId: generation.channelId,
       held,
       multiplier: generation.multiplier,
+      byok: generation.byok,
       rates: generation.rates,
       usage: generation.usage,
       latencyMs: generation.latencyMs,
@@ -212,6 +215,7 @@ async function runChatStream(ctx: ChatContext): Promise<Response> {
         channelId: handle.channel.id,
         held,
         multiplier: Number(handle.channel.creditMultiplier),
+        byok: handle.channel.isByok,
         rates: handle.channel.rates,
         usage: done.usage,
         latencyMs: done.latencyMs,
@@ -347,7 +351,7 @@ async function runChatStream(ctx: ChatContext): Promise<Response> {
 }
 
 
-export async function POST(req: Request): Promise<Response> {
+async function handlePost(req: Request): Promise<Response> {
   const requestId = randomUUID();
   const log = logger({ request_id: requestId, route: 'v1.chat.completions' });
   const startedAt = Date.now();
@@ -356,6 +360,7 @@ export async function POST(req: Request): Promise<Response> {
   try {
     const auth = await authenticateApiKey(req.headers.get('authorization'), log);
     requireScope(auth, SCOPE);
+    await admitGeneration(auth.ownerId);
 
     const limit = await consumeRateLimit(auth.apiKeyId, auth.rateLimitRpm);
     if (!limit.allowed) {
@@ -393,8 +398,18 @@ export async function POST(req: Request): Promise<Response> {
       headers: outcome.replay ? { 'Idempotency-Replay': 'true' } : undefined,
     });
   } catch (err) {
-    if (err instanceof ApiError) {
-      log.warn('chat.error', { code: err.code, latency_ms: Date.now() - startedAt });
+    // Classified for the log as well as the response: a provider outage
+    // logged at error level charges their downtime to our error budget and
+    // buries the genuine bugs it is meant to surface.
+    const classified = err instanceof ApiError ? err : asUpstreamError(err);
+    if (classified !== null) {
+      log.warn('chat.error', {
+        code: classified.code,
+        latency_ms: Date.now() - startedAt,
+        ...(err instanceof ApiError
+          ? {}
+          : { upstream: err instanceof Error ? err.message : String(err) }),
+      });
     } else {
       log.error('chat.unexpected', {
         latency_ms: Date.now() - startedAt,
@@ -404,3 +419,5 @@ export async function POST(req: Request): Promise<Response> {
     return openAiErrorFrom(err, requestId);
   }
 }
+
+export const POST = guardedRoute(handlePost, openAiErrorFrom);

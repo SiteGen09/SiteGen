@@ -39,7 +39,7 @@ const apiKeyRowSchema = z.object({
    * Embedded owner row. PostgREST returns an object for a to-one embed and
    * `null` when the profile is missing; both are handled rather than assumed.
    */
-  profiles: z.object({ status: z.string() }).nullable(),
+  profiles: z.object({ status: z.string(), billing_hold: z.boolean().optional() }).nullable(),
 });
 
 /**
@@ -108,7 +108,7 @@ export async function authenticateApiKey(
   const { data, error } = await service
     .from('api_keys')
     .select(
-      'id, owner_id, key_hash, scopes, status, rate_limit_rpm, revoked_at, profiles(status)',
+      'id, owner_id, key_hash, scopes, status, rate_limit_rpm, revoked_at, profiles(status,billing_hold)',
     )
     .eq('key_hash', keyHash)
     .maybeSingle();
@@ -126,7 +126,7 @@ export async function authenticateApiKey(
   // The kill switch: one check here covers every present and future endpoint,
   // since all of them authenticate through this function. The message stays
   // generic so a caller cannot tell suspension from a bad key.
-  if (row.profiles?.status === 'suspended') {
+  if (row.profiles?.status !== 'active' || row.profiles?.billing_hold === true) {
     log?.warn('api_key.suspended', { api_key_id: row.id });
     throw new ApiError('forbidden', 'invalid or missing API key', 403);
   }

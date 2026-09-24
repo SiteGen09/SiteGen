@@ -5,7 +5,8 @@ import {
   type ModelHealth,
   type ModelStatusRow,
 } from '@/lib/dashboard/model-status';
-import { Card, EmptyRow, PageHeader, Stat, Table, formatTimestamp } from '../ui';
+import { clampPage, pageSlice, parsePage, parsePageSize } from '@/lib/ui/pagination';
+import { Card, EmptyRow, PageHeader, Pager, Stat, Table, formatTimestamp } from '../ui';
 
 export const metadata = { title: 'Model status — sitegen' };
 
@@ -61,10 +62,20 @@ function headline(rows: ModelStatusRow[]): string {
     : 'No measured outages';
 }
 
-export default async function StatusPage() {
-  const { rows, sla } = await modelStatusHistory();
+export default async function StatusPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string; size?: string }>;
+}) {
+  const [sp, { rows, sla }] = await Promise.all([searchParams, modelStatusHistory()]);
   const healthy = rows.filter((row) => row.health === 'operational').length;
   const totalRequests = rows.reduce((sum, row) => sum + row.requests, 0);
+  // The headline stats and the observed SLA stay whole-fleet figures; only the
+  // two per-model lists below are paged, and they page together so a model's
+  // hourly strip and its summary row are always on the same screen.
+  const size = parsePageSize(sp.size);
+  const page = clampPage(parsePage(sp.page), rows.length, size);
+  const visible = pageSlice(rows, page, size);
 
   return (
     <>
@@ -94,7 +105,7 @@ export default async function StatusPage() {
           </p>
         </div>
         <div className="space-y-4">
-          {rows.map((row) => (
+          {visible.map((row) => (
             <div key={row.publicModelId}>
               <div className="mb-1 flex justify-between text-sm">
                 <span>{row.publicModelId}</span>
@@ -137,10 +148,10 @@ export default async function StatusPage() {
       </Card>
 
       <Table head={HEAD} minWidth="min-w-[46rem]">
-        {rows.length === 0 ? (
+        {visible.length === 0 ? (
           <EmptyRow colSpan={HEAD.length}>No models are configured yet.</EmptyRow>
         ) : (
-          rows.map((row) => (
+          visible.map((row) => (
             <tr key={row.publicModelId}>
               <td className="px-4 py-2.5">
                 <span className="font-mono text-xs text-zinc-900">{row.publicModelId}</span>
@@ -165,6 +176,13 @@ export default async function StatusPage() {
           ))
         )}
       </Table>
+      <Pager
+        basePath="/dashboard/status"
+        page={page}
+        pageSize={size}
+        total={rows.length}
+        label="models"
+      />
 
       <Card className="mt-6">
         <p className="text-xs leading-relaxed text-zinc-500">

@@ -16,7 +16,7 @@ const entitlementSchema = z.object({
   current_period_end: z.string().nullable(),
 });
 
-export async function GET(): Promise<Response> {
+export async function GET(request: Request): Promise<Response> {
   const requestId = randomUUID();
   const log = logger({ request_id: requestId, component: 'billing.status' });
 
@@ -29,6 +29,15 @@ export async function GET(): Promise<Response> {
   }
 
   const service = createServiceClient();
+  const purchaseId = new URL(request.url).searchParams.get('purchase');
+  let purchaseConfirmed = false;
+  if (purchaseId && z.uuid().safeParse(purchaseId).success) {
+    const purchase = await service.from('ledger').select('id')
+      .eq('user_id', user.id).contains('meta', { purchase_id: purchaseId, source: 'whop' })
+      .in('kind', ['grant', 'topup']).limit(1);
+    if (purchase.error) return apiError('internal_error', 'Could not read purchase', requestId, 500);
+    purchaseConfirmed = (purchase.data?.length ?? 0) > 0;
+  }
   const [entitlement, balance] = await Promise.all([
     service
       .from('entitlements')
@@ -52,6 +61,7 @@ export async function GET(): Promise<Response> {
       : entitlementSchema.parse(entitlement.data);
 
   return Response.json({
+    purchase_confirmed: purchaseConfirmed,
     plan_key: row.plan_key,
     status: row.status,
     current_period_end: row.current_period_end,

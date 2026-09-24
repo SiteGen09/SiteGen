@@ -1,3 +1,5 @@
+import { isPolicyRejection } from '@/lib/guardrails/policy';
+import { observePolicyRejection } from '@/lib/guardrails/runtime';
 import { NoObjectGeneratedError, generateObject } from 'ai';
 
 import type { TokenRates } from '@/lib/ai/pricing';
@@ -80,6 +82,7 @@ export async function generateSpec(params: GenerateSpecParams): Promise<SpecGene
         const ai = buildAI(creds);
         return await generateObject({
           model: ai.languageModel(channel.modelId),
+          maxRetries: 0,
           schema: siteSpecSchema,
           system: SPEC_SYSTEM_PROMPT,
           prompt,
@@ -98,6 +101,8 @@ export async function generateSpec(params: GenerateSpecParams): Promise<SpecGene
         latencyMs: Date.now() - startedAt,
       };
     } catch (err) {
+      await observePolicyRejection(err);
+      if (isPolicyRejection(err)) throw err;
       if (!NoObjectGeneratedError.isInstance(err)) throw err;
       if (err.usage !== undefined) addUsage(usage, normalizeUsage(err.usage, undefined));
       if (round === MAX_ROUNDS - 1) break;

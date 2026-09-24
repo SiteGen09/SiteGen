@@ -1,11 +1,10 @@
 import { requireAdmin } from '@/lib/api/admin';
 import { auditPage, type AuditEntry } from '@/lib/admin/metrics';
+import { clampPage, pageQuery, parsePage, parsePageSize } from '@/lib/ui/pagination';
 
 import { Card, EmptyRow, PageTitle, Pager, Td, Th } from '../_components/ui';
 
 export const dynamic = 'force-dynamic';
-
-const PAGE_SIZE = 50;
 
 function JsonCell({ label, value }: { label: string; value: unknown }) {
   if (value === null || value === undefined) {
@@ -47,13 +46,23 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
 export default async function AuditPage({
   searchParams,
 }: {
-  searchParams: Promise<{ page?: string }>;
+  searchParams: Promise<{ page?: string; size?: string }>;
 }) {
   await requireAdmin();
 
   const sp = await searchParams;
-  const page = Math.max(1, Number.parseInt(sp.page ?? '1', 10) || 1);
-  const { entries, total } = await auditPage(PAGE_SIZE, (page - 1) * PAGE_SIZE);
+  const size = parsePageSize(sp.size);
+  const requested = parsePage(sp.page);
+  const first = pageQuery(requested, size);
+  const { entries, total } = await auditPage(first.limit, first.offset);
+  // The log only grows, but a bookmarked `?page=` can still outrun a shrunk
+  // page size; land on the last real page rather than on an empty table.
+  const page = clampPage(requested, total, size);
+  let rows = entries;
+  if (page !== requested) {
+    const corrected = pageQuery(page, size);
+    rows = (await auditPage(corrected.limit, corrected.offset)).entries;
+  }
 
   return (
     <>
@@ -72,15 +81,15 @@ export default async function AuditPage({
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-800">
-              {entries.length === 0 ? (
+              {rows.length === 0 ? (
                 <EmptyRow colSpan={5} label="No audit entries." />
               ) : (
-                entries.map((entry) => <AuditRow key={entry.id} entry={entry} />)
+                rows.map((entry) => <AuditRow key={entry.id} entry={entry} />)
               )}
             </tbody>
           </table>
         </div>
-        <Pager basePath="/admin/audit" page={page} pageSize={PAGE_SIZE} total={total} />
+        <Pager basePath="/admin/audit" page={page} pageSize={size} total={total} label="entries" />
       </Card>
     </>
   );

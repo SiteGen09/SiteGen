@@ -1,13 +1,21 @@
 import { listApiKeys } from '@/lib/dashboard/queries';
-import { EmptyRow, PageHeader, StatusBadge, Table, formatTimestamp } from '../ui';
+import { clampPage, pageSlice, parsePage, parsePageSize } from '@/lib/ui/pagination';
+import { EmptyRow, PageHeader, Pager, StatusBadge, Table, formatTimestamp } from '../ui';
 import { CreateKeyForm, RevokeKeyForm } from './key-forms';
 
 export const metadata = { title: 'API keys — sitegen' };
 
 const HEAD = ['Name', 'Key', 'Status', 'Rate limit', 'Last used', 'Created', ''] as const;
 
-export default async function KeysPage() {
-  const keys = await listApiKeys();
+export default async function KeysPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string; size?: string }>;
+}) {
+  const [sp, keys] = await Promise.all([searchParams, listApiKeys()]);
+  const size = parsePageSize(sp.size);
+  const page = clampPage(parsePage(sp.page), keys.length, size);
+  const visible = pageSlice(keys, page, size);
 
   return (
     <>
@@ -21,10 +29,10 @@ export default async function KeysPage() {
       </div>
 
       <Table head={HEAD} minWidth="min-w-[48rem]">
-        {keys.length === 0 ? (
+        {visible.length === 0 ? (
           <EmptyRow colSpan={HEAD.length}>No keys yet.</EmptyRow>
         ) : (
-          keys.map((key) => (
+          visible.map((key) => (
             <tr key={key.id}>
               <td className="px-4 py-2.5 text-zinc-900">{key.name}</td>
               <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-zinc-600">
@@ -49,6 +57,13 @@ export default async function KeysPage() {
           ))
         )}
       </Table>
+      <Pager
+        basePath="/dashboard/keys"
+        page={page}
+        pageSize={size}
+        total={keys.length}
+        label="keys"
+      />
     </>
   );
 }

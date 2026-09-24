@@ -68,6 +68,11 @@ beforeEach(() => {
   state.result = null;
 });
 
+it('blocks an active profile with a billing freeze', async () => {
+  state.result = {data:row({profiles:{status:'active',billing_hold:true}}),error:null};
+  await expect(authenticateApiKey(BEARER)).rejects.toMatchObject({status:403});
+});
+
 describe('authenticateApiKey suspension', () => {
   it('accepts an active account', async () => {
     const auth = await authenticateApiKey(BEARER);
@@ -103,9 +108,9 @@ describe('authenticateApiKey suspension', () => {
     );
   });
 
-  it('treats a missing profile embed as not suspended', async () => {
+  it('denies access when the owner profile cannot be verified', async () => {
     state.result = { data: row({ profiles: null }), error: null };
 
-    await expect(authenticateApiKey(BEARER)).resolves.toMatchObject({ apiKeyId: 'key-1' });
+    await expect(authenticateApiKey(BEARER)).rejects.toMatchObject({ status: 403 });
   });
 });

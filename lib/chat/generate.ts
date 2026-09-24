@@ -1,3 +1,4 @@
+import { observePolicyRejection } from '@/lib/guardrails/runtime';
 import { generateText } from 'ai';
 
 import type { ChannelRow } from '@/lib/ai/fallback';
@@ -18,6 +19,8 @@ export interface ChatGenerationResult {
   channelId: string;
   /** Credit multiplier of the serving channel, as a number. */
   multiplier: number;
+  /** The serving channel ran on the caller's own provider key. */
+  byok: boolean;
   /** USD rates of the serving channel, for cost calculation. */
   rates: TokenRates;
   usage: NormalizedUsage;
@@ -59,6 +62,7 @@ export async function generateChat(params: ChatGenerationParams): Promise<ChatGe
     const ai = buildAI(creds);
     return await generateText({
       model: ai.languageModel(channel.modelId),
+      maxRetries: 0,
       messages: toModelMessages(params.messages),
       // System turns arrive positionally in `messages` (a chat-completions
       // `system` role, or Responses `instructions`), so the SDK must accept
@@ -74,6 +78,7 @@ export async function generateChat(params: ChatGenerationParams): Promise<ChatGe
     });
   });
 
+  await observePolicyRejection({ finishReason: result.value.finishReason });
   const usage = normalizeUsage(result.value.usage, result.value.providerMetadata);
 
   return {
@@ -82,6 +87,7 @@ export async function generateChat(params: ChatGenerationParams): Promise<ChatGe
     toolCalls: toOpenAiToolCalls(result.value.toolCalls),
     channelId: servingChannel.id,
     multiplier: Number(servingChannel.creditMultiplier),
+    byok: servingChannel.isByok,
     rates: servingChannel.rates,
     usage,
     latencyMs: Date.now() - startedAt,

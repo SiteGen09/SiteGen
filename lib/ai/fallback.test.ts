@@ -33,6 +33,36 @@ function resolverFor(rows: ChannelRow[]): (id: string) => Promise<ChannelRow | n
 }
 
 describe('callWithFallback', () => {
+  it('tries automatic alternatives before configured backup models, once each', async () => {
+    const start = channel('a', { automaticRouting: true, automaticFallbackIds: ['missing', 'b', 'a'], fallbackTo: 'configured' });
+    const b = channel('b', { automaticRouting: true, fallbackTo: 'configured' });
+    const configured = channel('configured');
+    const attempt = vi.fn(async (row: ChannelRow) => {
+      if (row.id === 'configured') return 'ok';
+      throw httpError(503);
+    });
+    const result = await callWithFallback(start, resolverFor([b, configured]), attempt);
+    expect(result.channelId).toBe('configured');
+    expect(attempt.mock.calls.map(([row]) => row.id)).toEqual(['a', 'b', 'configured']);
+  });
+
+  it.each([401, 402, 404, 408, 429, 503])('Auto retries an unavailable provider with HTTP %s', async (status) => {
+    const start = channel('a', { automaticRouting: true, automaticFallbackIds: ['b'] });
+    const result = await callWithFallback(start, resolverFor([channel('b')]), async (row) => {
+      if (row.id === 'a') throw httpError(status);
+      return 'ok';
+    });
+    expect(result.channelId).toBe('b');
+  });
+
+  it('Auto never retries invalid input or a content policy rejection', async () => {
+    for (const failure of [httpError(400), Object.assign(httpError(503), { code: 'content_policy_violation' })]) {
+      const attempt = vi.fn(async () => { throw failure; });
+      await expect(callWithFallback(channel('a', { automaticRouting: true, automaticFallbackIds: ['b'] }), resolverFor([channel('b')]), attempt)).rejects.toBe(failure);
+      expect(attempt).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it('succeeds on the first channel without resolving the chain', async () => {
     const resolve = vi.fn(resolverFor([]));
     const attempt = vi.fn(() => Promise.resolve('ok'));

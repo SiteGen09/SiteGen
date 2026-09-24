@@ -1,10 +1,14 @@
+import { guardedRoute, admitGeneration } from '@/lib/guardrails/runtime';
 import { randomUUID } from 'node:crypto';
 import { after } from 'next/server';
 import { z } from 'zod';
+import type { ModelMessage } from 'ai';
 
 import { ApiError } from '@/lib/api/errors';
 import { openAiErrorFrom } from '@/lib/api/openai-errors';
 import { savedMessageSchema } from '@/lib/chat/conversations';
+import { attachmentsSchema, decodeTurn, encodeTurn, supportsImages, turnText } from '@/lib/chat/composer';
+import { parseMediaMarker } from '@/lib/media/marker';
 import { prepareCall, settleCall, recordCallFailure, SSE_HEADERS } from '@/lib/chat/pipeline';
 import { streamChat } from '@/lib/chat/stream';
 import { logger } from '@/lib/log';
@@ -17,10 +21,11 @@ export const maxDuration = 300;
 const requestSchema = z.object({
   conversationId: z.uuid().optional(),
   model: z.string().min(1).max(128),
-  content: z.string().trim().min(1).max(32000),
-});
+  content: z.string().trim().max(32000),
+  attachments: attachmentsSchema.default([]),
+}).refine((value) => value.content.length > 0 || value.attachments.length > 0, 'Enter a message or attach a file.');
 
-export async function POST(req: Request): Promise<Response> {
+async function handlePost(req: Request): Promise<Response> {
   const requestId = randomUUID();
   const log = logger({ request_id: requestId, route: 'dashboard.chat' });
   const service = createServiceClient();
@@ -49,6 +54,7 @@ export async function POST(req: Request): Promise<Response> {
     } = await session.auth.getUser();
     if (authError || !user) throw new ApiError('unauthorized', 'Sign in to chat.', 401);
     ownerId = user.id;
+    await admitGeneration(user.id);
     const origin = req.headers.get('origin');
     if (origin !== null && origin !== new URL(req.url).origin)
       throw new ApiError('forbidden', 'Invalid request origin.', 403);
@@ -59,7 +65,7 @@ export async function POST(req: Request): Promise<Response> {
     if (!body.success)
       throw new ApiError(
         'invalid_request',
-        'Choose a model and enter a message of at most 32,000 characters.',
+        body.error.issues[0]?.message ?? 'Choose a model and enter a message of at most 32,000 characters.',
         400,
       );
     const input = body.data;
@@ -68,7 +74,7 @@ export async function POST(req: Request): Promise<Response> {
       const { error } = await service.from('chat_conversations').insert({
         id: conversationId,
         user_id: user.id,
-        title: input.content.slice(0, 80),
+        title: (input.content || input.attachments[0]?.name || 'New chat').slice(0, 80),
         model: input.model,
       });
       if (error) throw new Error('Could not create conversation');
@@ -97,12 +103,33 @@ export async function POST(req: Request): Promise<Response> {
       .order('id', { ascending: false })
       .limit(100);
     if (history.error) throw new Error('Could not read conversation');
-    const messages = savedMessageSchema
+    const turns = savedMessageSchema
       .array()
       .parse(history.data)
       .reverse()
-      .map(({ role, content }) => ({ role, content }));
-    messages.push({ role: 'user', content: input.content });
+      .filter((message) => message.role !== 'assistant' || !parseMediaMarker(message.content))
+      .map(({ role, content }) => ({ role, ...(role === 'user' ? decodeTurn(content) : { text: content, attachments: [] }) }));
+    turns.push({ role: 'user', text: input.content, attachments: input.attachments });
+    const imageCount = turns.reduce((sum, turn) => sum + turn.attachments.filter((file) => file.kind === 'image').length, 0);
+    if (imageCount > 0 && !supportsImages(input.model))
+      throw new ApiError('invalid_request', 'Choose an image-capable model for this conversation.', 400);
+    if (imageCount > 12)
+      throw new ApiError('invalid_request', 'This conversation has too many images. Start a new chat.', 400);
+    const messages = turns.map((turn) => ({
+      role: turn.role,
+      // Include a conservative image allowance in the existing credit estimate.
+      content: turnText(turn.text, turn.attachments) + turn.attachments
+        .filter((file) => file.kind === 'image').map(() => ' '.repeat(8000)).join(''),
+    }));
+    const modelMessages: ModelMessage[] = turns.map((turn) => {
+      const text = turnText(turn.text, turn.attachments);
+      if (turn.role !== 'user') return { role: turn.role, content: text };
+      return { role: 'user', content: [
+        { type: 'text', text: text || 'Please review the attached image.' },
+        ...turn.attachments.flatMap((file) => file.kind === 'image'
+          ? [{ type: 'file' as const, data: file.data, mediaType: file.data.slice(5, file.data.indexOf(';')), filename: file.name }] : []),
+      ] };
+    });
     if (messages.reduce((sum, message) => sum + message.content.length, 0) > 200000) {
       throw new ApiError('invalid_request', 'This conversation is full. Start a new chat.', 400);
     }
@@ -124,7 +151,7 @@ export async function POST(req: Request): Promise<Response> {
     const userWrite = await service.from('chat_messages').insert({
       conversation_id: conversationId,
       role: 'user',
-      content: input.content,
+      content: encodeTurn(input.content, input.attachments),
       model: input.model,
     });
     if (userWrite.error) throw new Error('Could not save message');
@@ -133,11 +160,21 @@ export async function POST(req: Request): Promise<Response> {
       resolve: prepared.resolved.resolve,
       buildCreds: prepared.resolved.buildCreds,
       messages,
+      modelMessages,
       maxOutputTokens: prepared.requestedMax,
     });
     channelId = handle.channel.id;
-    // Observe rejection immediately; iteration will report it in-band too.
     void handle.completion.catch(() => undefined);
+    // A retry may answer with a different public model. Label and save the
+    // model that actually served the response, without exposing upstream IDs.
+    let responseModel = input.model;
+    if (handle.channel.id !== prepared.resolved.start.id) {
+      try {
+        const actual = await service.from('channels').select('public_model_id').eq('id', handle.channel.id).maybeSingle();
+        if (!actual.error && typeof actual.data?.public_model_id === 'string') responseModel = actual.data.public_model_id;
+      } catch { /* Metadata lookup must not discard an accepted stream. */ }
+    }
+    // Observe rejection immediately; iteration will report it in-band too.
     let disconnected = false;
     let work: Promise<void> = Promise.resolve();
     const encoder = new TextEncoder();
@@ -159,7 +196,7 @@ export async function POST(req: Request): Promise<Response> {
               if (part.type !== 'text') continue;
               content += part.text;
               send({
-                model: input.model,
+                model: responseModel,
                 choices: [{ index: 0, delta: { content: part.text }, finish_reason: null }],
               });
             }
@@ -171,6 +208,7 @@ export async function POST(req: Request): Promise<Response> {
               channelId: handle.channel.id,
               held,
               multiplier: Number(handle.channel.creditMultiplier),
+              byok: handle.channel.isByok,
               rates: handle.channel.rates,
               usage: done.usage,
               latencyMs: done.latencyMs,
@@ -180,17 +218,17 @@ export async function POST(req: Request): Promise<Response> {
               conversation_id: conversationId,
               role: 'assistant',
               content,
-              model: input.model,
+              model: responseModel,
               tokens: done.usage.outputTokens,
             });
             if (saved.error) throw new Error('Could not save assistant response');
             const updated = await service
               .from('chat_conversations')
-              .update({ model: input.model, updated_at: new Date().toISOString() })
+              .update({ model: responseModel, updated_at: new Date().toISOString() })
               .eq('id', conversationId)
               .eq('user_id', user.id);
             if (updated.error) throw new Error('Could not update conversation');
-            send({ model: input.model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
+            send({ model: responseModel, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
           } catch (err) {
             log.error('dashboard.chat_failed', {
               detail: err instanceof Error ? err.message : 'unknown',
@@ -240,3 +278,5 @@ export async function POST(req: Request): Promise<Response> {
     return openAiErrorFrom(err, requestId);
   }
 }
+
+export const POST = guardedRoute(handlePost, openAiErrorFrom, 4 * 1024 * 1024);

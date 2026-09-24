@@ -72,6 +72,23 @@ const DEGRADED_ERROR_RATE = 0.1;
 const OUTAGE_ERROR_RATE = 0.5;
 
 /**
+ * Thresholds only: the caller decides whether it has enough evidence to ask.
+ * An operator's `degraded` flag is a floor, never an upgrade.
+ */
+function classifyRate(
+  channelStatus: string,
+  observations: number,
+  failures: number,
+): { health: ModelHealth; errorRate: number } {
+  const errorRate = failures / observations;
+  if (errorRate >= OUTAGE_ERROR_RATE) return { health: 'outage', errorRate };
+  if (errorRate >= DEGRADED_ERROR_RATE || channelStatus === 'degraded') {
+    return { health: 'degraded', errorRate };
+  }
+  return { health: 'operational', errorRate };
+}
+
+/**
  * Pure classifier, exported for tests: everything above it is I/O.
  */
 export function classifyModelHealth(
@@ -83,22 +100,27 @@ export function classifyModelHealth(
     // No usable signal: defer to whatever an operator set on the channel.
     return { health: channelStatus === 'degraded' ? 'degraded' : 'idle', errorRate: null };
   }
-
-  const errorRate = failed / requests;
-  if (errorRate >= OUTAGE_ERROR_RATE) return { health: 'outage', errorRate };
-  if (errorRate >= DEGRADED_ERROR_RATE || channelStatus === 'degraded') {
-    return { health: 'degraded', errorRate };
-  }
-  return { health: 'operational', errorRate };
+  return classifyRate(channelStatus, requests, failed);
 }
 
 /**
- * A scheduled probe is deliberate evidence even when nobody called a model.
- * Weight each probe as MIN_SAMPLE observations so it reaches the existing
- * classifier threshold, but count each probe failure only once. A transient
- * probe failure must not overwhelm successful user traffic. If every probe
- * failed and no real request succeeded, there is direct outage evidence instead
- * of a ratio to dilute. No evidence stays idle; rejected requests are excluded.
+ * Health for one hour, from organic traffic and scheduled probes together.
+ *
+ * Every observation counts once, whatever its source. What a probe changes is
+ * not its weight but the sample gate: organic traffic needs {@link MIN_SAMPLE}
+ * requests before a rate means anything, because a handful of calls that
+ * happened to fail says more about the callers than the model. A probe is a
+ * deliberate check of exactly this model, so even one is evidence worth
+ * reporting — which is the whole reason an untrafficked model can read green.
+ *
+ * An earlier version multiplied each probe into {@link MIN_SAMPLE} synthetic
+ * observations to clear that gate. Counting honestly avoids both failure modes
+ * that produced: a lone failed probe could outvote successful real traffic and
+ * paint an outage, and — once the multiplier was applied to successes only —
+ * a majority of probes could fail while the hour still read operational,
+ * because the inflated denominator capped the rate below the degraded
+ * threshold. Rejected requests are excluded throughout: they are the caller's
+ * fault, not the model faltering.
  */
 export function classifyObservedHealth(
   status: string,
@@ -106,15 +128,18 @@ export function classifyObservedHealth(
   failed: number,
   probes: number,
   probeFailures: number,
-) {
+): { health: ModelHealth; errorRate: number | null } {
+  const observations = requests + probes;
+  const failures = failed + probeFailures;
+
   // Today's operator flag cannot invent evidence for an unobserved past hour.
-  if (requests === 0 && probes === 0) return { health: 'idle' as const, errorRate: null };
-  // This explicit case keeps a completely unreachable model red without
-  // multiplying synthetic failures in hours that have successful traffic.
-  if (probes > 0 && probeFailures === probes && requests === failed) {
-    return { health: 'outage' as const, errorRate: 1 };
+  if (observations === 0) return { health: 'idle', errorRate: null };
+  // No probe to vouch for the hour, and too little traffic to read a rate from.
+  if (probes === 0 && requests < MIN_SAMPLE) {
+    return { health: status === 'degraded' ? 'degraded' : 'idle', errorRate: null };
   }
-  return classifyModelHealth(status, requests + probes * MIN_SAMPLE, failed + probeFailures);
+
+  return classifyRate(status, observations, failures);
 }
 
 export interface ModelHour {

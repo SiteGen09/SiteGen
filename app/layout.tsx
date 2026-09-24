@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { Geist, Geist_Mono } from "next/font/google";
 import { THEME_INIT_SCRIPT } from "@/lib/theme";
+import { SITE_URL } from "@/lib/site-config";
+import { NavigationFeedback } from "./_components/navigation-feedback";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -14,6 +17,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
+  alternates: { canonical: "/" },
   title: "sitegen",
   description: "Generate structured, validated site specs over an HTTP API.",
 };
@@ -32,7 +37,12 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           * visitor who chose dark gets a white flash on every navigation. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <Suspense fallback={null}>
+          <NavigationFeedback />
+        </Suspense>
+        {children}
+      </body>
     </html>
   );
 }

@@ -20,6 +20,7 @@ function fakeLog() {
 beforeEach(() => {
   resetModerationWarning();
   vi.unstubAllEnvs();
+  vi.stubEnv('MODERATION_MODE', 'remote');
 });
 
 afterEach(() => {
@@ -43,6 +44,14 @@ describe('getModerationProvider', () => {
 });
 
 describe('checkContent fail-open', () => {
+  it('does not contact a model in local mode even when a moderation key exists', async () => {
+    vi.stubEnv('MODERATION_MODE', 'local');
+    vi.stubEnv('MODERATION_API_KEY', 'test-key');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await checkContent('hello', fakeLog().log)).toEqual({ flagged: false, categories: [] });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
   it('allows and alerts when the provider throws', async () => {
     vi.stubEnv('MODERATION_API_KEY', 'test-key');
     vi.stubGlobal(

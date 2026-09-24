@@ -1,27 +1,36 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { authRedirectPath } from '@/lib/auth/redirect';
 
 /**
- * Exchanges an email-confirmation / recovery code for a session cookie.
- * Only reached when auth email confirmations are enabled; local dev
- * auto-confirms and never sends the user here.
+ * Completes the Google OAuth / PKCE flow and preserves the intended destination.
  */
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = request.nextUrl;
   const code = searchParams.get('code');
-  const next = searchParams.get('next');
-  const target = next !== null && next.startsWith('/') ? next : '/dashboard';
-
-  if (code === null) {
-    return NextResponse.redirect(`${origin}/login?error=missing_code`);
+  const target = authRedirectPath(searchParams.get('next'));
+  function failed(reason: string) {
+    const url = new URL('/login', origin);
+    url.searchParams.set('error', reason);
+    url.searchParams.set('next', target);
+    return NextResponse.redirect(url);
   }
 
-  const supabase = await createClient();
-  const { error } = await supabase.auth.exchangeCodeForSession(code);
-
-  if (error) {
-    return NextResponse.redirect(`${origin}/login?error=auth_callback_failed`);
+  if (searchParams.has('error')) {
+    return failed(searchParams.get('error') === 'access_denied' ? 'access_denied' : 'auth_callback_failed');
   }
 
-  return NextResponse.redirect(`${origin}${target}`);
+  if (!code) {
+    return failed('missing_code');
+  }
+
+  try {
+    const supabase = await createClient();
+    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    if (error) return failed('auth_callback_failed');
+  } catch {
+    return failed('auth_callback_failed');
+  }
+
+  return NextResponse.redirect(new URL(target, origin));
 }

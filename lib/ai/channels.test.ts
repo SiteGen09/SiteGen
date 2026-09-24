@@ -5,8 +5,11 @@ import {
   resolveChannel,
   selectChannel,
   selectChannelByModel,
+  selectChatRoute,
+  selectMediaChannel,
 } from '@/lib/ai/channels';
-import type { Family } from '@/lib/ai/source-types';
+import { routingKey, type Family } from '@/lib/ai/source-types';
+import { callWithFallback } from '@/lib/ai/fallback';
 
 interface QueryResult {
   data: unknown;
@@ -61,6 +64,7 @@ interface Row {
     label: string;
     description: string;
     credit_multiplier: string | number;
+    modality: 'chat' | 'image' | 'video';
     status: string;
     min_plan: string;
     is_default: boolean;
@@ -75,6 +79,7 @@ interface Row {
   output_per_mtok: string | number;
   cached_per_mtok: string | number;
   public_model_id: string | null;
+  request_price_usd?: string | number | null;
 }
 
 function source(overrides: Partial<NonNullable<Row['sources']>> = {}): NonNullable<Row['sources']> {
@@ -84,6 +89,7 @@ function source(overrides: Partial<NonNullable<Row['sources']>> = {}): NonNullab
     label: 'Source',
     description: '',
     credit_multiplier: '1.00',
+    modality: 'chat',
     status: 'active',
     min_plan: 'free',
     is_default: false,
@@ -289,7 +295,16 @@ describe('listPublicModels', () => {
 
 // A choice is best effort and cannot bypass source eligibility.
 describe('source cascade', () => {
-  const preferences = new Map<'claude', string>([['claude', 'chosen']]);
+  it('adding Relay preserves Kie defaults while an explicit Relay choice uses its own prices', async () => {
+    const kie = row({ id: 'kie-shared', source_id: 'kie-gpt-chat', sources: source({ id: 'kie-gpt-chat', family: 'gpt', is_default: true }), public_model_id: 'shared' });
+    const relay = { ...row({ id: 'relay-shared', source_id: 'relay-gpt-chat', priority: -1, sources: source({ id: 'relay-gpt-chat', family: 'gpt', credit_multiplier: '1.5' }), public_model_id: 'shared' }), billing_policy: { origin: 'relay.fast', version: 'v', syncedAt: '2026-09-21', tiers: [{ name: 'standard', rates: { inputPerMTok: .2, outputPerMTok: 1, cachedPerMTok: .02 } }] } };
+    state.result = { data: [relay, kie], error: null };
+    expect((await selectChannelByModel('shared', 'free'))?.id).toBe('kie-shared');
+    expect(await selectChannelByModel('shared', 'free', new Map([['gpt:chat', 'relay-gpt-chat']]))).toMatchObject({ id: 'relay-shared', creditMultiplier: '1.5', rates: { inputPerMTok: .2 } });
+  });
+  // Keyed on family AND modality: one vendor serves chat, images and video,
+  // and a bare family key made a chat choice silently repoint the others.
+  const preferences = new Map<string, string>([[routingKey('claude', 'chat'), 'chosen']]);
   const chosen = () =>
     row({
       id: 'preferred',
@@ -340,6 +355,69 @@ describe('source cascade', () => {
   });
 });
 
+describe('automatic provider fallback', () => {
+  const candidate = (id: string, overrides: Partial<Row> = {}) => row({
+    id, public_model_id: 'shared', task: 'chat.completions', source_id: id + '-source',
+    sources: source({ id: id + '-source', family: 'gpt' }), ...overrides,
+  });
+
+  it('tries another eligible provider after a runtime failure and returns its prices', async () => {
+    state.result = { data: [
+      candidate('primary', { priority: -1, sources: source({ id: 'primary-source', family: 'gpt', is_default: true }) }),
+      candidate('backup', { priority: 10, sources: source({ id: 'backup-source', family: 'gpt', credit_multiplier: '1.5' }), input_per_mtok: 3 }),
+    ], error: null };
+    const route = await selectChatRoute('shared', 'free');
+    expect(route?.start.id).toBe('primary');
+    const attempt = vi.fn(async (channel: { id: string; creditMultiplier: string }) => {
+      if (channel.id === 'primary') throw Object.assign(new Error('unavailable'), { status: 503 });
+      return channel.creditMultiplier;
+    });
+    const result = await callWithFallback(route!.start, route!.resolve, attempt);
+    expect(result).toMatchObject({ channelId: 'backup', value: '1.5' });
+    expect((await route!.resolve('backup'))?.rates.inputPerMTok).toBe(3);
+    expect(route?.holdChannels?.map((channel) => channel.id)).toEqual(['primary', 'backup']);
+  });
+
+  it('never includes off, locked, BYOK, other-family or other-modality alternatives', async () => {
+    state.result = { data: [
+      candidate('primary', { priority: 100 }), candidate('backup'),
+      candidate('off', { status: 'off' }), candidate('byok', { is_byok: true }),
+      candidate('locked', { min_plan: 'pro' }),
+      candidate('source-locked', { sources: source({ family: 'gpt', min_plan: 'pro' }) }),
+      candidate('source-off', { sources: source({ family: 'gpt', status: 'off' }) }),
+      candidate('other-family', { sources: source({ family: 'claude' }) }),
+      candidate('image', { sources: source({ family: 'gpt', modality: 'image' }) }),
+    ], error: null };
+    const route = await selectChatRoute('shared', 'free');
+    expect(route?.start.automaticFallbackIds).toEqual(['backup']);
+  });
+
+  it('does not enable sibling retries for a manually selected provider', async () => {
+    state.result = { data: [candidate('chosen'), candidate('backup', { priority: 100 })], error: null };
+    const route = await selectChatRoute('shared', 'free', new Map([['gpt:chat', 'chosen-source']]));
+    expect(route?.start).toMatchObject({ id: 'chosen', fallbackTo: null });
+    expect(route?.start.automaticFallbackIds).toBeUndefined();
+    const failure = Object.assign(new Error('unavailable'), { status: 503 });
+    const attempt = vi.fn(async () => { throw failure; });
+    await expect(callWithFallback(route!.start, route!.resolve, attempt)).rejects.toBe(failure);
+    expect(attempt).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let an image preference disable chat Auto', async () => {
+    state.result = { data: [candidate('a'), candidate('b')], error: null };
+    const route = await selectChatRoute('shared', 'free', new Map([['gpt:image', 'image-source']]));
+    expect(route?.start.automaticFallbackIds).toEqual(['b']);
+  });
+
+  it('keeps configured backup links after same-model alternatives', async () => {
+    state.result = { data: [candidate('a', { fallback_to: 'configured' }), candidate('b')], error: null };
+    const route = await selectChatRoute('shared', 'free');
+    expect(route?.start).toMatchObject({ fallbackTo: 'configured', automaticFallbackIds: ['b'] });
+    state.result = { data: candidate('configured', { min_plan: 'pro' }), error: null };
+    expect(await route!.resolve('configured')).toBeNull();
+  });
+});
+
 // A catalog unit must never be interpreted as a different billing unit.
 describe('request-priced catalog entries', () => {
   it('excludes them from token dispatch, model enumeration and fallback', async () => {
@@ -350,5 +428,55 @@ describe('request-priced catalog entries', () => {
     expect(await listPublicModels('pro')).toEqual([]);
     state.result = { data: requestRow, error: null };
     expect(await resolveChannel(requestRow.id)).toBeNull();
+  });
+});
+
+/**
+ * The reported bug: with a preference keyed on family alone, one vendor
+ * serving chat, images and video shared a single routing decision. The GPT
+ * picker offered "kie.ai chat", "kie.ai image" and "kie.ai video" as
+ * alternatives to one another, so choosing an image source repointed chat at a
+ * gateway with no chat models on it.
+ */
+describe('modality isolation', () => {
+  it('Auto exposes only eligible same-family media alternatives and manual choices do not', async () => {
+    const primary = row({ id: 'primary-image', source_id: 'first', task: 'image.generate', pricing_type: 'request', public_model_id: 'image', request_price_usd: .04, sources: source({ id: 'first', family: 'gpt', modality: 'image', is_default: true }) });
+    const backup = { ...primary, id: 'backup-image', source_id: 'backup', sources: source({ id: 'backup', family: 'gpt', modality: 'image' }) };
+    state.result = { data: [primary, backup, { ...backup, id: 'locked', min_plan: 'pro' }, { ...backup, id: 'video', sources: source({ family: 'gpt', modality: 'video' }) }], error: null };
+    expect((await selectMediaChannel('image', 'free', 'image'))?.fallbackChannels?.map((channel) => channel.id)).toEqual(['backup-image']);
+    expect((await selectMediaChannel('image', 'free', 'image', new Map([['gpt:image', 'first']])))?.fallbackChannels).toBeUndefined();
+  });
+
+  const imageSource = () =>
+    source({ id: 'kie-gemini-image', family: 'gemini', modality: 'image', is_default: true });
+
+  const imageRow = () =>
+    row({
+      id: 'img',
+      task: 'image.generate',
+      pricing_type: 'request',
+      source_id: 'kie-gemini-image',
+      sources: imageSource(),
+      request_price_usd: '0.04',
+    });
+
+  it('ignores a chat preference when resolving an image channel', async () => {
+    state.result = { data: [imageRow()], error: null };
+    const chatChoice = new Map([[routingKey('gemini', 'chat'), 'some-chat-source']]);
+    const picked = await selectMediaChannel('m', 'free', 'image', chatChoice);
+    // The chat choice names a source that serves no images. Before the key was
+    // widened this filtered every candidate out and fell through unpredictably.
+    expect(picked?.id).toBe('img');
+  });
+
+  it('honours an image preference that names an image source', async () => {
+    state.result = { data: [imageRow()], error: null };
+    const imageChoice = new Map([[routingKey('gemini', 'image'), 'kie-gemini-image']]);
+    expect((await selectMediaChannel('m', 'free', 'image', imageChoice))?.id).toBe('img');
+  });
+
+  it('never serves a request-priced channel to the chat selector', async () => {
+    state.result = { data: [imageRow()], error: null };
+    expect(await selectChannelByModel('m', 'free', new Map())).toBeNull();
   });
 });

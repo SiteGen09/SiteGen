@@ -1,15 +1,23 @@
 import { listCredentials } from '@/lib/dashboard/queries';
 import { requireUser } from '@/lib/dashboard/session';
-import { EmptyRow, PageHeader, StatusBadge, Table, formatTimestamp } from '../ui';
+import { clampPage, pageSlice, parsePage, parsePageSize } from '@/lib/ui/pagination';
+import { EmptyRow, PageHeader, Pager, StatusBadge, Table, formatTimestamp } from '../ui';
 import { AddCredentialForm, RevokeCredentialForm } from './credential-forms';
 
 export const metadata = { title: 'Credentials — sitegen' };
 
 const HEAD = ['Provider', 'Base URL', 'Key', 'Status', 'Added', ''] as const;
 
-export default async function CredentialsPage() {
+export default async function CredentialsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string; size?: string }>;
+}) {
   const user = await requireUser();
-  const credentials = await listCredentials(user.id);
+  const [sp, credentials] = await Promise.all([searchParams, listCredentials(user.id)]);
+  const size = parsePageSize(sp.size);
+  const page = clampPage(parsePage(sp.page), credentials.length, size);
+  const visible = pageSlice(credentials, page, size);
 
   return (
     <>
@@ -23,12 +31,12 @@ export default async function CredentialsPage() {
       </div>
 
       <Table head={HEAD} minWidth="min-w-[42rem]">
-        {credentials.length === 0 ? (
+        {visible.length === 0 ? (
           <EmptyRow colSpan={HEAD.length}>
             No credentials. Platform channels are used until you add one.
           </EmptyRow>
         ) : (
-          credentials.map((credential) => (
+          visible.map((credential) => (
             <tr key={credential.id}>
               <td className="px-4 py-2.5 text-zinc-900">{credential.provider}</td>
               <td className="px-4 py-2.5 font-mono text-xs text-zinc-600">
@@ -50,6 +58,13 @@ export default async function CredentialsPage() {
           ))
         )}
       </Table>
+      <Pager
+        basePath="/dashboard/credentials"
+        page={page}
+        pageSize={size}
+        total={credentials.length}
+        label="credentials"
+      />
     </>
   );
 }

@@ -174,12 +174,18 @@ const userRowSchema = z.object({
   current_period_end: dbDateOrNull,
   monthly_credits: dbNumberOrNull,
   balance: dbNumber,
+  credits_30d: dbNumber,
+  last_used_at: dbDateOrNull,
   strikes_24h: dbNumber,
 });
 
 export type UserRow = z.infer<typeof userRowSchema>;
 
-/** Page of users with their entitlement, newest signups first. */
+/**
+ * Page of users with their entitlement and recent consumption, newest signups
+ * first. The usage subqueries run per listed user on the (user_id, created_at)
+ * index, never across the whole table.
+ */
 export async function usersPage(
   limit: number,
   offset: number,
@@ -192,6 +198,11 @@ export async function usersPage(
              e.current_period_end,
              e.monthly_credits,
              get_balance(p.id) AS balance,
+             (SELECT COALESCE(SUM(u.credits_charged), 0) FROM usage_events u
+                WHERE u.user_id = p.id
+                  AND u.created_at >= now() - interval '30 days') AS credits_30d,
+             (SELECT max(u.created_at) FROM usage_events u
+                WHERE u.user_id = p.id) AS last_used_at,
              (SELECT count(*) FROM abuse_strikes s
                 WHERE s.user_id = p.id
                   AND s.created_at >= now() - interval '24 hours') AS strikes_24h
@@ -208,4 +219,52 @@ export async function usersPage(
     users: rows.map((row) => userRowSchema.parse(row)),
     total: countRow === undefined ? 0 : dbNumber.parse(countRow.total),
   };
+}
+
+const sourceUsageSchema = z.object({
+  source_id: z.string(),
+  source_label: z.string(),
+  requests: dbNumber,
+  errors: dbNumber,
+  p95_latency_ms: dbNumberOrNull,
+  credits: dbNumber,
+  cost_usd: dbNumber,
+  input_tokens: dbNumber,
+  output_tokens: dbNumber,
+  last_used_at: dbDateOrNull,
+});
+
+export type SourceUsage = z.infer<typeof sourceUsageSchema>;
+
+/**
+ * Rolling 24-hour totals per upstream source — how hard each account is being
+ * worked, and what it cost.
+ *
+ * Grouped on the `source_id`/`source_label` snapshot written onto the usage
+ * row at settle time, not on the channel's current assignment: reassigning a
+ * channel or renaming a source must not rewrite what history says was served.
+ * Rows predating the snapshot migration carry a null source and are reported
+ * under `(unknown)` rather than guessed at from today's configuration.
+ */
+export async function usageBySource24h(): Promise<SourceUsage[]> {
+  const rows = await sql<Record<string, unknown>[]>`
+    SELECT
+      COALESCE(source_id, '(unknown)') AS source_id,
+      COALESCE(source_label, '(unknown)') AS source_label,
+      count(*) AS requests,
+      count(*) FILTER (WHERE status <> 'ok') AS errors,
+      percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) FILTER (WHERE status = 'ok')
+        AS p95_latency_ms,
+      COALESCE(SUM(credits_charged), 0) AS credits,
+      COALESCE(SUM(cost_usd), 0) AS cost_usd,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      max(created_at) AS last_used_at
+    FROM usage_events
+    WHERE created_at >= now() - interval '24 hours'
+    GROUP BY COALESCE(source_id, '(unknown)'), COALESCE(source_label, '(unknown)')
+    ORDER BY COALESCE(SUM(cost_usd), 0) DESC, source_id ASC
+  `;
+
+  return rows.map((row) => sourceUsageSchema.parse(row));
 }

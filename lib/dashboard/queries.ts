@@ -1,10 +1,19 @@
-import { sourceSchema, SOURCE_COLUMNS, type Family } from '@/lib/ai/sources';
+import {
+  sourceSchema,
+  SOURCE_COLUMNS,
+  type Family,
+  type Modality,
+} from '@/lib/ai/sources';
 import { z } from 'zod';
+import { billingPolicySchema, policyRates, publicBillingPolicy, type PublicBillingPolicy } from '@/lib/ai/billing-policy';
 import { PROVIDERS, type Provider } from '@/lib/ai/providers';
+import { publicRoutingProviderIdentity, publicRoutingSourceLabel, publicRoutingTags, publicRoutingText, type RoutingProviderIdentity } from '@/lib/ai/routing-provider';
 import { createClient } from '@/lib/supabase/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { isPlanKey, planMeetsMinimum, type PlanKey } from '@/lib/billing/plans';
 import { costUsd, creditsForUsage, type TokenRates } from '@/lib/ai/pricing';
+import { routingPriceChanges, type RoutingPriceHistoryEntry } from './routing-history';
+import { requestPriceKind } from './public-prices';
 
 /**
  * Read helpers for the developer dashboard.
@@ -79,9 +88,16 @@ export const channelInfoRowSchema = z.object({
 export type ChannelInfo = z.infer<typeof channelInfoRowSchema>;
 
 const modelCatalogRowSchema = z.object({
+  base_url: z.string().nullish(),
+  billing_policy: billingPolicySchema.nullish(),
   id: z.string(),
   public_model_id: z.string(),
   pricing_type: z.enum(['token', 'request']),
+  request_price_usd: z
+    .union([z.string(), z.number()])
+    .nullable()
+    .optional()
+    .transform((v) => (v === null || v === undefined ? null : Number(v))),
   label: z.string(),
   provider: z.enum(PROVIDERS),
   model_id: z.string(),
@@ -98,11 +114,15 @@ const modelCatalogRowSchema = z.object({
 });
 
 export interface ModelCatalogEntry {
+  routingProvider?: RoutingProviderIdentity;
+  billingPolicy?: PublicBillingPolicy | null;
   id: string;
   sourceId: string | null;
   sourceLabel: string;
   sourceDescription: string;
   family: Family | null;
+  /** From the source: what this channel produces. */
+  modality: Modality;
   publicModelId: string;
   label: string;
   provider: Provider;
@@ -116,6 +136,9 @@ export interface ModelCatalogEntry {
   inputCreditsPerMTok: number;
   outputCreditsPerMTok: number;
   cachedCreditsPerMTok: number;
+  /** Credits for one completed job. Null for token-priced models. */
+  requestCredits: number | null;
+  requestPriceKind?: import('./public-prices').RequestPriceKind | null;
 }
 
 /** Credits charged for one million tokens of a single kind, markup included. */
@@ -250,7 +273,10 @@ export async function listUsageEvents(filter: UsageFilter): Promise<UsageEventRo
 
   const { data, error } = await query;
   if (error) fail('usage events', error.message);
-  return z.array(usageEventRowSchema).parse(data);
+  return z.array(usageEventRowSchema).parse(data).map((row) => ({
+    ...row,
+    source_label: publicRoutingSourceLabel(row.source_label),
+  }));
 }
 
 /**
@@ -311,7 +337,7 @@ export async function listModelCatalog(): Promise<ModelCatalogEntry[]> {
   const { data, error } = await service
     .from('channels')
     .select(
-      'id, public_model_id, pricing_type, label, provider, model_id, status, min_plan, is_byok, source_id, input_per_mtok, output_per_mtok, cached_per_mtok, sources(' +
+      'id, public_model_id, pricing_type, request_price_usd, billing_policy, label, provider, base_url, model_id, status, min_plan, is_byok, source_id, input_per_mtok, output_per_mtok, cached_per_mtok, sources(' +
         SOURCE_COLUMNS +
         ')',
     )
@@ -319,19 +345,18 @@ export async function listModelCatalog(): Promise<ModelCatalogEntry[]> {
     .neq('status', 'off');
   if (error) fail('models', error.message);
 
+  // Request-priced rows are listed now that the media endpoints dispatch them.
+  // They were excluded while nothing could bill per job.
   return z
     .array(modelCatalogRowSchema)
     .parse(data)
-    .filter(
-      (row) =>
-        row.pricing_type === 'token' &&
-        (row.is_byok || (row.sources !== null && row.sources.status !== 'off')),
-    )
+    .filter((row) => row.is_byok || (row.sources !== null && row.sources.status !== 'off'))
     .map((row) => {
+      const currentRates = row.billing_policy ? policyRates(row.billing_policy) : null;
       const rates: TokenRates = {
-        inputPerMTok: row.input_per_mtok,
-        outputPerMTok: row.output_per_mtok,
-        cachedPerMTok: row.cached_per_mtok,
+        inputPerMTok: currentRates?.inputPerMTok ?? row.input_per_mtok,
+        outputPerMTok: currentRates?.outputPerMTok ?? row.output_per_mtok,
+        cachedPerMTok: currentRates?.cachedPerMTok ?? row.cached_per_mtok,
       };
       const multiplier = row.is_byok
         ? 0
@@ -339,15 +364,27 @@ export async function listModelCatalog(): Promise<ModelCatalogEntry[]> {
 
       return {
         id: row.id,
+        routingProvider: publicRoutingProviderIdentity({
+          baseUrl: row.is_byok ? null : row.base_url, provider: row.provider,
+          sourceId: row.source_id, sourceLabel: row.sources?.label,
+        }),
+        billingPolicy: publicBillingPolicy(row.billing_policy),
         sourceId: row.source_id,
-        sourceLabel: row.sources?.label ?? 'BYOK',
+        sourceLabel: row.is_byok
+          ? 'BYOK'
+          : publicRoutingProviderIdentity({
+              sourceId: row.source_id,
+              sourceLabel: row.sources?.label,
+              provider: row.provider,
+            }).label,
         sourceDescription: row.sources?.description ?? '',
         family: row.sources?.family ?? null,
+        modality: row.sources?.modality ?? 'chat',
         publicModelId: row.public_model_id,
-        label: row.label,
+        label: publicRoutingText(row.label),
         provider: row.provider,
         upstreamModelId: row.model_id,
-        status: row.status,
+        status: row.sources?.status === 'degraded' ? 'degraded' : row.status,
         minPlan:
           row.sources !== null && planMeetsMinimum(row.sources.min_plan, row.min_plan)
             ? row.sources.min_plan
@@ -361,17 +398,68 @@ export async function listModelCatalog(): Promise<ModelCatalogEntry[]> {
         inputCreditsPerMTok: creditsPerMTok(rates, 'inputTokens', multiplier),
         outputCreditsPerMTok: creditsPerMTok(rates, 'outputTokens', multiplier),
         cachedCreditsPerMTok: creditsPerMTok(rates, 'cachedTokens', multiplier),
+        requestCredits:
+          row.pricing_type === 'request' && row.request_price_usd !== null
+            ? creditsForUsage(row.request_price_usd, multiplier)
+            : null,
+        requestPriceKind: row.pricing_type === 'request' ? requestPriceKind(row.provider, row.billing_policy) : null,
       };
     })
     .sort((left, right) => left.publicModelId.localeCompare(right.publicModelId));
 }
 
-/** Published rates use the same default → priority cascade, without user preferences. */
+const routingAuditRowSchema = z.object({
+  id: numeric,
+  action: z.string(),
+  target: z.string(),
+  before: z.unknown().nullable(),
+  after: z.unknown().nullable(),
+  created_at: z.string(),
+});
+
+export type { RoutingPriceHistoryEntry } from './routing-history';
+
+/** Recent audited price changes for the public models visible to this user. */
+export async function listRoutingPriceHistory(
+  models: readonly ModelCatalogEntry[],
+  limit = 100,
+): Promise<RoutingPriceHistoryEntry[]> {
+  if (!models.length) return [];
+  const service = createServiceClient();
+  const count = Number.isFinite(limit) ? Math.min(Math.max(Math.floor(limit), 1), 200) : 100;
+  const history: RoutingPriceHistoryEntry[] = [];
+  // Filter after paging, so status/description edits cannot crowd actual
+  // price changes out of a single limited audit result. ID is a stable cursor.
+  let beforeId: number | undefined;
+  let table = 'routing_price_history';
+  while (history.length < count) {
+    let query = service.from(table)
+      .select('id, action, target, before, after, created_at')
+      .in('action', ['source.update', 'channel.update'])
+      .order('id', { ascending: false }).limit(200);
+    if (beforeId !== undefined) query = query.lt('id', beforeId);
+    const { data, error } = await query;
+    // A rolling deploy can serve this page before the migration finishes.
+    // Existing audit history remains usable until the dedicated table exists.
+    if (error && table === 'routing_price_history' && ['42P01', 'PGRST205'].includes(error.code)) {
+      table = 'admin_audit_log';
+      continue;
+    }
+    if (error) fail('routing price history', error.message);
+    const rows = z.array(routingAuditRowSchema).parse(data ?? []);
+    for (const row of rows) history.push(...routingPriceChanges(row, models));
+    if (rows.length < 200) break;
+    beforeId = rows[rows.length - 1]!.id;
+  }
+  return history.slice(0, count);
+}
+
+/** One public price per provider, model and modality, using that provider's best route. */
 export async function listPublicPrices(): Promise<import('./public-prices').PublicPrice[]> {
   const { data, error } = await createServiceClient()
     .from('channels')
     .select(
-      'id, public_model_id, label, status, priority, vendor, context_window, endpoints, tags, pricing_type, input_per_mtok, output_per_mtok, cached_per_mtok, list_input_per_mtok, list_output_per_mtok, list_cached_per_mtok, sources!inner(' +
+      'id, public_model_id, label, provider, base_url, status, priority, vendor, context_window, endpoints, tags, pricing_type, request_price_usd, billing_policy, input_per_mtok, output_per_mtok, cached_per_mtok, list_input_per_mtok, list_output_per_mtok, list_cached_per_mtok, sources!inner(' +
         SOURCE_COLUMNS +
         ')',
     )
@@ -380,6 +468,9 @@ export async function listPublicPrices(): Promise<import('./public-prices').Publ
     .eq('is_byok', false);
   if (error) fail('public prices', error.message);
   const schema = z.object({
+    billing_policy: billingPolicySchema.nullish(),
+    provider: z.enum(PROVIDERS),
+    base_url: z.string().nullable(),
     id: z.string(),
     public_model_id: z.string(),
     label: z.string(),
@@ -390,6 +481,7 @@ export async function listPublicPrices(): Promise<import('./public-prices').Publ
     endpoints: z.array(z.string()),
     tags: z.array(z.string()),
     pricing_type: z.enum(['token', 'request']),
+    request_price_usd: numeric.nullable(),
     sources: sourceSchema,
     input_per_mtok: numeric,
     output_per_mtok: numeric,
@@ -401,45 +493,61 @@ export async function listPublicPrices(): Promise<import('./public-prices').Publ
   const rows = schema
     .array()
     .parse(data)
-    .filter((row) => row.sources.status !== 'off')
+    .filter((row) => row.status !== 'off' && row.sources.status !== 'off')
     .sort(
       (a, b) =>
         Number(b.sources.is_default) - Number(a.sources.is_default) ||
         b.priority - a.priority ||
-        Number(b.status === 'active') - Number(a.status === 'active') ||
+        Number(b.status === 'active' && b.sources.status === 'active') - Number(a.status === 'active' && a.sources.status === 'active') ||
         a.id.localeCompare(b.id),
-    );
+    ).map((row) => ({
+      ...row,
+      routingProvider: publicRoutingProviderIdentity({ baseUrl: row.base_url, provider: row.provider, sourceId: row.sources.id, sourceLabel: row.sources.label }),
+    }));
   const seen = new Set<string>();
   return rows
     .filter((row) => {
-      if (seen.has(row.public_model_id)) return false;
-      seen.add(row.public_model_id);
+      const key = JSON.stringify([row.routingProvider.id, row.public_model_id, row.sources.modality]);
+      if (seen.has(key)) return false;
+      seen.add(key);
       return true;
     })
     .map((row) => {
       const multiplier = Number(row.sources.credit_multiplier);
-      // Per-request rows reuse the numeric columns as a dollar amount per call.
-      // Conversion is therefore identical, but the unit is explicitly preserved.
+      const tokenPriced = row.pricing_type === 'token';
+      const currentRates = row.billing_policy && tokenPriced ? policyRates(row.billing_policy) : null;
       const credits = (dollars: number) => creditsForUsage(dollars, multiplier);
       const list = (dollars: number | null) =>
         dollars === null ? null : creditsForUsage(dollars, 1);
+      const imagePrices = row.billing_policy?.imagePrices;
+      const requestUsd = imagePrices ? Math.min(imagePrices.standard, imagePrices.large) : row.request_price_usd;
+      // Kie publishes its own serving rate here, not a separate model-maker
+      // list price. Never present that duplicate as an independent discount.
+      const hasVerifiedListPrice = row.routingProvider.id !== 'provider-b';
       return {
         model: row.public_model_id,
-        label: row.label,
+        billingPolicy: publicBillingPolicy(row.billing_policy),
+        label: publicRoutingText(row.label),
         group: row.sources.family,
-        vendor: row.vendor ?? 'Unknown',
+        vendor: publicRoutingText(row.vendor ?? 'Unknown'),
         contextWindow: row.context_window,
         endpoints: row.endpoints,
-        tags: row.tags,
+        tags: publicRoutingTags(row.tags),
         pricingType: row.pricing_type,
-        sourceLabel: row.sources.label,
+        modality: row.sources.modality,
+        providerId: row.routingProvider.id,
+        sourceLabel: row.routingProvider.label,
         multiplier,
-        input: credits(row.input_per_mtok),
-        output: credits(row.output_per_mtok),
-        cached: credits(row.cached_per_mtok),
-        listInput: list(row.list_input_per_mtok),
-        listOutput: list(row.list_output_per_mtok),
-        listCached: list(row.list_cached_per_mtok),
+        input: tokenPriced ? credits(currentRates?.inputPerMTok ?? row.input_per_mtok) : null,
+        output: tokenPriced ? credits(currentRates?.outputPerMTok ?? row.output_per_mtok) : null,
+        cached: tokenPriced ? credits(currentRates?.cachedPerMTok ?? row.cached_per_mtok) : null,
+        request: !tokenPriced && requestUsd !== null ? credits(requestUsd) : null,
+        requestPriceKind: tokenPriced ? null : requestPriceKind(row.provider, row.billing_policy),
+        listInput: tokenPriced && hasVerifiedListPrice ? list(row.list_input_per_mtok) : null,
+        listOutput: tokenPriced && hasVerifiedListPrice ? list(row.list_output_per_mtok) : null,
+        listCached: tokenPriced && hasVerifiedListPrice ? list(row.list_cached_per_mtok) : null,
+        // Only Relay's image importer explicitly stores a per-job reference here.
+        listRequest: !tokenPriced && imagePrices ? list(row.list_input_per_mtok) : null,
       };
     });
 }

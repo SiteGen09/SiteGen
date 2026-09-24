@@ -1,22 +1,38 @@
-'use client';
+"use client";
 
-import Link from 'next/link';
-import { useMemo, useState } from 'react';
-import { PROVIDER_LABELS } from '@/lib/ai/providers';
-import type { ChannelInfo, LedgerRow, UsageEventRow } from '@/lib/dashboard/queries';
-import { formatCredits, formatTimestamp } from '../ui';
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import { PROVIDER_LABELS } from "@/lib/ai/providers";
+import type {
+  ChannelInfo,
+  LedgerRow,
+  UsageEventRow,
+} from "@/lib/dashboard/queries";
+import { formatCredits, formatTimestamp } from "../ui";
+import {
+  ALL,
+  DEFAULT_PAGE_SIZE,
+  PAGE_SIZE_OPTIONS,
+  clampPage,
+  formatPageSize,
+  pageCount,
+  pageRange,
+  pageSlice,
+  type PageSize,
+} from "@/lib/ui/pagination";
 
 const PERIODS = [
-  { value: 'today', label: 'Today' },
-  { value: '24h', label: '24h' },
-  { value: '7d', label: '7D' },
-  { value: '30d', label: '30D' },
-  { value: '60d', label: '60D' },
+  { value: "today", label: "Today" },
+  { value: "24h", label: "24h" },
+  { value: "7d", label: "7D" },
+  { value: "30d", label: "30D" },
+  { value: "60d", label: "60D" },
 ] as const;
 
-type Period = (typeof PERIODS)[number]['value'];
-type Tab = 'overview' | 'details';
-type ChartMode = 'tokens' | 'cost';
+type Period = (typeof PERIODS)[number]["value"];
+type Tab = "overview" | "details";
+type ChartMode = "tokens" | "cost";
 
 interface UsageDashboardProps {
   events: UsageEventRow[];
@@ -44,25 +60,25 @@ interface TopologyPosition {
   y: number;
 }
 
-const NUMBER_FORMAT = new Intl.NumberFormat('en-US');
-const CURRENCY_FORMAT = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
+const NUMBER_FORMAT = new Intl.NumberFormat("en-US");
+const CURRENCY_FORMAT = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
   maximumFractionDigits: 4,
 });
-const COMPACT_NUMBER_FORMAT = new Intl.NumberFormat('en-US', {
-  notation: 'compact',
+const COMPACT_NUMBER_FORMAT = new Intl.NumberFormat("en-US", {
+  notation: "compact",
   maximumFractionDigits: 1,
 });
-const HOUR_LABEL_FORMAT = new Intl.DateTimeFormat('en-US', {
-  hour: 'numeric',
+const HOUR_LABEL_FORMAT = new Intl.DateTimeFormat("en-US", {
+  hour: "numeric",
   hour12: false,
-  timeZone: 'UTC',
+  timeZone: "UTC",
 });
-const DAY_LABEL_FORMAT = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  day: 'numeric',
-  timeZone: 'UTC',
+const DAY_LABEL_FORMAT = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  timeZone: "UTC",
 });
 
 const TOPOLOGY_POSITIONS: TopologyPosition[] = [
@@ -89,7 +105,11 @@ function compact(value: number): string {
 }
 
 function eventTokens(event: UsageEventRow): number {
-  return (event.input_tokens ?? 0) + (event.cached_tokens ?? 0) + (event.output_tokens ?? 0);
+  return (
+    (event.input_tokens ?? 0) +
+    (event.cached_tokens ?? 0) +
+    (event.output_tokens ?? 0)
+  );
 }
 
 function eventCost(event: UsageEventRow): number {
@@ -97,63 +117,83 @@ function eventCost(event: UsageEventRow): number {
 }
 
 function periodStart(period: Period, now: number): number {
-  if (period === 'today') {
+  if (period === "today") {
     const date = new Date(now);
-    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+    return Date.UTC(
+      date.getUTCFullYear(),
+      date.getUTCMonth(),
+      date.getUTCDate(),
+    );
   }
-  if (period === '24h') return now - 24 * 60 * 60 * 1000;
-  const days = period === '7d' ? 7 : period === '30d' ? 30 : 60;
+  if (period === "24h") return now - 24 * 60 * 60 * 1000;
+  const days = period === "7d" ? 7 : period === "30d" ? 30 : 60;
   const date = new Date(now);
-  const today = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  const today = Date.UTC(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate(),
+  );
   return today - (days - 1) * 24 * 60 * 60 * 1000;
 }
 
 function relativeTime(value: string, now: number): string {
   const timestamp = new Date(value).getTime();
-  if (!Number.isFinite(timestamp)) return 'Unknown';
+  if (!Number.isFinite(timestamp)) return "Unknown";
   const seconds = Math.max(0, Math.floor((now - timestamp) / 1000));
-  if (seconds < 60) return 'Just now';
+  if (seconds < 60) return "Just now";
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
-function providerColor(provider: ChannelInfo['provider'], index: number): string {
-  if (provider === 'anthropic') return 'var(--usage-orange)';
-  if (provider === 'anthropic_compatible') return 'var(--usage-purple)';
-  if (provider === 'openai_compatible') return 'var(--usage-blue)';
+function providerColor(
+  provider: ChannelInfo["provider"],
+  index: number,
+): string {
+  if (provider === "anthropic") return "var(--usage-orange)";
+  if (provider === "anthropic_compatible") return "var(--usage-purple)";
+  if (provider === "openai_compatible") return "var(--usage-blue)";
+  if (provider === "openai_responses") return "var(--usage-green)";
   return (
-    ['var(--usage-purple)', 'var(--usage-green)', 'var(--usage-yellow)'][index % 3] ??
-    'var(--usage-purple)'
+    ["var(--usage-purple)", "var(--usage-green)", "var(--usage-yellow)"][
+      index % 3
+    ] ?? "var(--usage-purple)"
   );
 }
 
-function providerShortName(provider: ChannelInfo['provider']): string {
+function providerShortName(provider: ChannelInfo["provider"]): string {
   return PROVIDER_LABELS[provider];
 }
 
 function statusClass(status: string): string {
-  if (status === 'ok' || status === 'active' || status === 'settle') return 'usage-status-ok';
-  if (status === 'failed' || status === 'revoked') return 'usage-status-failed';
-  if (status === 'rejected' || status === 'hold' || status === 'release') {
-    return 'usage-status-warn';
+  if (status === "ok" || status === "active" || status === "settle")
+    return "usage-status-ok";
+  if (status === "failed" || status === "revoked") return "usage-status-failed";
+  if (status === "rejected" || status === "hold" || status === "release") {
+    return "usage-status-warn";
   }
-  return 'usage-status-muted';
+  return "usage-status-muted";
 }
 
 function channelName(channelId: string, map: Map<string, ChannelInfo>): string {
   return map.get(channelId)?.label ?? channelId;
 }
 
-function buildTrend(events: UsageEventRow[], period: Period, now: number): TrendPoint[] {
-  const hourly = period === 'today' || period === '24h';
-  const count = hourly ? 24 : period === '7d' ? 7 : period === '30d' ? 30 : 60;
+function buildTrend(
+  events: UsageEventRow[],
+  period: Period,
+  now: number,
+): TrendPoint[] {
+  const hourly = period === "today" || period === "24h";
+  const count = hourly ? 24 : period === "7d" ? 7 : period === "30d" ? 30 : 60;
   const bucketMs = hourly ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
   const start = periodStart(period, now);
   const points: TrendPoint[] = Array.from({ length: count }, (_, index) => {
     const timestamp = start + index * bucketMs;
     return {
-      label: hourly ? HOUR_LABEL_FORMAT.format(new Date(timestamp)) : DAY_LABEL_FORMAT.format(new Date(timestamp)),
+      label: hourly
+        ? HOUR_LABEL_FORMAT.format(new Date(timestamp))
+        : DAY_LABEL_FORMAT.format(new Date(timestamp)),
       tokens: 0,
       cost: 0,
     };
@@ -161,8 +201,12 @@ function buildTrend(events: UsageEventRow[], period: Period, now: number): Trend
 
   for (const event of events) {
     const timestamp = new Date(event.created_at).getTime();
-    if (!Number.isFinite(timestamp) || timestamp < start || timestamp > now) continue;
-    const index = Math.min(count - 1, Math.max(0, Math.floor((timestamp - start) / bucketMs)));
+    if (!Number.isFinite(timestamp) || timestamp < start || timestamp > now)
+      continue;
+    const index = Math.min(
+      count - 1,
+      Math.max(0, Math.floor((timestamp - start) / bucketMs)),
+    );
     const point = points[index];
     if (point === undefined) continue;
     point.tokens += eventTokens(event);
@@ -216,29 +260,29 @@ function OverviewHeader({
       <div className="usage-segmented" aria-label="Usage view">
         <button
           type="button"
-          className={activeTab === 'overview' ? 'is-active' : ''}
-          aria-pressed={activeTab === 'overview'}
-          onClick={() => onTabChange('overview')}
+          className={activeTab === "overview" ? "is-active" : ""}
+          aria-pressed={activeTab === "overview"}
+          onClick={() => onTabChange("overview")}
         >
           Overview
         </button>
         <button
           type="button"
-          className={activeTab === 'details' ? 'is-active' : ''}
-          aria-pressed={activeTab === 'details'}
-          onClick={() => onTabChange('details')}
+          className={activeTab === "details" ? "is-active" : ""}
+          aria-pressed={activeTab === "details"}
+          onClick={() => onTabChange("details")}
         >
           Details
         </button>
       </div>
 
-      {activeTab === 'overview' && (
+      {activeTab === "overview" && (
         <div className="usage-periods" aria-label="Usage period">
           {PERIODS.map((item) => (
             <button
               type="button"
               key={item.value}
-              className={period === item.value ? 'is-active' : ''}
+              className={period === item.value ? "is-active" : ""}
               aria-pressed={period === item.value}
               onClick={() => onPeriodChange(item.value)}
             >
@@ -263,7 +307,8 @@ function ProviderTopology({
   const latestChannel = events[0]?.channel_id;
   const providers = useMemo(() => {
     const observed = new Map<string, number>();
-    for (const event of events) observed.set(event.channel_id, (observed.get(event.channel_id) ?? 0) + 1);
+    for (const event of events)
+      observed.set(event.channel_id, (observed.get(event.channel_id) ?? 0) + 1);
 
     const observedIds = new Set(observed.keys());
     const all = channels.filter((channel) => observedIds.has(channel.id));
@@ -272,10 +317,10 @@ function ProviderTopology({
         all.push({
           id: event.channel_id,
           label: event.channel_id,
-          task: 'site.spec',
-          provider: 'openai_compatible',
+          task: "site.spec",
+          provider: "openai_compatible",
           model_id: event.channel_id,
-          status: 'observed',
+          status: "observed",
         });
       }
     }
@@ -292,12 +337,26 @@ function ProviderTopology({
   }, [channelMap, channels, events]);
 
   return (
-    <div className={`usage-topology-canvas${providers.length === 0 ? ' is-empty' : ''}`}>
-      <svg viewBox="0 0 720 420" role="img" aria-label="sitegen routing topology">
+    <div
+      className={`usage-topology-canvas${providers.length === 0 ? " is-empty" : ""}`}
+    >
+      <svg
+        viewBox="0 0 720 420"
+        role="img"
+        aria-label="sitegen routing topology"
+      >
         <defs>
           <linearGradient id="usage-route-line" x1="0" x2="1" y1="0" y2="1">
-            <stop offset="0%" stopColor="var(--usage-orange)" stopOpacity="0.85" />
-            <stop offset="100%" stopColor="var(--usage-blue)" stopOpacity="0.3" />
+            <stop
+              offset="0%"
+              stopColor="var(--usage-orange)"
+              stopOpacity="0.85"
+            />
+            <stop
+              offset="100%"
+              stopColor="var(--usage-blue)"
+              stopOpacity="0.3"
+            />
           </linearGradient>
         </defs>
 
@@ -305,23 +364,34 @@ function ProviderTopology({
           const position = TOPOLOGY_POSITIONS[index];
           if (position === undefined) return null;
           const color = providerColor(provider.provider, index);
-          const count = events.filter((event) => event.channel_id === provider.id).length;
+          const count = events.filter(
+            (event) => event.channel_id === provider.id,
+          ).length;
           const selected = provider.id === latestChannel;
-          const label = provider.label.length > 23 ? `${provider.label.slice(0, 22)}…` : provider.label;
-          const model = provider.model_id.length > 27 ? `${provider.model_id.slice(0, 26)}…` : provider.model_id;
+          const label =
+            provider.label.length > 23
+              ? `${provider.label.slice(0, 22)}…`
+              : provider.label;
+          const model =
+            provider.model_id.length > 27
+              ? `${provider.model_id.slice(0, 26)}…`
+              : provider.model_id;
 
           return (
             <g key={provider.id}>
               <title>
-                {provider.label} · {provider.model_id} · {providerShortName(provider.provider)}
+                {provider.label} · {provider.model_id} ·{" "}
+                {providerShortName(provider.provider)}
               </title>
               <path
                 d={topologyPath(position)}
                 fill="none"
-                stroke={selected ? 'url(#usage-route-line)' : 'var(--usage-line)'}
+                stroke={
+                  selected ? "url(#usage-route-line)" : "var(--usage-line)"
+                }
                 strokeWidth={selected ? 2.5 : 1.25}
                 strokeOpacity={selected ? 0.95 : 0.68}
-                strokeDasharray={selected ? undefined : '4 5'}
+                strokeDasharray={selected ? undefined : "4 5"}
               />
               <g transform={`translate(${position.x - 90} ${position.y - 29})`}>
                 <rect
@@ -329,21 +399,46 @@ function ProviderTopology({
                   height="58"
                   rx="9"
                   fill="var(--usage-surface)"
-                  stroke={selected ? color : 'var(--usage-node-border)'}
+                  stroke={selected ? color : "var(--usage-node-border)"}
                   strokeWidth={selected ? 1.8 : 1}
                 />
-                <circle cx="19" cy="20" r="9" fill={`color-mix(in srgb, ${color} 16%, transparent)`} />
-                <text x="19" y="24" textAnchor="middle" fill={color} fontSize="9" fontWeight="700">
-                  {provider.provider === 'anthropic' ? 'AN' : 'OP'}
+                <circle
+                  cx="19"
+                  cy="20"
+                  r="9"
+                  fill={`color-mix(in srgb, ${color} 16%, transparent)`}
+                />
+                <text
+                  x="19"
+                  y="24"
+                  textAnchor="middle"
+                  fill={color}
+                  fontSize="9"
+                  fontWeight="700"
+                >
+                  {provider.provider === "anthropic" ? "AN" : "OP"}
                 </text>
-                <text x="36" y="21" fill="var(--usage-text)" fontSize="11" fontWeight="600">
+                <text
+                  x="36"
+                  y="21"
+                  fill="var(--usage-text)"
+                  fontSize="11"
+                  fontWeight="600"
+                >
                   {label}
                 </text>
                 <text x="36" y="40" fill="var(--usage-muted)" fontSize="9">
                   {model}
                 </text>
                 {count > 0 && (
-                  <text x="164" y="21" textAnchor="end" fill={color} fontSize="10" fontWeight="700">
+                  <text
+                    x="164"
+                    y="21"
+                    textAnchor="end"
+                    fill={color}
+                    fontSize="10"
+                    fontWeight="700"
+                  >
                     {count}
                   </text>
                 )}
@@ -361,9 +456,22 @@ function ProviderTopology({
             stroke="var(--usage-orange)"
             strokeWidth="1.8"
           />
-          <rect x="13" y="16" width="31" height="31" rx="8" fill="var(--usage-orange)" />
-          <path d="M22 38V25h4v9h4v-13h4v17h-4v4h-8Z" fill="#ffffff" />
-          <text x="56" y="29" fill="var(--usage-orange-strong)" fontSize="14" fontWeight="700">
+          <rect
+            x="13"
+            y="16"
+            width="31"
+            height="31"
+            rx="8"
+            fill="#08090b"
+          />
+          <image href="/brand/sitegen-mark.svg" x="18" y="21" width="21" height="21" aria-hidden="true" />
+          <text
+            x="56"
+            y="29"
+            fill="var(--usage-orange-strong)"
+            fontSize="14"
+            fontWeight="700"
+          >
             sitegen
           </text>
           <text x="56" y="45" fill="var(--usage-muted)" fontSize="9">
@@ -375,9 +483,131 @@ function ProviderTopology({
       <div className="usage-topology-caption">
         <span className="usage-live-dot" aria-hidden="true" />
         {latestChannel === undefined
-          ? 'No requests in the selected period'
+          ? "No requests in the selected period"
           : `Last request routed through ${channelName(latestChannel, channelMap)}`}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Client-side paging for the lists this view already holds in memory. The size
+ * choice lives in component state rather than the URL because the usage page
+ * already owns its query string for filters and the ledger cursor.
+ */
+function usePaging<T>(
+  rows: readonly T[],
+  initialSize: PageSize = DEFAULT_PAGE_SIZE,
+) {
+  const [size, setSize] = useState<PageSize>(initialSize);
+  const [page, setPage] = useState(1);
+  // A filter or size change can leave the reader stranded past the last page;
+  // clamping on render lands them on the last real page instead.
+  const current = clampPage(page, rows.length, size);
+  // A new size means a new result set: start it at the top rather than at
+  // whatever page number happened to be left over.
+  const resize = (next: PageSize) => {
+    setSize(next);
+    setPage(1);
+  };
+  const step = (delta: number) =>
+    setPage((previous) =>
+      clampPage(
+        clampPage(previous, rows.length, size) + delta,
+        rows.length,
+        size,
+      ),
+    );
+  return {
+    size,
+    setSize: resize,
+    page: current,
+    step,
+    pages: pageCount(rows.length, size),
+    visible: pageSlice(rows, current, size),
+    range: pageRange(current, size, rows.length),
+    total: rows.length,
+  };
+}
+
+function PageSizeSelect({
+  value,
+  onChange,
+  label,
+}: {
+  value: PageSize;
+  onChange: (size: PageSize) => void;
+  label: string;
+}) {
+  return (
+    <label className="usage-page-size">
+      Per page
+      <select
+        aria-label={label}
+        value={formatPageSize(value).toLowerCase()}
+        onChange={(event) =>
+          onChange(
+            event.target.value === ALL
+              ? ALL
+              : Number.parseInt(event.target.value, 10),
+          )
+        }
+      >
+        {PAGE_SIZE_OPTIONS.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+        <option value={ALL}>All</option>
+      </select>
+    </label>
+  );
+}
+
+function ClientPager({
+  page,
+  pages,
+  range,
+  total,
+  noun,
+  onStep,
+}: {
+  page: number;
+  pages: number;
+  range: { from: number; to: number };
+  total: number;
+  noun: string;
+  onStep: (delta: number) => void;
+}) {
+  if (total === 0) return null;
+  return (
+    <div className="usage-pagination">
+      <span>
+        {range.from}–{range.to} of {number(total)} {noun}
+      </span>
+      {pages > 1 && (
+        <>
+          <button
+            type="button"
+            className="usage-muted-button"
+            onClick={() => onStep(-1)}
+            disabled={page <= 1}
+          >
+            ← Previous
+          </button>
+          <span>
+            Page {page} / {pages}
+          </span>
+          <button
+            type="button"
+            className="usage-muted-button"
+            onClick={() => onStep(1)}
+            disabled={page >= pages}
+          >
+            Next →
+          </button>
+        </>
+      )}
     </div>
   );
 }
@@ -391,6 +621,7 @@ function RecentRequests({
   channelMap: Map<string, ChannelInfo>;
   renderedAt: number;
 }) {
+  const paging = usePaging(events);
   return (
     <section className="usage-card usage-recent-card">
       <div className="usage-card-heading">
@@ -398,18 +629,25 @@ function RecentRequests({
           <p className="usage-card-eyebrow">Recent requests</p>
           <h2>Latest generation activity</h2>
         </div>
-        <span className="usage-card-count">{events.length}</span>
+        <div className="usage-card-controls">
+          <PageSizeSelect
+            value={paging.size}
+            onChange={paging.setSize}
+            label="Recent requests per page"
+          />
+          <span className="usage-card-count">{events.length}</span>
+        </div>
       </div>
       {events.length === 0 ? (
         <div className="usage-empty-state">No requests in this period.</div>
       ) : (
         <div className="usage-recent-list">
-          {events.slice(0, 14).map((event) => {
-            const successful = event.status === 'ok';
+          {paging.visible.map((event) => {
+            const successful = event.status === "ok";
             return (
               <div className="usage-recent-row" key={event.request_id}>
                 <span
-                  className={`usage-request-dot ${successful ? 'is-success' : 'is-error'}`}
+                  className={`usage-request-dot ${successful ? "is-success" : "is-error"}`}
                   aria-label={event.status}
                 />
                 <div className="usage-recent-model">
@@ -420,20 +658,43 @@ function RecentRequests({
                   <span>{number(event.input_tokens ?? 0)}↑</span>
                   <span>{number(event.output_tokens ?? 0)}↓</span>
                 </div>
-                <time dateTime={event.created_at}>{relativeTime(event.created_at, renderedAt)}</time>
+                <time dateTime={event.created_at}>
+                  {relativeTime(event.created_at, renderedAt)}
+                </time>
               </div>
             );
           })}
         </div>
       )}
+      <ClientPager
+        page={paging.page}
+        pages={paging.pages}
+        range={paging.range}
+        total={paging.total}
+        noun="requests"
+        onStep={paging.step}
+      />
     </section>
   );
 }
 
-function TrendChart({ events, period, renderedAt }: { events: UsageEventRow[]; period: Period; renderedAt: number }) {
-  const [mode, setMode] = useState<ChartMode>('tokens');
-  const points = useMemo(() => buildTrend(events, period, renderedAt), [events, period, renderedAt]);
-  const values = points.map((point) => (mode === 'tokens' ? point.tokens : point.cost));
+function TrendChart({
+  events,
+  period,
+  renderedAt,
+}: {
+  events: UsageEventRow[];
+  period: Period;
+  renderedAt: number;
+}) {
+  const [mode, setMode] = useState<ChartMode>("tokens");
+  const points = useMemo(
+    () => buildTrend(events, period, renderedAt),
+    [events, period, renderedAt],
+  );
+  const values = points.map((point) =>
+    mode === "tokens" ? point.tokens : point.cost,
+  );
   const max = Math.max(...values, 1);
   const width = 1000;
   const height = 260;
@@ -443,12 +704,15 @@ function TrendChart({ events, period, renderedAt }: { events: UsageEventRow[]; p
   const bottom = 36;
   const chartWidth = width - left - right;
   const chartHeight = height - top - bottom;
-  const step = points.length > 1 ? chartWidth / (points.length - 1) : chartWidth;
+  const step =
+    points.length > 1 ? chartWidth / (points.length - 1) : chartWidth;
   const coordinates = values.map((value, index) => ({
     x: left + index * step,
     y: top + chartHeight - (value / max) * chartHeight,
   }));
-  const linePath = coordinates.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
+  const linePath = coordinates
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`)
+    .join(" ");
   const areaPath = `${linePath} L ${left + (points.length - 1) * step} ${top + chartHeight} L ${left} ${top + chartHeight} Z`;
   const hasData = values.some((value) => value > 0);
 
@@ -459,64 +723,126 @@ function TrendChart({ events, period, renderedAt }: { events: UsageEventRow[]; p
           <p className="usage-card-eyebrow">Activity trend</p>
           <h2>Usage over time</h2>
         </div>
-        <div className="usage-segmented usage-chart-toggle" aria-label="Chart metric">
+        <div
+          className="usage-segmented usage-chart-toggle"
+          aria-label="Chart metric"
+        >
           <button
             type="button"
-            className={mode === 'tokens' ? 'is-active' : ''}
-            aria-pressed={mode === 'tokens'}
-            onClick={() => setMode('tokens')}
+            className={mode === "tokens" ? "is-active" : ""}
+            aria-pressed={mode === "tokens"}
+            onClick={() => setMode("tokens")}
           >
             Tokens
           </button>
           <button
             type="button"
-            className={mode === 'cost' ? 'is-active' : ''}
-            aria-pressed={mode === 'cost'}
-            onClick={() => setMode('cost')}
+            className={mode === "cost" ? "is-active" : ""}
+            aria-pressed={mode === "cost"}
+            onClick={() => setMode("cost")}
           >
             Cost
           </button>
         </div>
       </div>
       <div className="usage-chart-wrap">
-        <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${mode} usage trend`}>
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          role="img"
+          aria-label={`${mode} usage trend`}
+        >
           <defs>
             <linearGradient id="usage-chart-fill" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%" stopColor={mode === 'tokens' ? 'var(--usage-orange)' : 'var(--usage-yellow)'} stopOpacity="0.28" />
-              <stop offset="100%" stopColor={mode === 'tokens' ? 'var(--usage-orange)' : 'var(--usage-yellow)'} stopOpacity="0" />
+              <stop
+                offset="0%"
+                stopColor={
+                  mode === "tokens"
+                    ? "var(--usage-orange)"
+                    : "var(--usage-yellow)"
+                }
+                stopOpacity="0.28"
+              />
+              <stop
+                offset="100%"
+                stopColor={
+                  mode === "tokens"
+                    ? "var(--usage-orange)"
+                    : "var(--usage-yellow)"
+                }
+                stopOpacity="0"
+              />
             </linearGradient>
           </defs>
           {[0, 1, 2, 3].map((line) => {
             const y = top + (chartHeight / 3) * line;
-            return <line key={line} x1={left} x2={width - right} y1={y} y2={y} className="usage-chart-grid" />;
+            return (
+              <line
+                key={line}
+                x1={left}
+                x2={width - right}
+                y1={y}
+                y2={y}
+                className="usage-chart-grid"
+              />
+            );
           })}
           <text x="4" y={top + 4} className="usage-chart-axis">
-            {mode === 'tokens' ? compact(max) : currency(max)}
+            {mode === "tokens" ? compact(max) : currency(max)}
           </text>
           <text x="4" y={top + chartHeight + 4} className="usage-chart-axis">
             0
           </text>
           {hasData && <path d={areaPath} fill="url(#usage-chart-fill)" />}
-          <path d={hasData ? linePath : `M ${left} ${top + chartHeight} L ${width - right} ${top + chartHeight}`} className={`usage-chart-line ${mode}`} />
+          <path
+            d={
+              hasData
+                ? linePath
+                : `M ${left} ${top + chartHeight} L ${width - right} ${top + chartHeight}`
+            }
+            className={`usage-chart-line ${mode}`}
+          />
           {hasData &&
             coordinates.map((point, index) => (
-              <circle key={index} cx={point.x} cy={point.y} r="3.5" className={`usage-chart-point ${mode}`}>
+              <circle
+                key={index}
+                cx={point.x}
+                cy={point.y}
+                r="3.5"
+                className={`usage-chart-point ${mode}`}
+              >
                 <title>
-                  {points[index]?.label}: {mode === 'tokens' ? number(points[index]?.tokens ?? 0) : currency(points[index]?.cost ?? 0)}
+                  {points[index]?.label}:{" "}
+                  {mode === "tokens"
+                    ? number(points[index]?.tokens ?? 0)
+                    : currency(points[index]?.cost ?? 0)}
                 </title>
               </circle>
             ))}
           {points.map((point, index) => {
-            const show = points.length <= 12 || index === 0 || index === points.length - 1 || index % Math.ceil(points.length / 6) === 0;
+            const show =
+              points.length <= 12 ||
+              index === 0 ||
+              index === points.length - 1 ||
+              index % Math.ceil(points.length / 6) === 0;
             if (!show) return null;
             return (
-              <text key={`${point.label}-${index}`} x={left + index * step} y={height - 8} textAnchor="middle" className="usage-chart-label">
+              <text
+                key={`${point.label}-${index}`}
+                x={left + index * step}
+                y={height - 8}
+                textAnchor="middle"
+                className="usage-chart-label"
+              >
                 {point.label}
               </text>
             );
           })}
         </svg>
-        {!hasData && <div className="usage-chart-empty">No {mode} recorded in this period.</div>}
+        {!hasData && (
+          <div className="usage-chart-empty">
+            No {mode} recorded in this period.
+          </div>
+        )}
       </div>
     </section>
   );
@@ -547,6 +873,8 @@ function DetailsView({
   ledgerOlderHref: string | null;
   onOverview: () => void;
 }) {
+  const requests = usePaging(events);
+  const ledger = usePaging(ledgerPage);
   return (
     <div className="usage-details-view">
       <div className="usage-card usage-filter-card">
@@ -554,19 +882,23 @@ function DetailsView({
           <p className="usage-card-eyebrow">Request explorer</p>
           <h2>Filter generation activity</h2>
         </div>
-        <form method="get" action="/dashboard/usage" className="usage-filter-form">
+        <form
+          method="get"
+          action="/dashboard/usage"
+          className="usage-filter-form"
+        >
           <input type="hidden" name="tab" value="details" />
           <label>
             From
-            <input name="from" type="date" defaultValue={from ?? ''} />
+            <input name="from" type="date" defaultValue={from ?? ""} />
           </label>
           <label>
             To
-            <input name="to" type="date" defaultValue={to ?? ''} />
+            <input name="to" type="date" defaultValue={to ?? ""} />
           </label>
           <label>
             Status
-            <select name="status" defaultValue={status ?? ''}>
+            <select name="status" defaultValue={status ?? ""}>
               <option value="">All statuses</option>
               <option value="ok">ok</option>
               <option value="failed">failed</option>
@@ -576,7 +908,10 @@ function DetailsView({
           <button type="submit" className="usage-primary-button">
             Apply filters
           </button>
-          <Link href="/dashboard/usage?tab=details" className="usage-muted-button">
+          <Link
+            href="/dashboard/usage?tab=details"
+            className="usage-muted-button"
+          >
             Reset
           </Link>
         </form>
@@ -588,9 +923,20 @@ function DetailsView({
             <p className="usage-card-eyebrow">Request log</p>
             <h2>{number(events.length)} recorded requests</h2>
           </div>
-          <button type="button" className="usage-muted-button" onClick={onOverview}>
-            Back to overview
-          </button>
+          <div className="usage-card-controls">
+            <PageSizeSelect
+              value={requests.size}
+              onChange={requests.setSize}
+              label="Requests per page"
+            />
+            <button
+              type="button"
+              className="usage-muted-button"
+              onClick={onOverview}
+            >
+              Back to overview
+            </button>
+          </div>
         </div>
         <div className="usage-table-wrap">
           <table className="usage-table">
@@ -609,32 +955,48 @@ function DetailsView({
               </tr>
             </thead>
             <tbody>
-              {events.length === 0 ? (
+              {requests.visible.length === 0 ? (
                 <tr>
                   <td colSpan={10} className="usage-table-empty">
                     No requests match these filters.
                   </td>
                 </tr>
               ) : (
-                events.map((event) => {
+                requests.visible.map((event) => {
                   const channel = channelMap.get(event.channel_id);
                   return (
                     <tr key={event.request_id}>
                       <td className="usage-mono">{event.request_id}</td>
                       <td>
                         <strong>{channel?.label ?? event.channel_id}</strong>
-                        <span className="usage-table-subtext">{channel?.model_id ?? 'Unknown model'}</span>
+                        <span className="usage-table-subtext">
+                          {channel?.model_id ?? "Unknown model"}
+                        </span>
                       </td>
-                      <td>{event.source_label ?? '—'}</td>
+                      <td>{event.source_label ?? "—"}</td>
                       <td>{number(event.input_tokens ?? 0)}</td>
                       <td>{number(event.cached_tokens ?? 0)}</td>
                       <td>{number(event.output_tokens ?? 0)}</td>
-                      <td>{event.latency_ms === null ? '—' : `${number(event.latency_ms)} ms`}</td>
                       <td>
-                        <span className={`usage-status ${statusClass(event.status)}`}>{event.status}</span>
+                        {event.latency_ms === null
+                          ? "—"
+                          : `${number(event.latency_ms)} ms`}
                       </td>
-                      <td>{event.credits_charged === null ? '—' : formatCredits(event.credits_charged)}</td>
-                      <td className="usage-nowrap">{formatTimestamp(event.created_at)}</td>
+                      <td>
+                        <span
+                          className={`usage-status ${statusClass(event.status)}`}
+                        >
+                          {event.status}
+                        </span>
+                      </td>
+                      <td>
+                        {event.credits_charged === null
+                          ? "—"
+                          : formatCredits(event.credits_charged)}
+                      </td>
+                      <td className="usage-nowrap">
+                        {formatTimestamp(event.created_at)}
+                      </td>
                     </tr>
                   );
                 })
@@ -642,6 +1004,14 @@ function DetailsView({
             </tbody>
           </table>
         </div>
+        <ClientPager
+          page={requests.page}
+          pages={requests.pages}
+          range={requests.range}
+          total={requests.total}
+          noun="requests"
+          onStep={requests.step}
+        />
       </section>
 
       <section className="usage-card usage-details-card">
@@ -650,7 +1020,14 @@ function DetailsView({
             <p className="usage-card-eyebrow">Credit movement</p>
             <h2>Ledger</h2>
           </div>
-          <span className="usage-card-count">{ledgerPage.length}</span>
+          <div className="usage-card-controls">
+            <PageSizeSelect
+              value={ledger.size}
+              onChange={ledger.setSize}
+              label="Ledger entries per page"
+            />
+            <span className="usage-card-count">{ledgerPage.length}</span>
+          </div>
         </div>
         <div className="usage-table-wrap">
           <table className="usage-table">
@@ -664,31 +1041,53 @@ function DetailsView({
               </tr>
             </thead>
             <tbody>
-              {ledgerPage.length === 0 ? (
+              {ledger.visible.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="usage-table-empty">
                     No ledger entries yet.
                   </td>
                 </tr>
               ) : (
-                ledgerPage.map((entry) => (
+                ledger.visible.map((entry) => (
                   <tr key={entry.id}>
                     <td>
-                      <span className={`usage-status ${statusClass(entry.kind)}`}>{entry.kind}</span>
+                      <span
+                        className={`usage-status ${statusClass(entry.kind)}`}
+                      >
+                        {entry.kind}
+                      </span>
                     </td>
-                    <td className={entry.credits < 0 ? 'usage-negative' : 'usage-positive'}>
-                      {entry.credits > 0 ? '+' : ''}
+                    <td
+                      className={
+                        entry.credits < 0 ? "usage-negative" : "usage-positive"
+                      }
+                    >
+                      {entry.credits > 0 ? "+" : ""}
                       {formatCredits(entry.credits)}
                     </td>
                     <td className="usage-mono">{entry.request_id}</td>
-                      <td>{entry.channel_id === null ? '—' : channelName(entry.channel_id, channelMap)}</td>
-                    <td className="usage-nowrap">{formatTimestamp(entry.created_at)}</td>
+                    <td>
+                      {entry.channel_id === null
+                        ? "—"
+                        : channelName(entry.channel_id, channelMap)}
+                    </td>
+                    <td className="usage-nowrap">
+                      {formatTimestamp(entry.created_at)}
+                    </td>
                   </tr>
                 ))
               )}
             </tbody>
           </table>
         </div>
+        <ClientPager
+          page={ledger.page}
+          pages={ledger.pages}
+          range={ledger.range}
+          total={ledger.total}
+          noun="entries"
+          onStep={ledger.step}
+        />
         <div className="usage-pagination">
           {cursor !== undefined && (
             <Link href={ledgerNewestHref} className="usage-muted-button">
@@ -721,20 +1120,42 @@ export default function UsageDashboard({
   initialTab,
 }: UsageDashboardProps) {
   const [activeTab, setActiveTab] = useState<Tab>(initialTab);
-  const [period, setPeriod] = useState<Period>('today');
-  const channelMap = useMemo(() => new Map(channels.map((channel) => [channel.id, channel])), [channels]);
+  const [period, setPeriod] = useState<Period>("today");
+  const router = useRouter();
+
+  useEffect(() => {
+    const refresh = window.setInterval(() => router.refresh(), 5000);
+    return () => window.clearInterval(refresh);
+  }, [router]);
+  const channelMap = useMemo(
+    () => new Map(channels.map((channel) => [channel.id, channel])),
+    [channels],
+  );
   const visibleEvents = useMemo(() => {
     const start = periodStart(period, renderedAt);
     return events.filter((event) => {
       const timestamp = new Date(event.created_at).getTime();
-      return Number.isFinite(timestamp) && timestamp >= start && timestamp <= renderedAt;
+      return (
+        Number.isFinite(timestamp) &&
+        timestamp >= start &&
+        timestamp <= renderedAt
+      );
     });
   }, [events, period, renderedAt]);
 
   const summary = useMemo(() => {
-    const inputTokens = visibleEvents.reduce((total, event) => total + (event.input_tokens ?? 0), 0);
-    const cachedTokens = visibleEvents.reduce((total, event) => total + (event.cached_tokens ?? 0), 0);
-    const outputTokens = visibleEvents.reduce((total, event) => total + (event.output_tokens ?? 0), 0);
+    const inputTokens = visibleEvents.reduce(
+      (total, event) => total + (event.input_tokens ?? 0),
+      0,
+    );
+    const cachedTokens = visibleEvents.reduce(
+      (total, event) => total + (event.cached_tokens ?? 0),
+      0,
+    );
+    const outputTokens = visibleEvents.reduce(
+      (total, event) => total + (event.output_tokens ?? 0),
+      0,
+    );
     const providerCost = visibleEvents.reduce(
       (total, event) => total + eventCost(event),
       0,
@@ -766,7 +1187,7 @@ export default function UsageDashboard({
           <div className="usage-header-actions">
             <span className="usage-header-status">
               <span className="usage-live-dot" aria-hidden="true" />
-              Recorded data
+              Live · updates every 5s
             </span>
             <Link href="/docs" className="usage-docs-link">
               API docs
@@ -781,18 +1202,30 @@ export default function UsageDashboard({
           onPeriodChange={setPeriod}
         />
 
-        {activeTab === 'overview' ? (
+        {activeTab === "overview" ? (
           <>
             <div className="usage-kpi-grid">
-              <KpiCard label="Total requests" value={number(summary.requests)} accent="orange" />
+              <KpiCard
+                label="Total requests"
+                value={number(summary.requests)}
+                accent="orange"
+              />
               <KpiCard
                 label="Total input tokens"
                 value={number(summary.inputTokens + summary.cachedTokens)}
                 hint="Includes cached input"
                 accent="coral"
               />
-              <KpiCard label="Cached tokens" value={number(summary.cachedTokens)} accent="blue" />
-              <KpiCard label="Output tokens" value={number(summary.outputTokens)} accent="green" />
+              <KpiCard
+                label="Cached tokens"
+                value={number(summary.cachedTokens)}
+                accent="blue"
+              />
+              <KpiCard
+                label="Output tokens"
+                value={number(summary.outputTokens)}
+                accent="green"
+              />
               <KpiCard
                 label="Provider cost"
                 value={currency(summary.providerCost)}
@@ -809,15 +1242,31 @@ export default function UsageDashboard({
                     <h2>Generation channels</h2>
                   </div>
                   <span className="usage-card-count">
-                    {new Set(visibleEvents.map((event) => event.channel_id)).size} observed
+                    {
+                      new Set(visibleEvents.map((event) => event.channel_id))
+                        .size
+                    }{" "}
+                    observed
                   </span>
                 </div>
-                <ProviderTopology channels={channels} events={visibleEvents} channelMap={channelMap} />
+                <ProviderTopology
+                  channels={channels}
+                  events={visibleEvents}
+                  channelMap={channelMap}
+                />
               </section>
-              <RecentRequests events={visibleEvents} channelMap={channelMap} renderedAt={renderedAt} />
+              <RecentRequests
+                events={visibleEvents}
+                channelMap={channelMap}
+                renderedAt={renderedAt}
+              />
             </div>
 
-            <TrendChart events={visibleEvents} period={period} renderedAt={renderedAt} />
+            <TrendChart
+              events={visibleEvents}
+              period={period}
+              renderedAt={renderedAt}
+            />
           </>
         ) : (
           <DetailsView
@@ -831,7 +1280,7 @@ export default function UsageDashboard({
             nextCursor={nextCursor}
             ledgerNewestHref={ledgerNewestHref}
             ledgerOlderHref={ledgerOlderHref}
-            onOverview={() => setActiveTab('overview')}
+            onOverview={() => setActiveTab("overview")}
           />
         )}
       </div>

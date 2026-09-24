@@ -10,7 +10,13 @@ import {
   LABEL_CLASS,
   type ActionState,
 } from '../../_components/action-state';
-import { isProvider, PROVIDERS, PROVIDER_LABELS, requiresBaseUrl } from '@/lib/ai/providers';
+import {
+  isProvider,
+  PROVIDERS,
+  PROVIDER_ENDPOINT_PATH,
+  PROVIDER_LABELS,
+  requiresBaseUrl,
+} from '@/lib/ai/providers';
 import {
   addCredentialAction,
   rotateCredentialAction,
@@ -74,6 +80,11 @@ function needsBaseUrl(provider: string): boolean {
   return isProvider(provider) && requiresBaseUrl(provider);
 }
 
+/** The form's provider is a free string until submitted; fall back until it narrows. */
+function endpointPathOf(provider: string): string {
+  return isProvider(provider) ? PROVIDER_ENDPOINT_PATH[provider] : '/messages';
+}
+
 /** Clears the key after a stored credential, but never after a failed probe. */
 function useClearSecretOnSuccess(state: ActionState, clearSecret: () => void) {
   const stored = state.status === 'success';
@@ -132,6 +143,7 @@ export function AddCredentialForm() {
 
   const pending = addPending || testPending;
   const gateway = needsBaseUrl(fields.provider);
+  const endpointPath = endpointPathOf(fields.provider);
 
   return (
     <form action={addAction} className="space-y-4">
@@ -145,6 +157,9 @@ export function AddCredentialForm() {
               </option>
             ))}
           </select>
+          <span className="mt-1 block text-xs text-zinc-500">
+            Calls {endpointPath} under the base URL.
+          </span>
         </label>
         <label className="block">
           <span className={LABEL_CLASS}>
@@ -161,7 +176,7 @@ export function AddCredentialForm() {
           <span className={LABEL_CLASS}>
             Base URL{' '}
             {gateway
-              ? '(required — one credential per gateway)'
+              ? `(required — one credential per gateway; ending in /v1, without ${endpointPath})`
               : '(fixed: anthropic always calls api.anthropic.com)'}
           </span>
           <input

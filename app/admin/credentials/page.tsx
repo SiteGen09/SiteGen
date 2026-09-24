@@ -3,8 +3,9 @@ import { z } from 'zod';
 
 import { requireAdmin } from '@/lib/api/admin';
 import { createServiceClient } from '@/lib/supabase/service';
+import { clampPage, pageSlice, parsePage, parsePageSize } from '@/lib/ui/pagination';
 
-import { Badge, Card, EmptyRow, PageTitle, Td, Th } from '../_components/ui';
+import { Badge, Card, EmptyRow, PageTitle, Pager, Td, Th } from '../_components/ui';
 import { BUTTON_SUBTLE_CLASS } from '../_components/action-state';
 import { AddCredentialForm, RotateCredentialForm } from './_components/credential-forms';
 import { revokeCredentialAction } from './actions';
@@ -22,9 +23,15 @@ const credentialRowSchema = z.object({
 
 const COLS = 6;
 
-export default async function CredentialsPage() {
+export default async function CredentialsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string; size?: string }>;
+}) {
   await requireAdmin();
 
+  const sp = await searchParams;
+  const size = parsePageSize(sp.size);
   const service = createServiceClient();
   const { data, error } = await service
     .from('provider_credentials')
@@ -36,7 +43,9 @@ export default async function CredentialsPage() {
     throw new Error(`failed to load credentials: ${error.message}`);
   }
 
-  const rows = z.array(credentialRowSchema).parse(data ?? []);
+  const all = z.array(credentialRowSchema).parse(data ?? []);
+  const page = clampPage(parsePage(sp.page), all.length, size);
+  const rows = pageSlice(all, page, size);
 
   return (
     <>
@@ -130,6 +139,13 @@ export default async function CredentialsPage() {
             </tbody>
           </table>
         </div>
+        <Pager
+          basePath="/admin/credentials"
+          page={page}
+          pageSize={size}
+          total={all.length}
+          label="credentials"
+        />
       </Card>
     </>
   );

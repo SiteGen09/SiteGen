@@ -4,12 +4,14 @@ import type { ModerationResult } from './index';
 import { getModerationProvider } from './provider';
 
 /**
- * Runs the configured moderation provider and applies the gateway's fail-open
+ * Optional remote mode applies the legacy gateway's fail-open
  * policy: a provider error or timeout allows the request but logs at error
  * level with `{alert: true}`, because a moderation outage must not take the API
  * down. A clean result is returned as-is for the route to act on.
  */
 export async function checkContent(text: string, log: Logger): Promise<ModerationResult> {
+  // External model-based screening is opt-in; local rules run in the caller.
+  if (process.env.MODERATION_MODE !== 'remote') return { flagged: false, categories: [] };
   const provider = getModerationProvider(log);
   try {
     return await provider.check(text);

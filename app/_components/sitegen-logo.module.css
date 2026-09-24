@@ -1,0 +1,27 @@
+.mark {
+  display: block;
+  flex-shrink: 0;
+  object-fit: contain;
+  aspect-ratio: 1;
+}
+
+.logo {
+  display: inline-flex;
+  align-items: center;
+  gap: .42em;
+  color: inherit;
+  font-family: var(--font-geist-sans), Arial, sans-serif;
+  font-weight: 730;
+  letter-spacing: 0;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.logo > .mark {
+  width: 1.2em;
+  height: 1.2em;
+}
+
+.period {
+  color: #ff6c50;
+}

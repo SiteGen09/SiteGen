@@ -6,27 +6,23 @@ import { z } from 'zod';
 
 /**
  * Post-checkout waiting room. The Whop redirect grants nothing — only the
- * webhook mutates entitlements — so after `?pending=1` we poll
- * /api/billing/status until the plan or status actually moves, then refresh the
- * server-rendered page.
+ * webhook posts credits. Poll the exact purchase marker, including when the
+ * payment already arrived before this page rendered, then refresh the page.
  */
 
 const POLL_MS = 3_000;
 const MAX_ATTEMPTS = 40; // 40 × 3s = 2 minutes
 
 const statusSchema = z.object({
-  plan_key: z.string(),
-  status: z.string(),
+  purchase_confirmed: z.boolean(),
 });
 
 type Phase = 'waiting' | 'settled' | 'timeout';
 
 export function CheckoutPoller({
-  initialPlanKey,
-  initialStatus,
+  purchaseId,
 }: {
-  initialPlanKey: string;
-  initialStatus: string;
+  purchaseId: string;
 }) {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>('waiting');
@@ -39,7 +35,7 @@ export function CheckoutPoller({
     const poll = async (): Promise<void> => {
       attempts += 1;
       try {
-        const response = await fetch('/api/billing/status', {
+        const response = await fetch('/api/billing/status?purchase=' + encodeURIComponent(purchaseId), {
           cache: 'no-store',
           signal: controller.signal,
         });
@@ -47,7 +43,7 @@ export function CheckoutPoller({
           const parsed = statusSchema.safeParse(await response.json());
           if (
             parsed.success &&
-            (parsed.data.plan_key !== initialPlanKey || parsed.data.status !== initialStatus)
+            parsed.data.purchase_confirmed
           ) {
             setPhase('settled');
             router.refresh();
@@ -71,12 +67,12 @@ export function CheckoutPoller({
       controller.abort();
       clearTimeout(timer);
     };
-  }, [initialPlanKey, initialStatus, router]);
+  }, [purchaseId, router]);
 
   if (phase === 'settled') {
     return (
       <p className="mb-6 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-        Payment confirmed. Your plan is up to date.
+        Payment confirmed. Your credits are up to date.
       </p>
     );
   }
@@ -84,9 +80,8 @@ export function CheckoutPoller({
   if (phase === 'timeout') {
     return (
       <p className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-        Still waiting on confirmation from Whop. Your payment is safe — this page updates as soon
-        as the webhook lands. Reload in a minute, or contact support if the charge went through and
-        nothing changed.
+        Payment confirmation has not arrived yet. Check your Whop orders before retrying a purchase.
+        Reload this page in a minute or contact the seller through Whop if you were charged.
       </p>
     );
   }

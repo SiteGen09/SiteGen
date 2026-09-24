@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { MODELS } from '@/lib/ai/models';
 import { PROVIDERS, requiresBaseUrl, type Provider } from '@/lib/ai/providers';
+import { probeCredentials } from '@/lib/admin/probe';
 import { encryptSecret } from '@/lib/crypto/aes';
 import { requireUser } from '@/lib/dashboard/session';
 import { logger } from '@/lib/log';
@@ -29,6 +30,11 @@ const addSchema = z
     provider: z.enum(PROVIDERS),
     apiKey: z.string().trim().min(8, 'That API key looks too short.'),
     baseUrl: z
+      .string()
+      .trim()
+      .transform((value) => (value === '' ? null : value))
+      .nullable(),
+    modelId: z
       .string()
       .trim()
       .transform((value) => (value === '' ? null : value))
@@ -81,13 +87,31 @@ function trimBase(baseUrl: string | null): string {
  *    auth headers. A model id would be a guess here (a gateway names its own
  *    models), and probing /messages with a wrong one returns 404, which is
  *    indistinguishable from a bad key.
- *  - `openai_compatible` — GET /models with bearer auth.
+ *  - `openai_compatible` and `openai_responses` — GET /models with bearer
+ *    auth. Both OpenAI kinds share this probe: /models sits beside the
+ *    endpoint rather than on it, so it proves the key and the host without
+ *    naming a model.
+ *
+ * `modelId` overrides all of that with a real generation call through
+ * `buildAI`, which is the only probe that exercises the kind's actual endpoint
+ * (`/messages`, `/chat/completions` or `/responses`). It exists because
+ * /models is a convention, not a requirement: a Responses-only gateway such as
+ * kie.ai's `/codex/v1` serves the endpoint that matters and 404s on the one
+ * being probed, which would reject a perfectly good key.
  */
 async function validateCredential(
   provider: Provider,
   apiKey: string,
   baseUrl: string | null,
+  modelId: string | null,
 ): Promise<ValidationResult> {
+  if (modelId !== null) {
+    const probe = await probeCredentials({ provider, apiKey, baseUrl }, modelId);
+    return probe.ok
+      ? { ok: true }
+      : { ok: false, message: `The provider rejected a test call: ${probe.error ?? 'unknown error'}` };
+  }
+
   const signal = AbortSignal.timeout(VALIDATION_TIMEOUT_MS);
 
   let response: Response;
@@ -132,6 +156,14 @@ async function validateCredential(
   if (response.status === 401 || response.status === 403) {
     return { ok: false, message: 'The provider rejected that key.' };
   }
+  // A gateway is free not to serve /models; say so rather than blaming the key.
+  if (response.status === 404) {
+    return {
+      ok: false,
+      message:
+        'This gateway has no /models endpoint. Enter a model id to verify the key with a real call instead.',
+    };
+  }
   return {
     ok: false,
     message: `The provider returned HTTP ${response.status}; the key could not be verified.`,
@@ -149,14 +181,15 @@ export async function addCredential(
     provider: formData.get('provider'),
     apiKey: formData.get('api_key'),
     baseUrl: formData.get('base_url') ?? '',
+    modelId: formData.get('model_id') ?? '',
   });
   if (!parsed.success) {
     return { status: 'error', message: firstIssue(parsed.error) };
   }
 
-  const { provider, apiKey, baseUrl } = parsed.data;
+  const { provider, apiKey, baseUrl, modelId } = parsed.data;
 
-  const validation = await validateCredential(provider, apiKey, baseUrl);
+  const validation = await validateCredential(provider, apiKey, baseUrl, modelId);
   if (!validation.ok) {
     log.warn('credential validation failed', { provider, reason: validation.message });
     return { status: 'error', message: validation.message };

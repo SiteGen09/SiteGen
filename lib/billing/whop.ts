@@ -3,7 +3,7 @@
  * application and the REST reads used by reconciliation. Server-only — reads
  * WHOP_WEBHOOK_SECRET / WHOP_API_KEY and writes with the service client.
  *
- * Implemented against the Whop docs read 2026-09-17:
+ * REST contract pinned to 2026-09-15; Whop docs reviewed 2026-09-21:
  *  - Webhooks (Standard Webhooks signing, delivery + retry semantics):
  *    https://docs.whop.com/developer/guides/webhooks
  *    · headers `webhook-id`, `webhook-timestamp`, `webhook-signature`
@@ -31,12 +31,12 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import {
   getPlans,
-  getTopupProduct,
   isPlanKey,
   planKeyFromWhopPlanId,
   type PlanKey,
 } from '@/lib/billing/plans';
 import { logger, type Logger } from '@/lib/log';
+import { createWhopClient } from './whop-client';
 
 const WHOP_API_BASE = 'https://api.whop.com/api/v1';
 /** Docs: reject a delivery whose `webhook-timestamp` is more than 5 minutes off. */
@@ -85,10 +85,18 @@ export interface WhopSignatureMeta {
 }
 
 function constantTimeEqualBase64(a: string, b: string): boolean {
+  if (!/^[A-Za-z0-9+/]{43}=$/.test(a)) return false;
   const left = Buffer.from(a, 'base64');
   const right = Buffer.from(b, 'base64');
   if (left.length === 0 || left.length !== right.length) return false;
   return timingSafeEqual(left, right);
+}
+
+function constantTimeEqualHex(a: string, b: string): boolean {
+  if (!/^[a-f0-9]{64}$/i.test(a) || !/^[a-f0-9]{64}$/i.test(b)) return false;
+  const left = Buffer.from(a, 'hex');
+  const right = Buffer.from(b, 'hex');
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 /**
@@ -135,12 +143,28 @@ export function verifyWhopRequest(
   const timestamp = headers.get('webhook-timestamp');
   const signature = headers.get('webhook-signature');
 
-  if (webhookId === null || timestamp === null || signature === null) {
+  const legacySignature = headers.get('x-whop-signature');
+  const anyStandardHeader = webhookId !== null || timestamp !== null || signature !== null;
+  if (!anyStandardHeader) {
+    if (!legacySignature || secret === '') return { ok: false, reason: 'missing_signature_headers' };
+    const expected = createHmac('sha256', secret).update(rawBody, 'utf8').digest('hex');
+    let matched = false;
+    for (const part of legacySignature.split(/\s+/)) {
+      const comma = part.indexOf(',');
+      const candidate = comma === -1 ? part : part.slice(comma + 1);
+      // Compare every candidate to avoid making the first matching signature
+      // observable through an early return.
+      if (constantTimeEqualHex(candidate, expected)) matched = true;
+    }
+    return matched ? { ok: true } : { ok: false, reason: 'signature_mismatch' };
+  }
+
+  if (!webhookId || !timestamp || !signature) {
     return { ok: false, reason: 'missing_signature_headers' };
   }
 
   const sentAt = Number(timestamp);
-  if (!Number.isFinite(sentAt)) return { ok: false, reason: 'invalid_timestamp' };
+  if (!/^\d+$/.test(timestamp) || !Number.isSafeInteger(sentAt)) return { ok: false, reason: 'invalid_timestamp' };
   if (Math.abs(nowSeconds - sentAt) > SIGNATURE_TOLERANCE_SECONDS) {
     return { ok: false, reason: 'timestamp_outside_tolerance' };
   }
@@ -159,8 +183,8 @@ const jsonObject = z.record(z.string(), z.unknown());
 
 /** Standard Webhooks envelope. `account_id` is `company_id` on pins < 2026-08-14. */
 export const whopEventSchema = z.object({
-  id: z.string().min(1),
-  type: z.string().min(1),
+  id: z.string().min(1).max(200),
+  type: z.string().min(1).max(100),
   api_version: z.string().nullish(),
   api_version_date: z.string().nullish(),
   timestamp: z.string().nullish(),
@@ -182,6 +206,7 @@ function toIso(value: string | number | null | undefined): string | null {
 
 export const whopMembershipSchema = z.object({
   id: z.string().min(1),
+  account: z.object({ id: z.string() }).nullish(),
   status: z.string().min(1),
   plan_id: z.string().nullish(),
   plan: z.object({ id: z.string().nullish() }).nullish(),
@@ -285,8 +310,9 @@ export async function whopFetch(path: string): Promise<unknown> {
   }
 
   const response = await fetch(`${WHOP_API_BASE}${path}`, {
-    headers: { authorization: `Bearer ${apiKey}`, accept: 'application/json' },
+    headers: { authorization: `Bearer ${apiKey}`, accept: 'application/json', 'Api-Version-Date': '2026-09-15' },
     cache: 'no-store',
+    signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) {
     throw new WhopApiError(`GET ${path} failed: ${response.status}`, response.status);
@@ -348,7 +374,10 @@ export async function fetchMembershipPage(options: {
 
 /** A single membership, re-read to get authoritative billing state. */
 export async function fetchMembership(membershipId: string): Promise<WhopMembership | null> {
-  const parsed = whopMembershipSchema.parse(await whopFetch(`/memberships/${membershipId}`));
+  const parsed = whopMembershipSchema.parse(await whopFetch(`/memberships/${encodeURIComponent(membershipId)}`));
+  if (parsed.id !== membershipId || (parsed.account && parsed.account.id !== process.env.WHOP_ACCOUNT_ID)) {
+    throw new Error('Membership account mismatch');
+  }
   return normalizeMembership(parsed);
 }
 
@@ -357,7 +386,7 @@ export async function fetchMembership(membershipId: string): Promise<WhopMembers
 // ---------------------------------------------------------------------------
 
 /** Authenticated POST against the Whop REST API. */
-async function whopPost(path: string, body: unknown): Promise<unknown> {
+export async function whopPost(path: string, body: unknown): Promise<unknown> {
   const apiKey = process.env.WHOP_API_KEY;
   if (apiKey === undefined || apiKey === '') {
     throw new WhopApiError('WHOP_API_KEY is not configured', 0);
@@ -369,9 +398,11 @@ async function whopPost(path: string, body: unknown): Promise<unknown> {
       authorization: `Bearer ${apiKey}`,
       accept: 'application/json',
       'content-type': 'application/json',
+      'Api-Version-Date': '2026-09-15',
     },
     body: JSON.stringify(body),
     cache: 'no-store',
+    signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) {
     throw new WhopApiError(`POST ${path} failed: ${response.status}`, response.status);
@@ -379,95 +410,37 @@ async function whopPost(path: string, body: unknown): Promise<unknown> {
   return response.json();
 }
 
-const checkoutConfigurationSchema = z.object({
-  id: z.string().min(1),
-  purchase_url: z.string().nullish(),
-});
-
 export interface CheckoutSession {
   url: string;
-  /** `ch_...` id; null on the metadata-less fallback link. */
   sessionId: string | null;
-  /** False when the link cannot carry our user id, so the webhook must fall back. */
+  planId?: string;
   carriesUserId: boolean;
 }
 
-/**
- * A checkout URL for `planId` that carries our user id.
- *
- * Docs: a checkout configuration takes `metadata`, which Whop copies onto the
- * resulting payment and membership, and returns `purchase_url`
- * (https://docs.whop.com/api-reference/beta/checkout-configurations/create-a-checkout-configuration).
- * That is the documented way to attach metadata to a checkout — the embed's
- * `sessionId` prop exists for exactly this
- * (https://docs.whop.com/payments/checkout-embed).
- *
- * Without WHOP_ACCOUNT_ID / WHOP_API_KEY no configuration can be created, so we
- * fall back to the plain checkout link `https://whop.com/checkout/<plan id>`
- * (https://docs.whop.com/payments/create-checkout-link). It carries no
- * metadata: the webhook then has to link by unique email and logs that loudly.
- * No undocumented query parameters are used.
- */
+/** Create a checkout for a configured recurring Whop plan. */
 export async function createCheckoutSession(
-  input: { planId: string; userId: string; returnUrl: string },
-  log: Logger = whopLog,
+  input: { planId: string; userId: string; returnUrl: string; purchaseId: string },
 ): Promise<CheckoutSession> {
-  const fallback: CheckoutSession = {
-    url: `https://whop.com/checkout/${encodeURIComponent(input.planId)}`,
-    sessionId: null,
-    carriesUserId: false,
-  };
-
+  const { checkoutConfigured, checkoutResult } = await import('./purchases');
+  if (!checkoutConfigured()) throw new Error('Billing is temporarily unavailable.');
+  const planKey = planKeyFromWhopPlanId(input.planId);
+  if (!planKey || planKey === 'free') throw new Error('Unknown subscription plan');
   const accountId = process.env.WHOP_ACCOUNT_ID;
-  const apiKey = process.env.WHOP_API_KEY;
-  if (
-    accountId === undefined ||
-    accountId === '' ||
-    apiKey === undefined ||
-    apiKey === ''
-  ) {
-    log.warn('whop.checkout.unattributed', {
-      alert: true,
-      plan_id: input.planId,
-      user_id: input.userId,
-      detail:
-        'WHOP_ACCOUNT_ID/WHOP_API_KEY missing; using the plain checkout link, so the webhook cannot map by metadata',
-    });
-    return fallback;
-  }
+  if (!accountId) throw new Error('WHOP_ACCOUNT_ID is not configured');
 
-  try {
-    const parsed = checkoutConfigurationSchema.parse(
-      await whopPost('/checkout_configurations', {
-        account_id: accountId,
-        plan_id: input.planId,
-        redirect_url: input.returnUrl,
-        metadata: { userId: input.userId },
-      }),
-    );
-    const url = parsed.purchase_url ?? null;
-    if (url === null || url === '') {
-      log.warn('whop.checkout.no_purchase_url', {
-        plan_id: input.planId,
-        checkout_id: parsed.id,
-      });
-      return fallback;
-    }
-    log.info('whop.checkout.created', {
-      user_id: input.userId,
-      plan_id: input.planId,
-      checkout_id: parsed.id,
-    });
-    return { url, sessionId: parsed.id, carriesUserId: true };
-  } catch (error) {
-    log.error('whop.checkout.create_failed', {
-      alert: true,
-      plan_id: input.planId,
-      user_id: input.userId,
-      detail: error instanceof Error ? error.message : 'unknown error',
-    });
-    return fallback;
-  }
+  const client = createWhopClient();
+  const configuration = await client.checkoutConfigurations.create({
+    account_id: accountId,
+    plan_id: input.planId,
+    redirect_url: input.returnUrl,
+    metadata: {
+      userId: input.userId,
+      terms: '2026-09-21',
+      creditTerms: '2026-09-22',
+      purchaseId: input.purchaseId,
+    },
+  }, { idempotencyKey: input.purchaseId });
+  return checkoutResult(configuration);
 }
 
 // ---------------------------------------------------------------------------
@@ -601,25 +574,6 @@ async function writeEntitlement(
   if (error !== null) throw new Error(`whop: entitlement write failed: ${error.message}`);
 }
 
-/** Postgres unique violation — our DB-level "already granted" signal. */
-const UNIQUE_VIOLATION = '23505';
-
-async function insertLedgerCredits(
-  service: SupabaseClient,
-  row: {
-    user_id: string;
-    request_id: string;
-    kind: 'grant' | 'topup';
-    credits: number;
-    meta: Record<string, unknown>;
-  },
-): Promise<boolean> {
-  const { error } = await service.from('ledger').insert(row);
-  if (error === null) return true;
-  if (error.code === UNIQUE_VIOLATION) return false;
-  throw new Error(`whop: ledger insert failed: ${error.message}`);
-}
-
 /**
  * Whop billing status → our entitlement status. `completed` covers one-time
  * purchases that keep access; `canceling` is still active until the period
@@ -656,15 +610,7 @@ export interface ApplyMembershipOptions {
   log?: Logger;
 }
 
-/**
- * Idempotent entitlement upsert for a membership, plus the period grant.
- *
- * The grant is keyed `whop-renewal-<membership>-<period end>`, so a replayed
- * delivery collides on `ledger.request_id` and grants nothing a second time —
- * no cron guessing period dates. The grant is written before the new period
- * end lands on the entitlement, so a failed grant leaves the old period stored
- * and Whop's retry grants it.
- */
+/** Membership events update access; only verified payment.succeeded receipts grant credits. */
 export async function applyMembership(
   service: SupabaseClient,
   payload: WhopMembership,
@@ -716,37 +662,15 @@ export async function applyMembership(
   const monthlyCredits =
     intent === 'invalid' && existing !== null ? existing.monthly_credits : plan.monthlyCredits;
 
-  let grantedCredits = 0;
+  const grantedCredits = 0;
   const periodEnd = payload.currentPeriodEnd;
   const storedPeriodEnd = existing?.current_period_end ?? null;
-  const isNewPeriod =
-    periodEnd !== null &&
-    (storedPeriodEnd === null || Date.parse(periodEnd) > Date.parse(storedPeriodEnd));
-
-  if (intent === 'valid' && status === 'active' && plan.monthlyCredits > 0 && isNewPeriod) {
-    const requestId = `whop-renewal-${payload.id}-${periodEnd}`;
-    const granted = await insertLedgerCredits(service, {
-      user_id: link.userId,
-      request_id: requestId,
-      kind: 'grant',
-      credits: plan.monthlyCredits,
-      meta: {
-        source: 'whop',
-        membership_id: payload.id,
-        plan_key: planKey,
-        period_end: periodEnd,
-      },
-    });
-    if (granted) {
-      grantedCredits = plan.monthlyCredits;
-      log.info('whop.credits.granted', {
-        user_id: link.userId,
-        request_id: requestId,
-        credits: plan.monthlyCredits,
-      });
-    } else {
-      log.info('whop.credits.grant_duplicate', { user_id: link.userId, request_id: requestId });
-    }
+  // Never roll access backwards when an older delivery arrives late.
+  if (periodEnd && storedPeriodEnd && Date.parse(periodEnd) < Date.parse(storedPeriodEnd)) {
+    return { outcome: 'applied', userId: link.userId, planKey, status: existing!.status, grantedCredits };
+  }
+  if (existing?.external_id && existing.external_id !== payload.id && intent === 'invalid') {
+    return { outcome: 'applied', userId: link.userId, planKey, status: existing.status, grantedCredits };
   }
 
   await writeEntitlement(service, {
@@ -776,55 +700,6 @@ export interface ApplyPaymentResult {
   detail?: string;
 }
 
-/** Credit top-up for the one-off product. Deduped on `whop-topup-<payment>`. */
-export async function applyTopup(
-  service: SupabaseClient,
-  payment: WhopPaymentPayload,
-  options: { log?: Logger } = {},
-): Promise<ApplyPaymentResult> {
-  const log = options.log ?? whopLog;
-  const topup = getTopupProduct();
-  const membershipId = payment.membership_id ?? payment.membership?.id ?? null;
-
-  const link = await resolveUser(
-    service,
-    {
-      metadata: payment.metadata ?? {},
-      membershipId,
-      email: payment.user?.email ?? null,
-    },
-    log,
-  );
-  if (link === null) {
-    log.error('whop.topup.unmapped_user', {
-      alert: true,
-      payment_id: payment.id,
-      detail: 'no checkout metadata user id and no unique email match; event stored only',
-    });
-    return { outcome: 'unmapped_user', userId: null, grantedCredits: 0 };
-  }
-
-  const requestId = `whop-topup-${payment.id}`;
-  const granted = await insertLedgerCredits(service, {
-    user_id: link.userId,
-    request_id: requestId,
-    kind: 'topup',
-    credits: topup.credits,
-    meta: { source: 'whop', payment_id: payment.id, plan_id: topup.whopPlanId },
-  });
-  if (!granted) {
-    log.info('whop.topup.duplicate', { user_id: link.userId, request_id: requestId });
-    return { outcome: 'applied', userId: link.userId, grantedCredits: 0 };
-  }
-
-  log.info('whop.topup.granted', {
-    user_id: link.userId,
-    request_id: requestId,
-    credits: topup.credits,
-  });
-  return { outcome: 'applied', userId: link.userId, grantedCredits: topup.credits };
-}
-
 /** A failed subscription payment puts the entitlement in its grace state. */
 export async function applyPaymentFailed(
   service: SupabaseClient,
@@ -851,6 +726,9 @@ export async function applyPaymentFailed(
 
   const existing = await readEntitlement(service, link.userId);
   const mappedPlan = planId === null ? null : planKeyFromWhopPlanId(planId);
+  if (!mappedPlan || (existing?.external_id && membershipId !== existing.external_id)) {
+    return { outcome: 'ignored', userId: link.userId, grantedCredits: 0, detail: 'unrelated_membership' };
+  }
   const planKey: PlanKey =
     existing !== null && isPlanKey(existing.plan_key)
       ? existing.plan_key
@@ -874,62 +752,6 @@ export async function applyPaymentFailed(
   return { outcome: 'applied', userId: link.userId, grantedCredits: 0 };
 }
 
-/**
- * A succeeded subscription payment. Whop has no renewal event and the payment
- * carries no period end, so the membership is re-read from the API (docs:
- * "if the sequence is important, read the current state from the API") and run
- * through `applyMembership`, where the period grant deduplicates itself.
- */
-export async function applySubscriptionPayment(
-  service: SupabaseClient,
-  payment: WhopPaymentPayload,
-  options: { log?: Logger } = {},
-): Promise<ApplyPaymentResult> {
-  const log = options.log ?? whopLog;
-  const membershipId = payment.membership_id ?? payment.membership?.id ?? null;
-  if (membershipId === null) {
-    return { outcome: 'ignored', userId: null, grantedCredits: 0, detail: 'no_membership_id' };
-  }
-
-  let membership: WhopMembership | null;
-  try {
-    membership = await fetchMembership(membershipId);
-  } catch (error) {
-    // Without authoritative period data a grant would be a guess: skip it. The
-    // next membership event (or reconciliation) repairs the entitlement.
-    log.warn('whop.payment_succeeded.membership_read_failed', {
-      payment_id: payment.id,
-      membership_id: membershipId,
-      detail: error instanceof Error ? error.message : 'unknown error',
-    });
-    return { outcome: 'ignored', userId: null, grantedCredits: 0, detail: 'membership_read_failed' };
-  }
-  if (membership === null) {
-    return { outcome: 'ignored', userId: null, grantedCredits: 0, detail: 'membership_unreadable' };
-  }
-
-  // Checkout metadata rides on the payment too; merge it in so a membership
-  // read that lost the metadata can still be mapped.
-  const merged: WhopMembership = {
-    ...membership,
-    metadata: { ...(payment.metadata ?? {}), ...membership.metadata },
-  };
-  const result = await applyMembership(service, merged, { intent: 'valid', log });
-  return {
-    outcome: result.outcome === 'applied' ? 'applied' : 'ignored',
-    userId: result.userId,
-    grantedCredits: result.grantedCredits,
-    ...(result.outcome === 'applied' ? {} : { detail: result.outcome }),
-  };
-}
-
-/** True when this payment bought the one-off top-up product. */
-export function isTopupPayment(payment: WhopPaymentPayload): boolean {
-  const planId = payment.plan_id ?? payment.plan?.id ?? null;
-  const topupPlanId = getTopupProduct().whopPlanId;
-  return planId !== null && topupPlanId !== null && planId === topupPlanId;
-}
-
 /** Plan ids this app sells — used to ignore other products of the account. */
 export function ourPlanIds(): Set<string> {
   const ids = new Set<string>();
@@ -938,7 +760,5 @@ export function ourPlanIds(): Set<string> {
     const id = plans[key].whopPlanId;
     if (id !== null && id !== '') ids.add(id);
   }
-  const topup = getTopupProduct().whopPlanId;
-  if (topup !== null && topup !== '') ids.add(topup);
   return ids;
 }

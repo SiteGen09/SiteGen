@@ -8,6 +8,10 @@
     {
       "path": "/api/cron/probe-models",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/sweep-media",
+      "schedule": "*/2 * * * *"
     }
   ]
 }

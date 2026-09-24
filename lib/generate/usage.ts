@@ -8,6 +8,7 @@ export interface NormalizedUsage {
   inputTokens: number;
   outputTokens: number;
   cachedTokens: number;
+  cacheWriteTokens?: number;
 }
 
 function finite(value: number | undefined): number {
@@ -40,10 +41,18 @@ export function normalizeUsage(
   const totalInput = finite(usage.inputTokens);
   const detailCached = finite(usage.inputTokenDetails?.cacheReadTokens);
   const cachedTokens = detailCached > 0 ? detailCached : cacheReadFromMetadata(providerMetadata);
+  const raw = usage.raw;
+  const details = raw?.prompt_tokens_details;
+  const rawWrite = details && typeof details === 'object' && !Array.isArray(details)
+    ? (details as Record<string, unknown>).cache_creation_tokens : undefined;
+  const writes = finite(usage.inputTokenDetails?.cacheWriteTokens) ||
+    finite(typeof rawWrite === 'number' ? rawWrite : undefined) ||
+    finite(typeof raw?.cache_creation_input_tokens === 'number' ? raw.cache_creation_input_tokens : undefined);
 
   return {
     inputTokens: Math.max(0, totalInput - cachedTokens),
     outputTokens: finite(usage.outputTokens),
     cachedTokens,
+    ...(writes > 0 ? { cacheWriteTokens: writes } : {}),
   };
 }

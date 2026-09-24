@@ -1,9 +1,10 @@
 import Link from 'next/link';
-import { PROVIDER_LABELS } from '@/lib/ai/providers';
+import { BillingDetails } from '@/app/prices/billing-details';
 import { getPlans, type PlanKey } from '@/lib/billing/plans';
 import { getEntitlement, listModelCatalog, type ModelCatalogEntry } from '@/lib/dashboard/queries';
 import { requireUser } from '@/lib/dashboard/session';
-import { Card, EmptyRow, PageHeader, StatusBadge, Table, formatCredits } from '../ui';
+import { clampPage, pageSlice, parsePage, parsePageSize } from '@/lib/ui/pagination';
+import { Card, EmptyRow, PageHeader, Pager, StatusBadge, Table, formatCredits } from '../ui';
 
 export const metadata = { title: 'Models — sitegen' };
 
@@ -34,11 +35,22 @@ function credits(entry: ModelCatalogEntry, value: number): string {
   return entry.isByok ? 'Your key' : formatCredits(value);
 }
 
-export default async function ModelsPage() {
+export default async function ModelsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string; size?: string }>;
+}) {
   const user = await requireUser();
-  const [entitlement, models] = await Promise.all([getEntitlement(user.id), listModelCatalog()]);
+  const [sp, entitlement, models] = await Promise.all([
+    searchParams,
+    getEntitlement(user.id),
+    listModelCatalog(),
+  ]);
   const plans = getPlans();
   const planLabel = plans[entitlement.planKey].label;
+  const size = parsePageSize(sp.size);
+  const page = clampPage(parsePage(sp.page), models.length, size);
+  const visible = pageSlice(models, page, size);
 
   return (
     <>
@@ -76,24 +88,25 @@ export default async function ModelsPage() {
       </Card>
 
       <Table head={HEAD} minWidth="min-w-[52rem]">
-        {models.length === 0 ? (
+        {visible.length === 0 ? (
           <EmptyRow colSpan={HEAD.length}>No models are configured yet.</EmptyRow>
         ) : (
-          models.map((model) => (
+          visible.map((model) => (
             <tr key={model.id}>
               <td className="px-4 py-2.5">
                 <span className="font-mono text-xs text-zinc-900">{model.publicModelId}</span>
                 <span className="mt-0.5 block text-xs text-zinc-500">{model.label}</span>
+                <BillingDetails policy={model.billingPolicy} multiplier={model.creditMultiplier} />
               </td>
               <td className="whitespace-nowrap px-4 py-2.5 text-zinc-600">
-                {PROVIDER_LABELS[model.provider]}
+                {model.routingProvider?.label ?? 'Provider'}
               </td>
               <td className="px-4 py-2.5 text-zinc-600">{model.sourceLabel} · ×{model.creditMultiplier}</td>
               <td className="px-4 py-2.5">
                 <StatusBadge status={model.status} />
               </td>
               <td className="whitespace-nowrap px-4 py-2.5 tabular-nums text-zinc-600">
-                {credits(model, model.inputCreditsPerMTok)}
+                {model.requestCredits === null ? credits(model, model.inputCreditsPerMTok) : credits(model, model.requestCredits) + ' / job'}
               </td>
               <td className="whitespace-nowrap px-4 py-2.5 tabular-nums text-zinc-600">
                 {credits(model, model.outputCreditsPerMTok)}
@@ -108,6 +121,13 @@ export default async function ModelsPage() {
           ))
         )}
       </Table>
+      <Pager
+        basePath="/dashboard/models"
+        page={page}
+        pageSize={size}
+        total={models.length}
+        label="models"
+      />
     </>
   );
 }

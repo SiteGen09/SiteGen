@@ -4,19 +4,8 @@ import { signOut } from '@/lib/actions/auth';
 import { requireUser } from '@/lib/dashboard/session';
 import { ThemeToggle } from '../theme-toggle';
 import { MobileNav } from './mobile-nav';
-
-const NAV = [
-  { href: '/dashboard', label: 'Overview' },
-  { href: '/dashboard/keys', label: 'API Keys' },
-  { href: '/dashboard/models', label: 'Models' },
-  { href: '/dashboard/routing', label: 'Routing' },
-  { href: '/dashboard/chat', label: 'Chat' },
-  { href: '/dashboard/status', label: 'Model status' },
-  { href: '/dashboard/usage', label: 'Usage' },
-  { href: '/dashboard/credentials', label: 'Credentials' },
-  { href: '/dashboard/billing', label: 'Billing' },
-  { href: '/docs', label: 'Docs' },
-] as const;
+import { DashboardNav } from './dashboard-nav';
+import { SitegenLogo } from '../_components/sitegen-logo';
 
 export default async function DashboardLayout({ children }: { children: ReactNode }) {
   const user = await requireUser();
@@ -42,27 +31,20 @@ export default async function DashboardLayout({ children }: { children: ReactNod
 
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-zinc-50 md:flex-row">
-      <MobileNav items={NAV}>{account}</MobileNav>
+      <MobileNav>{account}</MobileNav>
 
       <aside className="hidden w-56 shrink-0 flex-col border-r border-zinc-200 bg-white md:flex">
         <Link
           href="/dashboard"
-          className="border-b border-zinc-200 px-4 py-4 text-sm font-semibold tracking-tight text-zinc-900"
+          aria-label="sitegen dashboard"
+          className="flex items-center border-b border-zinc-200 px-4 py-4 text-xl text-zinc-900"
         >
-          sitegen
+          <SitegenLogo />
         </Link>
 
-        <nav className="flex flex-1 flex-col gap-0.5 p-2">
-          {NAV.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              className="rounded-md px-3 py-2 text-sm text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900"
-            >
-              {item.label}
-            </Link>
-          ))}
-        </nav>
+        <div className="flex-1 px-2 py-5">
+          <DashboardNav />
+        </div>
 
         <div className="border-t border-zinc-200 p-4">{account}</div>
       </aside>

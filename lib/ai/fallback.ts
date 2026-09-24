@@ -1,8 +1,10 @@
+import { isPolicyRejection } from '@/lib/guardrails/policy';
+import { observePolicyRejection } from '@/lib/guardrails/runtime';
 import type { TokenRates } from '@/lib/ai/pricing';
 import type { Provider } from '@/lib/ai/providers';
 
 /** Max channels visited in one fallback walk, including the starting channel. */
-const MAX_CHAIN_DEPTH = 5;
+export const MAX_CHAIN_DEPTH = 5;
 
 /**
  * Plain projection of a provider channel row. Passed in by the caller so this
@@ -19,6 +21,10 @@ export interface ChannelRow {
   creditMultiplier: string;
   status: string;
   fallbackTo: string | null;
+  /** Only Auto may retry platform authentication or missing-model errors. */
+  automaticRouting?: boolean;
+  /** Same-model provider alternatives, tried before configured backup links. */
+  automaticFallbackIds?: readonly string[];
   /**
    * USD list price per million tokens for this channel's model, held as
    * numbers because `numeric(12,6)` arrives from PostgREST as a string.
@@ -77,6 +83,7 @@ function stringProp(source: Record<string, unknown>, key: string): string | unde
  * transport-failure case (flag set, no response).
  */
 export function isRetryableError(err: unknown): boolean {
+  if (isPolicyRejection(err)) return false;
   if (typeof err !== 'object' || err === null) return false;
 
   const source = err as Record<string, unknown>;
@@ -103,6 +110,18 @@ export function isRetryableError(err: unknown): boolean {
   return cause === undefined || cause === null ? false : isRetryableError(cause);
 }
 
+function isAutomaticRouteUnavailable(err: unknown): boolean {
+  if (isPolicyRejection(err) || typeof err !== 'object' || err === null) return false;
+  const source = err as Record<string, unknown>;
+  const response = source['response'];
+  const status = numericProp(source, 'statusCode') ?? numericProp(source, 'status') ??
+    (typeof response === 'object' && response !== null
+      ? numericProp(response as Record<string, unknown>, 'status') : undefined);
+  // These responses can mean that this provider cannot currently serve the
+  // requested model. Invalid input (400/422) and policy refusals remain final.
+  return status !== undefined && [401, 402, 404, 408].includes(status);
+}
+
 /**
  * Walks the `fallback_to` chain starting at `start`, invoking `attempt` on each
  * usable channel.
@@ -120,6 +139,8 @@ export async function callWithFallback<T>(
 ): Promise<FallbackResult<T>> {
   const attempts: Array<{ channelId: string; error?: string }> = [];
   const visited = new Set<string>();
+  const automaticIds = [...(start.automaticFallbackIds ?? [])];
+  const configuredIds: string[] = [];
 
   let current: ChannelRow | null = start;
   let lastError: unknown;
@@ -138,18 +159,26 @@ export async function callWithFallback<T>(
         attempts.push({ channelId: channel.id });
         return { value, channelId: channel.id, attempts };
       } catch (err) {
+        await observePolicyRejection(err);
         attempts.push({
           channelId: channel.id,
           error: err instanceof Error ? err.message : String(err),
         });
-        if (!isRetryableError(err)) throw err;
+        if (!isRetryableError(err) && !(channel.automaticRouting && isAutomaticRouteUnavailable(err))) throw err;
         lastError = err;
         sawError = true;
       }
     }
 
-    const nextId = channel.fallbackTo;
-    current = nextId === null || visited.has(nextId) ? null : await resolve(nextId);
+    if (channel.fallbackTo !== null) configuredIds.push(channel.fallbackTo);
+    current = null;
+    while (automaticIds.length || configuredIds.length) {
+      const nextId = automaticIds.shift() ?? configuredIds.shift()!;
+      if (visited.has(nextId)) continue;
+      current = await resolve(nextId);
+      if (current !== null) break;
+      visited.add(nextId);
+    }
   }
 
   if (sawError) throw lastError;

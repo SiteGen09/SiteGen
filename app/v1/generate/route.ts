@@ -1,3 +1,6 @@
+import { enforceLocalPolicy } from '@/lib/guardrails/runtime';
+import { policyText } from '@/lib/guardrails/policy';
+import { guardedRoute, admitGeneration } from '@/lib/guardrails/runtime';
 import { z } from 'zod';
 
 import { selectByokChannel, selectChannel, resolveChannel } from '@/lib/ai/channels';
@@ -5,6 +8,7 @@ import type { ChannelRow } from '@/lib/ai/fallback';
 import { costUsd, creditsForUsage } from '@/lib/ai/pricing';
 import type { ProviderCreds } from '@/lib/ai/provider';
 import { authenticateApiKey, requireScope, type AuthenticatedKey } from '@/lib/api/api-key-auth';
+import { asUpstreamError } from '@/lib/api/upstream';
 import { ApiError, apiError } from '@/lib/api/errors';
 import {
   MAX_IDEMPOTENCY_KEY_LENGTH,
@@ -143,6 +147,7 @@ interface GenerationContext {
  */
 async function runGeneration(ctx: GenerationContext): Promise<IdempotentResponse> {
   const { requestId, auth, body, log } = ctx;
+  await enforceLocalPolicy(policyText(body));
   const planKey = await loadPlanKey(auth.ownerId);
 
   const resolved = await resolveChannelAndCreds(auth.ownerId, planKey);
@@ -290,7 +295,7 @@ async function parseBody(req: Request): Promise<GenerateRequest> {
   return parsed.data;
 }
 
-export async function POST(req: Request): Promise<Response> {
+async function handlePost(req: Request): Promise<Response> {
   const requestId = crypto.randomUUID();
   const log = logger({ request_id: requestId, route: 'v1.generate' });
   const startedAt = Date.now();
@@ -299,6 +304,7 @@ export async function POST(req: Request): Promise<Response> {
   try {
     const auth = await authenticateApiKey(req.headers.get('authorization'), log);
     requireScope(auth, 'generate');
+    await admitGeneration(auth.ownerId);
 
     const limit = await consumeRateLimit(auth.apiKeyId, auth.rateLimitRpm);
     if (!limit.allowed) {
@@ -333,6 +339,16 @@ export async function POST(req: Request): Promise<Response> {
       log.warn('generate.error', { code: err.code, latency_ms: Date.now() - startedAt });
       return apiError(err.code, err.message, requestId, err.status);
     }
+    // A provider fault is not our fault; see `lib/api/upstream.ts`.
+    const upstream = asUpstreamError(err);
+    if (upstream !== null) {
+      log.warn('generate.upstream', {
+        code: upstream.code,
+        latency_ms: Date.now() - startedAt,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      return apiError(upstream.code, upstream.message, requestId, upstream.status);
+    }
     log.error('generate.unexpected', {
       latency_ms: Date.now() - startedAt,
       detail: err instanceof Error ? err.message : String(err),
@@ -340,3 +356,9 @@ export async function POST(req: Request): Promise<Response> {
     return apiError('internal_error', 'an unexpected error occurred', requestId, 500);
   }
 }
+
+function guardError(error: unknown, id: string): Response {
+  return error instanceof ApiError ? apiError(error.code, error.message, id, error.status) : apiError('internal_error', 'request failed', id, 500);
+}
+
+export const POST = guardedRoute(handlePost, guardError);

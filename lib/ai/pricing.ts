@@ -3,6 +3,8 @@ export interface TokenRates {
   inputPerMTok: number;
   outputPerMTok: number;
   cachedPerMTok: number;
+  cacheWritePerMTok?: number;
+  longContext?: { threshold: number; inputPerMTok: number; outputPerMTok: number; cachedPerMTok: number; cacheWritePerMTok?: number };
 }
 
 /**
@@ -16,12 +18,17 @@ export interface TokenRates {
  */
 export function costUsd(
   rates: TokenRates,
-  usage: { inputTokens: number; outputTokens: number; cachedTokens: number },
+  usage: { inputTokens: number; outputTokens: number; cachedTokens: number; cacheWriteTokens?: number },
 ): number {
+  // Cache writes remain part of inputTokens for legacy channels. Only channels
+  // explicitly publishing a write rate split them into a fourth billing bucket.
+  const totalInput = usage.inputTokens + usage.cachedTokens;
+  if (rates.longContext && totalInput > rates.longContext.threshold) rates = rates.longContext;
   for (const [name, rate] of [
     ['inputPerMTok', rates.inputPerMTok],
     ['outputPerMTok', rates.outputPerMTok],
     ['cachedPerMTok', rates.cachedPerMTok],
+    ['cacheWritePerMTok', rates.cacheWritePerMTok ?? rates.inputPerMTok],
   ] as const) {
     if (!Number.isFinite(rate) || rate < 0) {
       throw new Error(`invalid ${name}: ${rate}`);
@@ -33,22 +40,40 @@ export function costUsd(
     ['inputTokens', inputTokens],
     ['outputTokens', outputTokens],
     ['cachedTokens', cachedTokens],
+    ['cacheWriteTokens', usage.cacheWriteTokens ?? 0],
   ] as const) {
     if (!Number.isFinite(count) || count < 0) {
       throw new Error(`invalid ${name}: ${count}`);
     }
   }
 
+  const writes = rates.cacheWritePerMTok === undefined ? 0 : usage.cacheWriteTokens ?? 0;
+  if (writes > inputTokens) throw new Error('cache write tokens exceed non-cached input');
   return (
-    (inputTokens * rates.inputPerMTok +
+    ((inputTokens - writes) * rates.inputPerMTok +
+      writes * (rates.cacheWritePerMTok ?? rates.inputPerMTok) +
       outputTokens * rates.outputPerMTok +
       cachedTokens * rates.cachedPerMTok) /
     1_000_000
   );
 }
 
-/** USD value of one credit. */
-const USD_PER_CREDIT = 0.0001;
+/** USD value of one credit. Admin revenue reporting values consumed credits at this rate. */
+export const USD_PER_CREDIT = 0.0001;
+
+/**
+ * What one upstream credit costs in USD at kie.ai. Published on their pricing
+ * page and corroborated by every job we have run: an image reporting
+ * `creditsConsumed: 6` matches their advertised $0.03 per image.
+ *
+ * This is what lets settlement charge the real cost. A media channel's
+ * `request_price_usd` is only an estimate for the hold — it has to be, because
+ * a video's price depends on duration and resolution, which are inputs rather
+ * than properties of the model. Settlement keeps the reported count in the
+ * settle row's `meta.upstream_credits`, which is how admin reporting recovers
+ * the provider cost of a media job.
+ */
+export const MEDIA_UPSTREAM_USD_PER_CREDIT = 0.005;
 
 /**
  * Credits to charge for a call. One credit is $0.0001; the multiplier is the

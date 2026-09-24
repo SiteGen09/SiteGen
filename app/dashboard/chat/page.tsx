@@ -1,8 +1,9 @@
-import { listPublicModels } from '@/lib/ai/channels';
+import { listMediaModels, listPublicModels } from '@/lib/ai/channels';
 import { loadRoutingPreferences } from '@/lib/ai/sources';
 import { loadPlan } from '@/lib/chat/pipeline';
 import { conversationSchema } from '@/lib/chat/conversations';
 import { requireUser } from '@/lib/dashboard/session';
+import { mediaAvailability } from '@/lib/media/availability';
 import { createClient } from '@/lib/supabase/server';
 import { PageHeader } from '../ui';
 import { ChatWorkspace } from './chat-workspace';
@@ -16,8 +17,10 @@ export default async function ChatPage() {
     loadRoutingPreferences(user.id),
     createClient(),
   ]);
-  const [models, conversations] = await Promise.all([
+  const [models, imageModels, videoModels, conversations] = await Promise.all([
     listPublicModels(plan.key, preferences),
+    mediaAvailability('image').enabled ? listMediaModels(plan.key, 'image', preferences) : Promise.resolve([]),
+    mediaAvailability('video').enabled ? listMediaModels(plan.key, 'video', preferences) : Promise.resolve([]),
     session
       .from('chat_conversations')
       .select('id, title, model, updated_at')
@@ -29,10 +32,12 @@ export default async function ChatPage() {
     <>
       <PageHeader
         title="Chat"
-        description="Talk to your models using your routing preferences and credit balance."
+        description="Chat, share files, and choose a model. Visual generation will appear here after its safety checks are enabled."
       />
       <ChatWorkspace
         models={models}
+        imageModels={imageModels}
+        videoModels={videoModels}
         initialConversations={conversationSchema.array().parse(conversations.data)}
       />
     </>

@@ -9,6 +9,7 @@ export const ERROR_CODES = [
   'generation_failed',
   'not_found',
   'model_not_found',
+  'not_ready',
   'content_policy_violation',
   'internal_error',
 ] as const;

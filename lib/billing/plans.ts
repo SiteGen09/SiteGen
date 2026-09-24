@@ -4,12 +4,13 @@
  * rail. Server-side only (reads env).
  */
 
-export const PLAN_KEYS = ['free', 'starter', 'pro'] as const;
+export const PLAN_KEYS = ['free', 'starter', 'pro', 'max'] as const;
 export type PlanKey = (typeof PLAN_KEYS)[number];
 
 export interface PlanDef {
   key: PlanKey;
   label: string;
+  priceCents: number;
   /** Whop plan id (null = not purchasable, e.g. free). */
   whopPlanId: string | null;
   /** Credits granted on each period renewal. */
@@ -26,11 +27,16 @@ export interface PlanDef {
   maxOutputTokens: number;
 }
 
+function configuredPlanId(value: string | undefined): string | null {
+  return value?.startsWith('plan_') ? value : null;
+}
+
 export function getPlans(): Record<PlanKey, PlanDef> {
   return {
     free: {
       key: 'free',
       label: 'Free',
+      priceCents: 0,
       whopPlanId: null,
       monthlyCredits: 0,
       rateLimitRpm: 20,
@@ -40,8 +46,9 @@ export function getPlans(): Record<PlanKey, PlanDef> {
     starter: {
       key: 'starter',
       label: 'Starter',
-      whopPlanId: process.env.WHOP_PLAN_STARTER ?? null,
-      monthlyCredits: 500_000,
+      priceCents: 1499,
+      whopPlanId: configuredPlanId(process.env.WHOP_PLAN_STARTER),
+      monthlyCredits: 149_000,
       rateLimitRpm: 60,
       rank: 1,
       maxOutputTokens: 4096,
@@ -49,20 +56,23 @@ export function getPlans(): Record<PlanKey, PlanDef> {
     pro: {
       key: 'pro',
       label: 'Pro',
-      whopPlanId: process.env.WHOP_PLAN_PRO ?? null,
-      monthlyCredits: 2_500_000,
+      priceCents: 2999,
+      whopPlanId: configuredPlanId(process.env.WHOP_PLAN_PRO),
+      monthlyCredits: 299_000,
       rateLimitRpm: 300,
       rank: 2,
       maxOutputTokens: 16384,
     },
-  };
-}
-
-/** One-off credit top-up product. */
-export function getTopupProduct(): { whopPlanId: string | null; credits: number } {
-  return {
-    whopPlanId: process.env.WHOP_PLAN_TOPUP ?? null,
-    credits: 100_000,
+    max: {
+      key: 'max',
+      label: 'Max',
+      priceCents: 4999,
+      whopPlanId: configuredPlanId(process.env.WHOP_PLAN_MAX),
+      monthlyCredits: 499_000,
+      rateLimitRpm: 300,
+      rank: 3,
+      maxOutputTokens: 16384,
+    },
   };
 }
 
