@@ -6,7 +6,7 @@ export const rateSchema = z.object({
   cacheWritePerMTok: rate.optional(),
 });
 export const billingPolicySchema = z.object({
-  origin: z.literal('relay.fast'),
+  origin: z.enum(['relay.fast', 'kie.ai']),
   version: z.string(),
   syncedAt: z.string(),
   tiers: z.array(z.object({ name: z.string(), rates: rateSchema })).min(1),

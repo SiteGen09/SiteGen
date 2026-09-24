@@ -5,6 +5,7 @@ import type { LanguageModel } from 'ai';
 
 import type { Provider } from '@/lib/ai/providers';
 import { kieChatFetch } from '@/lib/ai/kie-chat';
+import { kieResponsesFetch } from '@/lib/ai/kie-responses';
 
 /** Logical unit of work a channel is asked to perform. */
 export type TaskAlias = 'site.spec' | 'site.copy' | 'interview';
@@ -72,7 +73,11 @@ export function buildAI(creds: ProviderCreds): AI {
   // which is also what carries `reasoning.effort` and the built-in web-search
   // tool through as provider options.
   if (creds.provider === 'openai_responses') {
-    const provider = createOpenAI({ apiKey: creds.apiKey, baseURL });
+    const provider = createOpenAI({
+      apiKey: creds.apiKey,
+      baseURL,
+      fetch: new URL(baseURL).hostname === 'api.kie.ai' ? kieResponsesFetch : undefined,
+    });
     return { languageModel: (modelId) => provider.responses(modelId) };
   }
 
