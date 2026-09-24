@@ -90,6 +90,14 @@ async function save(formData: FormData, creating: boolean): Promise<ActionState>
       const after = creating
         ? await tx`INSERT INTO sources (id,family,label,description,credit_multiplier,status,min_plan,is_default) VALUES (${data.id}, ${data.family}, ${data.label}, ${data.description}, ${data.creditMultiplier}, ${data.status}, ${data.minPlan}, ${data.isDefault}) RETURNING *`
         : await tx`UPDATE sources SET family=${data.family}, label=${data.label}, description=${data.description}, credit_multiplier=${data.creditMultiplier}, status=${data.status}, min_plan=${data.minPlan}, is_default=${data.isDefault}, updated_at=now() WHERE id=${data.id} RETURNING *`;
+      // A provider-wide multiplier overrides this one in the database trigger;
+      // report that rather than claim a price that was never applied.
+      if (Number(after[0]?.credit_multiplier) !== data.creditMultiplier)
+        throw new ApiError(
+          'invalid_request',
+          `This provider's sources all use ×${after[0]?.credit_multiplier}, set on Provider pricing. Change it there, or release it to price sources individually.`,
+          409,
+        );
       await writeAudit(
         ctx.user.id,
         creating ? 'source.create' : 'source.update',

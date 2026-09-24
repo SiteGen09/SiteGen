@@ -227,6 +227,14 @@ export const routingPriceHistory = pgTable('routing_price_history', {
   actionCheck: check('routing_price_history_action_check', sql.raw("action IN ('source.update', 'channel.update')")),
 }));
 
+// Provider-wide display name and multiplier; the source trigger lives in the migration.
+export const routingProviders = pgTable('routing_providers', {
+  id: text('id').primaryKey(),
+  label: text('label'),
+  creditMultiplier: numeric('credit_multiplier', { precision: 10, scale: 2 }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 // Relations
 export const profilesRelations = relations(profiles, ({ many }) => ({
   apiKeys: many(apiKeys),

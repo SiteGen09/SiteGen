@@ -44,20 +44,36 @@ export function routingProviderIdentity(input: {
   return { id: label.toLowerCase() || input.sourceId || 'unconfigured', label: label || 'Provider' };
 }
 
+/**
+ * Administrator display names, keyed by internal identity id (`kie.ai`). Only
+ * the label changes: the public id stays fixed so links and filters survive.
+ */
+export type RoutingProviderNames = ReadonlyMap<string, string>;
+
 /** Return the stable, anonymous identity safe to send to a consumer. */
 export function publicRoutingProviderIdentity(input: {
   baseUrl?: string | null;
   provider?: string;
   sourceId?: string | null;
   sourceLabel?: string;
-}): RoutingProviderIdentity {
+}, names?: RoutingProviderNames): RoutingProviderIdentity {
   const identity = routingProviderIdentity(input);
-  return publicRoutingProviderIdentityFromIdentity(identity);
+  return publicRoutingProviderIdentityFromIdentity(identity, names);
 }
 
 /** Apply the public alias to an already-resolved internal identity. */
-export function publicRoutingProviderIdentityFromIdentity(identity: RoutingProviderIdentity): RoutingProviderIdentity {
-  return ANONYMOUS_PROVIDER_ALIASES[identity.id] ?? identity;
+export function publicRoutingProviderIdentityFromIdentity(
+  identity: RoutingProviderIdentity,
+  names?: RoutingProviderNames,
+): RoutingProviderIdentity {
+  const alias = ANONYMOUS_PROVIDER_ALIASES[identity.id] ?? identity;
+  const label = names?.get(identity.id);
+  return label ? { id: alias.id, label } : alias;
+}
+
+/** The label consumers see for an internal identity id. */
+export function publicRoutingProviderLabel(id: string, names?: RoutingProviderNames): string {
+  return publicRoutingProviderIdentityFromIdentity({ id, label: id }, names).label;
 }
 
 /** Whether an internal identity is one of the upstreams hidden from consumers. */
@@ -66,19 +82,20 @@ export function isAnonymousRoutingProvider(id: string): boolean {
 }
 
 /** Sanitize historical source snapshots before they reach the consumer dashboard. */
-export function publicRoutingSourceLabel(label: string | null): string | null {
+export function publicRoutingSourceLabel(label: string | null, names?: RoutingProviderNames): string | null {
   if (label === null) return null;
   const internal = routingProviderIdentity({ sourceLabel: label });
   return isAnonymousRoutingProvider(internal.id)
-    ? ANONYMOUS_PROVIDER_ALIASES[internal.id]!.label
+    ? publicRoutingProviderLabel(internal.id, names)
     : label;
 }
 
 /** Replace known upstream names in free-form descriptions before rendering. */
-export function publicRoutingText(text: string): string {
+export function publicRoutingText(text: string, names?: RoutingProviderNames): string {
+  // Function replacements: a display name containing `$&` must stay literal.
   return text
-    .replace(/relay\.fast/gi, 'Provider A')
-    .replace(/kie\.ai/gi, 'Provider B')
+    .replace(/relay\.fast/gi, () => publicRoutingProviderLabel('relay.fast', names))
+    .replace(/kie\.ai/gi, () => publicRoutingProviderLabel('kie.ai', names))
     .replace(/api\.provider-a\.com/gi, 'provider endpoint')
     .replace(/api\.provider-b\.com/gi, 'provider endpoint');
 }

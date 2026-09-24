@@ -22,6 +22,7 @@ const NAV_GROUPS = [
     id: 'providers',
     label: 'Providers',
     items: [
+      { href: '/admin/providers', label: 'Provider pricing' },
       { href: '/admin/channels', label: 'Channels' },
       { href: '/admin/sources', label: 'Sources' },
       { href: '/admin/credentials', label: 'Credentials' },

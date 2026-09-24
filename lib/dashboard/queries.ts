@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { billingPolicySchema, policyRates, publicBillingPolicy, type PublicBillingPolicy } from '@/lib/ai/billing-policy';
 import { PROVIDERS, type Provider } from '@/lib/ai/providers';
 import { publicRoutingProviderIdentity, publicRoutingSourceLabel, publicRoutingTags, publicRoutingText, type RoutingProviderIdentity } from '@/lib/ai/routing-provider';
+import { loadRoutingProviderNames } from '@/lib/ai/routing-provider-names';
 import { createClient } from '@/lib/supabase/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { isPlanKey, planMeetsMinimum, type PlanKey } from '@/lib/billing/plans';
@@ -273,9 +274,10 @@ export async function listUsageEvents(filter: UsageFilter): Promise<UsageEventRo
 
   const { data, error } = await query;
   if (error) fail('usage events', error.message);
+  const names = await loadRoutingProviderNames();
   return z.array(usageEventRowSchema).parse(data).map((row) => ({
     ...row,
-    source_label: publicRoutingSourceLabel(row.source_label),
+    source_label: publicRoutingSourceLabel(row.source_label, names),
   }));
 }
 
@@ -344,6 +346,7 @@ export async function listModelCatalog(): Promise<ModelCatalogEntry[]> {
     .not('public_model_id', 'is', null)
     .neq('status', 'off');
   if (error) fail('models', error.message);
+  const names = await loadRoutingProviderNames();
 
   // Request-priced rows are listed now that the media endpoints dispatch them.
   // They were excluded while nothing could bill per job.
@@ -367,7 +370,7 @@ export async function listModelCatalog(): Promise<ModelCatalogEntry[]> {
         routingProvider: publicRoutingProviderIdentity({
           baseUrl: row.is_byok ? null : row.base_url, provider: row.provider,
           sourceId: row.source_id, sourceLabel: row.sources?.label,
-        }),
+        }, names),
         billingPolicy: publicBillingPolicy(row.billing_policy),
         sourceId: row.source_id,
         sourceLabel: row.is_byok
@@ -376,12 +379,12 @@ export async function listModelCatalog(): Promise<ModelCatalogEntry[]> {
               sourceId: row.source_id,
               sourceLabel: row.sources?.label,
               provider: row.provider,
-            }).label,
+            }, names).label,
         sourceDescription: row.sources?.description ?? '',
         family: row.sources?.family ?? null,
         modality: row.sources?.modality ?? 'chat',
         publicModelId: row.public_model_id,
-        label: publicRoutingText(row.label),
+        label: publicRoutingText(row.label, names),
         provider: row.provider,
         upstreamModelId: row.model_id,
         status: row.sources?.status === 'degraded' ? 'degraded' : row.status,
@@ -467,6 +470,7 @@ export async function listPublicPrices(): Promise<import('./public-prices').Publ
     .neq('status', 'off')
     .eq('is_byok', false);
   if (error) fail('public prices', error.message);
+  const names = await loadRoutingProviderNames();
   const schema = z.object({
     billing_policy: billingPolicySchema.nullish(),
     provider: z.enum(PROVIDERS),
@@ -502,7 +506,7 @@ export async function listPublicPrices(): Promise<import('./public-prices').Publ
         a.id.localeCompare(b.id),
     ).map((row) => ({
       ...row,
-      routingProvider: publicRoutingProviderIdentity({ baseUrl: row.base_url, provider: row.provider, sourceId: row.sources.id, sourceLabel: row.sources.label }),
+      routingProvider: publicRoutingProviderIdentity({ baseUrl: row.base_url, provider: row.provider, sourceId: row.sources.id, sourceLabel: row.sources.label }, names),
     }));
   const seen = new Set<string>();
   return rows
@@ -527,9 +531,9 @@ export async function listPublicPrices(): Promise<import('./public-prices').Publ
       return {
         model: row.public_model_id,
         billingPolicy: publicBillingPolicy(row.billing_policy),
-        label: publicRoutingText(row.label),
+        label: publicRoutingText(row.label, names),
         group: row.sources.family,
-        vendor: publicRoutingText(row.vendor ?? 'Unknown'),
+        vendor: publicRoutingText(row.vendor ?? 'Unknown', names),
         contextWindow: row.context_window,
         endpoints: row.endpoints,
         tags: publicRoutingTags(row.tags),

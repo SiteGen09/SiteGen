@@ -5,6 +5,7 @@ import { planMeetsMinimum } from '@/lib/billing/plans';
 import { getBalance, getEntitlement, listModelCatalog, listRoutingPriceHistory } from '@/lib/dashboard/queries';
 import { groupRoutingProviders } from '@/lib/dashboard/routing-catalog';
 import { publicRoutingSourceId } from '@/lib/ai/routing-provider';
+import { loadRoutingProviderNames } from '@/lib/ai/routing-provider-names';
 import type { RoutingPriceHistoryEntry } from '@/lib/dashboard/routing-history';
 import { requireUser } from '@/lib/dashboard/session';
 import { Card, PageHeader, Table, EmptyRow, formatCredits, formatTimestamp } from '../ui';
@@ -24,11 +25,12 @@ export default async function RoutingPage({ searchParams }: { searchParams: Prom
   const user = await requireUser();
   const params = await searchParams;
   const tab = params.tab === 'history' ? 'history' : 'channels';
-  const [balance, entitlement, sources, preferences, catalog] = await Promise.all([
+  const [balance, entitlement, sources, preferences, catalog, providerNames] = await Promise.all([
     getBalance(), getEntitlement(user.id), listSources(), loadRoutingPreferences(user.id), listModelCatalog(),
+    loadRoutingProviderNames(),
   ]);
   const models = catalog.filter((model) => !model.isByok && planMeetsMinimum(entitlement.planKey, model.minPlan));
-  const providers = groupRoutingProviders(models);
+  const providers = groupRoutingProviders(models, providerNames);
   const sourceProviders = new Map(providers.flatMap((provider) => provider.sourceIds.map((id) => [id, provider] as const)));
   const priceHistory = tab === 'history' ? await listRoutingPriceHistory(models) : [];
   const pairs = FAMILIES.flatMap((family) => MODALITIES.flatMap((modality) => {

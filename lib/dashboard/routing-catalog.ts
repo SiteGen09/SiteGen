@@ -4,6 +4,7 @@ import {
   publicRoutingProviderIdentityFromIdentity,
   publicRoutingSourceId,
   publicRoutingText,
+  type RoutingProviderNames,
 } from '@/lib/ai/routing-provider';
 import type { PublicBillingPolicy } from '@/lib/ai/billing-policy';
 import type { ModelCatalogEntry } from './queries';
@@ -35,7 +36,10 @@ export interface RoutingProvider {
   models: RoutingModel[];
 }
 
-export function groupRoutingProviders(catalog: readonly ModelCatalogEntry[]): RoutingProvider[] {
+export function groupRoutingProviders(
+  catalog: readonly ModelCatalogEntry[],
+  names?: RoutingProviderNames,
+): RoutingProvider[] {
   const groups = new Map<string, RoutingProvider>();
   const descriptions = new Map<string, Set<string>>();
   for (const model of catalog) {
@@ -44,7 +48,7 @@ export function groupRoutingProviders(catalog: readonly ModelCatalogEntry[]): Ro
       ? publicRoutingProviderIdentityFromIdentity(model.routingProvider)
       : publicRoutingProviderIdentity({
           sourceId: model.sourceId, sourceLabel: model.sourceLabel, provider: model.provider,
-        });
+        }, names);
     let group = groups.get(identity.id);
     if (!group) {
       group = { ...identity, description: '', sourceIds: [], modalities: [], models: [] };
@@ -54,7 +58,7 @@ export function groupRoutingProviders(catalog: readonly ModelCatalogEntry[]): Ro
     const publicSourceId = publicRoutingSourceId(model.sourceId);
     if (!group.sourceIds.includes(publicSourceId)) group.sourceIds.push(publicSourceId);
     if (!group.modalities.includes(model.modality)) group.modalities.push(model.modality);
-    const description = publicRoutingText(model.sourceDescription.trim());
+    const description = publicRoutingText(model.sourceDescription.trim(), names);
     // Catalog imports used to generate a separate description for every family.
     if (description && !/^kie\.ai (chat|image|video) models from /i.test(description)) {
       descriptions.get(identity.id)!.add(description);
