@@ -18,6 +18,7 @@ interface QueryResult {
 
 const state = vi.hoisted(() => ({
   result: { data: [] as unknown, error: null } as QueryResult,
+  defaultProvider: null as string | null,
 }));
 
 interface FakeQuery extends PromiseLike<QueryResult> {
@@ -49,6 +50,14 @@ function fakeQuery(): FakeQuery {
 vi.mock('@/lib/supabase/service', () => ({
   createServiceClient: () => ({ from: () => fakeQuery() }),
 }));
+
+vi.mock('@/lib/ai/routing-provider-names', () => ({
+  loadDefaultRoutingProvider: async () => state.defaultProvider,
+}));
+
+beforeEach(() => {
+  state.defaultProvider = null;
+});
 
 interface Row {
   id: string;
@@ -302,6 +311,41 @@ describe('source cascade', () => {
     expect((await selectChannelByModel('shared', 'free'))?.id).toBe('kie-shared');
     expect(await selectChannelByModel('shared', 'free', new Map([['gpt:chat', 'relay-gpt-chat']]))).toMatchObject({ id: 'relay-shared', creditMultiplier: '1.5', rates: { inputPerMTok: .2 } });
   });
+  it('starts Auto on the default provider ahead of source defaults, but never over a choice', async () => {
+    const kie = row({ id: 'kie-shared', source_id: 'kie-gpt-chat', priority: 10, sources: source({ id: 'kie-gpt-chat', family: 'gpt', is_default: true }), public_model_id: 'shared' });
+    const relay = row({ id: 'relay-shared', source_id: 'relay-gpt-chat', priority: -1, sources: source({ id: 'relay-gpt-chat', family: 'gpt' }), public_model_id: 'shared' });
+    state.defaultProvider = 'relay.fast';
+    state.result = { data: [kie, relay], error: null };
+    expect((await selectChannelByModel('shared', 'free'))?.id).toBe('relay-shared');
+    const route = await selectChatRoute('shared', 'free');
+    expect(route?.start).toMatchObject({ id: 'relay-shared', automaticFallbackIds: ['kie-shared'] });
+    expect((await selectChannelByModel('shared', 'free', new Map([['gpt:chat', 'kie-gpt-chat']])))?.id).toBe('kie-shared');
+    state.defaultProvider = 'kie.ai';
+    expect((await selectChannelByModel('shared', 'free'))?.id).toBe('kie-shared');
+  });
+  it('lets a user default provider override the administrator default and keep Auto fallback', async () => {
+    const kie = row({ id: 'kie-shared', source_id: 'kie-gpt-chat', sources: source({ id: 'kie-gpt-chat', family: 'gpt' }), public_model_id: 'shared' });
+    const relay = row({ id: 'relay-shared', source_id: 'relay-gpt-chat', priority: 10, sources: source({ id: 'relay-gpt-chat', family: 'gpt', is_default: true }), public_model_id: 'shared' });
+    state.defaultProvider = 'relay.fast';
+    state.result = { data: [kie, relay], error: null };
+    const mine = new Map([['provider', 'kie.ai']]);
+    const route = await selectChatRoute('shared', 'free', mine);
+    expect(route?.start).toMatchObject({ id: 'kie-shared', automaticFallbackIds: ['relay-shared'] });
+    // A family choice still beats the user's provider default.
+    expect((await selectChannelByModel('shared', 'free', new Map([...mine, ['gpt:chat', 'relay-gpt-chat']])))?.id).toBe('relay-shared');
+  });
+  it('uses the administrator default when the user default provider lacks the model', async () => {
+    const other = row({ id: 'other-shared', priority: 10, source_id: 'other', sources: source({ id: 'other', family: 'gpt', is_default: true }), public_model_id: 'shared' });
+    const relay = row({ id: 'relay-shared', source_id: 'relay-gpt-chat', sources: source({ id: 'relay-gpt-chat', family: 'gpt' }), public_model_id: 'shared' });
+    state.defaultProvider = 'relay.fast';
+    state.result = { data: [other, relay], error: null };
+    expect((await selectChannelByModel('shared', 'free', new Map([['provider', 'kie.ai']])))?.id).toBe('relay-shared');
+  });
+  it('falls back to source defaults when the default provider lacks the model', async () => {
+    state.defaultProvider = 'relay.fast';
+    state.result = { data: [row({ id: 'plain', priority: 10 }), row({ id: 'default', sources: source({ is_default: true }) })], error: null };
+    expect((await selectChannelByModel('m', 'free'))?.id).toBe('default');
+  });
   // Keyed on family AND modality: one vendor serves chat, images and video,
   // and a bare family key made a chat choice silently repoint the others.
   const preferences = new Map<string, string>([[routingKey('claude', 'chat'), 'chosen']]);
@@ -445,6 +489,16 @@ describe('modality isolation', () => {
     state.result = { data: [primary, backup, { ...backup, id: 'locked', min_plan: 'pro' }, { ...backup, id: 'video', sources: source({ family: 'gpt', modality: 'video' }) }], error: null };
     expect((await selectMediaChannel('image', 'free', 'image'))?.fallbackChannels?.map((channel) => channel.id)).toEqual(['backup-image']);
     expect((await selectMediaChannel('image', 'free', 'image', new Map([['gpt:image', 'first']])))?.fallbackChannels).toBeUndefined();
+  });
+
+  it('starts media Auto on the default provider', async () => {
+    const kie = row({ id: 'kie-image', source_id: 'kie-gpt-image', task: 'image.generate', pricing_type: 'request', public_model_id: 'image', request_price_usd: .04, sources: source({ id: 'kie-gpt-image', family: 'gpt', modality: 'image', is_default: true }) });
+    const relay = { ...kie, id: 'relay-image', source_id: 'relay-gpt-image', sources: source({ id: 'relay-gpt-image', family: 'gpt', modality: 'image' }) };
+    state.defaultProvider = 'relay.fast';
+    state.result = { data: [kie, relay], error: null };
+    const picked = await selectMediaChannel('image', 'free', 'image');
+    expect(picked?.id).toBe('relay-image');
+    expect(picked?.fallbackChannels?.map((channel) => channel.id)).toEqual(['kie-image']);
   });
 
   const imageSource = () =>

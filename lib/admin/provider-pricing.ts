@@ -22,6 +22,8 @@ export interface ProviderPricing {
   label: string | null;
   /** Provider-wide multiplier every source is held to, or null when unmanaged. */
   managedMultiplier: string | null;
+  /** Whether Auto routing starts with this provider. */
+  isDefault: boolean;
   sourceIds: string[];
   /** Channels with a public model id: what the catalog lists as models. */
   modelCount: number;
@@ -35,6 +37,7 @@ interface ProviderPricingRow {
   id: string;
   label: string | null;
   managed_multiplier: string | null;
+  is_default: boolean;
   source_ids: string[];
   model_count: number;
   min_multiplier: string | null;
@@ -60,6 +63,7 @@ export async function listProviderPricing(db: Connection, id?: string): Promise<
     SELECT coalesce(g.provider_id, p.id) AS id,
       p.label,
       p.credit_multiplier::text AS managed_multiplier,
+      coalesce(p.is_default, false) AS is_default,
       coalesce(g.source_ids, '{}') AS source_ids,
       (SELECT count(*)::int FROM channels c
         WHERE c.source_id = ANY(coalesce(g.source_ids, '{}'))
@@ -79,6 +83,7 @@ export async function listProviderPricing(db: Connection, id?: string): Promise<
       defaultLabel: alias.label,
       label: row.label,
       managedMultiplier: row.managed_multiplier,
+      isDefault: row.is_default,
       sourceIds: row.source_ids,
       modelCount: row.model_count,
       minMultiplier: row.min_multiplier,

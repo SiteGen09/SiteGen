@@ -3,9 +3,10 @@
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { FAMILIES, MODALITIES, listSources } from '@/lib/ai/sources';
+import { loadRoutingProviderNames } from '@/lib/ai/routing-provider-names';
 import { planMeetsMinimum } from '@/lib/billing/plans';
 import { loadPlan } from '@/lib/chat/pipeline';
-import { publicRoutingSourceId } from '@/lib/ai/routing-provider';
+import { publicRoutingSourceId, selectableRoutingProviders } from '@/lib/ai/routing-provider';
 import { requireUser } from '@/lib/dashboard/session';
 import { createClient } from '@/lib/supabase/server';
 import { createServiceClient } from '@/lib/supabase/service';
@@ -64,4 +65,35 @@ export async function saveRoutingAction(_previous: string, formData: FormData): 
   revalidatePath('/dashboard/routing');
   revalidatePath('/dashboard/chat');
   return 'Routing preference saved.';
+}
+
+/**
+ * Saves the provider Auto starts on for this user, across every family and
+ * modality. Empty follows the platform default. A family-level choice above
+ * still wins, and eligibility is unchanged: this only reorders routes.
+ */
+export async function saveDefaultProviderAction(_previous: string, formData: FormData): Promise<string> {
+  const user = await requireUser();
+  const requested = z.string().max(255).safeParse(formData.get('providerId') ?? '');
+  if (!requested.success) return 'Choose a provider or Auto.';
+  const service = createServiceClient();
+  if (requested.data === '') {
+    const { error } = await service.from('user_routing_provider').delete().eq('user_id', user.id);
+    if (error) return 'Could not reset your default provider. Refresh and try again.';
+  } else {
+    const [sources, plan, names] = await Promise.all([listSources(), loadPlan(user.id), loadRoutingProviderNames()]);
+    const provider = selectableRoutingProviders(
+      sources.filter((source) => source.status !== 'off' && planMeetsMinimum(plan.key, source.min_plan)),
+      names,
+    ).find((item) => item.publicId === requested.data);
+    if (!provider) return 'This provider is unavailable on your plan.';
+    const { error } = await service.from('user_routing_provider').upsert(
+      { user_id: user.id, provider_id: provider.id, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id' },
+    );
+    if (error) return 'Could not save your default provider. Refresh and try again.';
+  }
+  revalidatePath('/dashboard/routing');
+  revalidatePath('/dashboard/chat');
+  return requested.data === '' ? 'Auto will use the platform default provider.' : 'Default provider saved.';
 }

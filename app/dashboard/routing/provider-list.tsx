@@ -12,7 +12,7 @@ function formatMultiplier(value: number) {
   return '×' + value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function ProviderCard({ provider }: { provider: RoutingProvider }) {
+function ProviderCard({ provider, isDefault }: { provider: RoutingProvider; isDefault: boolean }) {
   const [query, setQuery] = useState('');
   const [modality, setModality] = useState<Modality | ''>('');
   const [page, setPage] = useState(1);
@@ -38,6 +38,7 @@ function ProviderCard({ provider }: { provider: RoutingProvider }) {
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <h2 className="text-base font-semibold text-zinc-900">{provider.label}</h2>
+            {isDefault && <span className="rounded-md bg-zinc-900 px-2.5 py-1 text-xs font-medium text-white">Default</span>}
             {multiplierLabel && <span className="rounded-md bg-zinc-100 px-2.5 py-1 text-xs font-medium tabular-nums text-zinc-700">Price multiplier {multiplierLabel}</span>}
           </div>
           <p className="mt-1.5 max-w-3xl text-sm leading-6 text-zinc-600">{provider.description}</p>
@@ -125,9 +126,9 @@ function ProviderCard({ provider }: { provider: RoutingProvider }) {
   );
 }
 
-export function ProviderList({ providers }: { providers: RoutingProvider[] }) {
+export function ProviderList({ providers, defaultProviderId }: { providers: RoutingProvider[]; defaultProviderId?: string }) {
   return <div className="space-y-4">
-    {providers.map((provider) => <ProviderCard key={provider.id} provider={provider} />)}
+    {providers.map((provider) => <ProviderCard key={provider.id} provider={provider} isDefault={provider.id === defaultProviderId} />)}
     {!providers.length && <p className="rounded-lg border border-zinc-200 bg-white p-8 text-center text-sm text-zinc-500">No providers are available on your plan yet.</p>}
   </div>;
 }

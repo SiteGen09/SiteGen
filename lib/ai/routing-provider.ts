@@ -121,3 +121,27 @@ function opaqueSourceSuffix(value: string): string {
   }
   return (hash >>> 0).toString(36).padStart(7, '0');
 }
+
+/** A provider a consumer can pick as their default: internal id plus public alias. */
+export interface SelectableRoutingProvider {
+  /** Internal identity, such as `relay.fast`. Stored, never shown. */
+  id: string;
+  /** Public id, such as `provider-a`. What forms post. */
+  publicId: string;
+  label: string;
+}
+
+/** The distinct providers behind `sources`, sorted by their public label. */
+export function selectableRoutingProviders(
+  sources: readonly { id: string; label: string }[],
+  names?: RoutingProviderNames,
+): SelectableRoutingProvider[] {
+  const providers = new Map<string, SelectableRoutingProvider>();
+  for (const source of sources) {
+    const internal = routingProviderIdentity({ sourceId: source.id, sourceLabel: source.label });
+    if (providers.has(internal.id)) continue;
+    const alias = publicRoutingProviderIdentityFromIdentity(internal, names);
+    providers.set(internal.id, { id: internal.id, publicId: alias.id, label: alias.label });
+  }
+  return [...providers.values()].sort((a, b) => a.label.localeCompare(b.label));
+}

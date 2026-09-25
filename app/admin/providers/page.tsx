@@ -3,7 +3,7 @@ import { listProviderPricing, type ProviderPricing } from '@/lib/admin/provider-
 import { requireAdmin } from '@/lib/api/admin';
 import { sql } from '@/lib/db';
 import { Card, PageTitle } from '../_components/ui';
-import { ProviderForm } from './provider-form';
+import { DefaultProviderForm, ProviderForm } from './provider-form';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,7 +13,7 @@ async function loadProviders(): Promise<ProviderPricing[] | null> {
     return await listProviderPricing(sql);
   } catch (err) {
     const code = (err as { code?: string }).code;
-    if (code === '42P01' || code === '42883') return null;
+    if (code === '42P01' || code === '42883' || code === '42703') return null;
     throw err;
   }
 }
@@ -30,8 +30,9 @@ export default async function ProvidersPage() {
       {providers === null ? (
         <Card>
           <p className="text-sm text-amber-300">
-            The database is missing the provider settings table. Apply migration
-            20260925120000_routing_provider_settings.sql, then reload.
+            The database is missing the provider settings. Apply migrations
+            20260925120000_routing_provider_settings.sql and
+            20260925130000_default_routing_provider.sql, then reload.
           </p>
         </Card>
       ) : (
@@ -45,6 +46,11 @@ export default async function ProvidersPage() {
             </Link>
             .
           </p>
+          {providers.length > 0 && (
+            <Card>
+              <DefaultProviderForm providers={providers} />
+            </Card>
+          )}
           {providers.map((provider) => (
             <Card key={provider.id}>
               <ProviderForm provider={provider} />

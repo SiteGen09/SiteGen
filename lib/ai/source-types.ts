@@ -62,8 +62,17 @@ export function routingKey(family: Family, modality: Modality): string {
   return `${family}:${modality}`;
 }
 
-/** Keyed by {@link routingKey}, valued by source id. */
+/**
+ * Keyed by {@link routingKey}, valued by source id. The one other key,
+ * {@link PROVIDER_PREFERENCE_KEY}, holds the user's default provider.
+ */
 export type RoutingPreferences = ReadonlyMap<string, string>;
+
+/**
+ * The user's default routing provider (an internal identity such as
+ * `relay.fast`). Cannot collide with {@link routingKey}, which always has a colon.
+ */
+export const PROVIDER_PREFERENCE_KEY = 'provider';
 
 /** The task a channel of this modality carries. */
 export function taskForModality(modality: Modality): string {

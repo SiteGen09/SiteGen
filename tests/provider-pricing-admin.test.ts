@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { sql } from '@/lib/db';
 import { listProviderPricing } from '@/lib/admin/provider-pricing';
-import { releaseProviderPricingAction, saveProviderAction } from '@/app/admin/providers/actions';
+import { releaseProviderPricingAction, saveProviderAction, setDefaultProviderAction } from '@/app/admin/providers/actions';
 import { updateSourceAction } from '@/app/admin/sources/actions';
 
 // Writes committed rows, so it only ever runs against the local database.
@@ -138,6 +138,25 @@ describe.skipIf(!local)('provider pricing', () => {
     expect((await provider()).managedMultiplier).toBeNull();
     await sql`UPDATE sources SET credit_multiplier = 1.5 WHERE id = ${late}`;
     expect(await multipliers()).toEqual({ [cheap]: 1.3, [dear]: 1.3, [late]: 1.5 });
+  });
+
+  it('keeps exactly one default provider and can clear it', async () => {
+    const defaults = async () =>
+      (await sql`SELECT id FROM routing_providers WHERE is_default ORDER BY id`).map((row) => row.id);
+    const previous = await defaults();
+    try {
+      expect((await setDefaultProviderAction(idle, form({}))).status).toBe('success');
+      expect(await defaults()).toEqual([host]);
+      expect((await provider()).isDefault).toBe(true);
+      expect((await setDefaultProviderAction(idle, form({ id: 'no-such-provider' }))).status).toBe('error');
+      expect(await defaults()).toEqual([host]);
+      await expect(sql`UPDATE routing_providers SET is_default = true WHERE id = 'relay.fast'`).rejects.toThrow();
+      expect((await setDefaultProviderAction(idle, form({ id: '' }))).status).toBe('success');
+      expect(await defaults()).toEqual([]);
+    } finally {
+      await setDefaultProviderAction(idle, form({ id: previous[0] ?? '' }));
+    }
+    expect(await defaults()).toEqual(previous);
   });
 
   it('keeps provider settings out of client roles and resolves importer-named sources', async () => {

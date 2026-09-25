@@ -13,7 +13,11 @@ import {
   INPUT_CLASS,
   LABEL_CLASS,
 } from '../_components/action-state';
-import { releaseProviderPricingAction, saveProviderAction } from './actions';
+import {
+  releaseProviderPricingAction,
+  saveProviderAction,
+  setDefaultProviderAction,
+} from './actions';
 
 function times(value: string | number): string {
   return '×' + Number(value).toFixed(2);
@@ -39,7 +43,14 @@ export function ProviderForm({ provider }: { provider: ProviderPricing }) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="text-base font-semibold text-zinc-50">{name}</h2>
+        <h2 className="text-base font-semibold text-zinc-50">
+          {name}
+          {provider.isDefault && (
+            <span className="ml-2 rounded bg-indigo-500/15 px-2 py-0.5 text-xs font-normal text-indigo-300">
+              Default
+            </span>
+          )}
+        </h2>
         <span className="text-xs text-zinc-500">
           {provider.id} · {provider.modelCount} {provider.modelCount === 1 ? 'model' : 'models'} ·{' '}
           {current}
@@ -122,5 +133,37 @@ export function ProviderForm({ provider }: { provider: ProviderPricing }) {
         </p>
       )}
     </div>
+  );
+}
+
+export function DefaultProviderForm({ providers }: { providers: ProviderPricing[] }) {
+  const [state, action, pending] = useActionState(setDefaultProviderAction, IDLE_ACTION);
+  const current = providers.find((provider) => provider.isDefault)?.id ?? '';
+  return (
+    <form action={action} className="space-y-3">
+      <label className={LABEL_CLASS}>
+        Default provider
+        <select key={current} name="id" defaultValue={current} className={INPUT_CLASS + ' mt-1'}>
+          <option value="">None — use each source’s Default flag</option>
+          {providers.map((provider) => (
+            <option key={provider.id} value={provider.id}>
+              {provider.label ?? provider.defaultLabel} ({provider.id})
+            </option>
+          ))}
+        </select>
+        <span className="mt-1 block font-normal text-zinc-500">
+          Auto starts every chat, image and video request on this provider when it serves the
+          model, then falls back to the others. A user’s own routing choice still wins.
+        </span>
+      </label>
+      <button className={BUTTON_CLASS} disabled={pending}>
+        {pending ? 'Saving…' : 'Save default'}
+      </button>
+      {state.status !== 'idle' && (
+        <p role="status" className="text-sm">
+          {state.message}
+        </p>
+      )}
+    </form>
   );
 }

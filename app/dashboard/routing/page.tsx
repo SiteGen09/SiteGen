@@ -1,14 +1,20 @@
 import Link from 'next/link';
-import { FAMILIES, MODALITIES, MODALITY_LABELS, routingKey } from '@/lib/ai/source-types';
+import { FAMILIES, MODALITIES, MODALITY_LABELS, PROVIDER_PREFERENCE_KEY, routingKey } from '@/lib/ai/source-types';
 import { listSources, loadRoutingPreferences } from '@/lib/ai/sources';
 import { planMeetsMinimum } from '@/lib/billing/plans';
 import { getBalance, getEntitlement, listModelCatalog, listRoutingPriceHistory } from '@/lib/dashboard/queries';
 import { groupRoutingProviders } from '@/lib/dashboard/routing-catalog';
-import { publicRoutingSourceId } from '@/lib/ai/routing-provider';
-import { loadRoutingProviderNames } from '@/lib/ai/routing-provider-names';
+import {
+  publicRoutingProviderLabel,
+  publicRoutingSourceId,
+  routingProviderIdentity,
+  selectableRoutingProviders,
+} from '@/lib/ai/routing-provider';
+import { loadDefaultRoutingProvider, loadRoutingProviderNames } from '@/lib/ai/routing-provider-names';
 import type { RoutingPriceHistoryEntry } from '@/lib/dashboard/routing-history';
 import { requireUser } from '@/lib/dashboard/session';
 import { Card, PageHeader, Table, EmptyRow, formatCredits, formatTimestamp } from '../ui';
+import { DefaultProviderPicker } from './default-provider-picker';
 import { SourcePicker } from './source-picker';
 import { ProviderList } from './provider-list';
 
@@ -25,27 +31,44 @@ export default async function RoutingPage({ searchParams }: { searchParams: Prom
   const user = await requireUser();
   const params = await searchParams;
   const tab = params.tab === 'history' ? 'history' : 'channels';
-  const [balance, entitlement, sources, preferences, catalog, providerNames] = await Promise.all([
+  const [balance, entitlement, sources, preferences, catalog, providerNames, defaultProvider] = await Promise.all([
     getBalance(), getEntitlement(user.id), listSources(), loadRoutingPreferences(user.id), listModelCatalog(),
-    loadRoutingProviderNames(),
+    loadRoutingProviderNames(), loadDefaultRoutingProvider(),
   ]);
   const models = catalog.filter((model) => !model.isByok && planMeetsMinimum(entitlement.planKey, model.minPlan));
   const providers = groupRoutingProviders(models, providerNames);
   const sourceProviders = new Map(providers.flatMap((provider) => provider.sourceIds.map((id) => [id, provider] as const)));
   const priceHistory = tab === 'history' ? await listRoutingPriceHistory(models) : [];
+  const providerChoices = selectableRoutingProviders(sources.filter((source) =>
+    source.status !== 'off' && planMeetsMinimum(entitlement.planKey, source.min_plan) &&
+    sourceProviders.has(publicRoutingSourceId(source.id))), providerNames);
+  const userProvider = providerChoices.find((provider) => provider.id === preferences.get(PROVIDER_PREFERENCE_KEY));
+  // Auto starts on the user's own default provider, else the platform's.
+  const startProvider = userProvider?.id ?? defaultProvider;
+  const startLabel = startProvider ? publicRoutingProviderLabel(startProvider, providerNames) : null;
   const pairs = FAMILIES.flatMap((family) => MODALITIES.flatMap((modality) => {
     const eligible = sources.filter((source) => source.family === family && source.modality === modality &&
       source.status !== 'off' &&
       planMeetsMinimum(entitlement.planKey, source.min_plan) &&
       sourceProviders.has(publicRoutingSourceId(source.id)),
-    ).map((source) => ({
+    );
+    // Mirrors the dispatcher: the user's provider, then the platform's, then source defaults.
+    const on = (provider: string | null | undefined) => eligible.filter((source) =>
+      provider && routingProviderIdentity({ sourceId: source.id, sourceLabel: source.label }).id === provider);
+    const onDefault = [on(userProvider?.id), on(defaultProvider)].find((list) => list.length) ?? [];
+    const autoStart = onDefault.find((source) => source.is_default) ?? onDefault[0];
+    return eligible.length ? [{ family, modality, eligible: eligible.map((source) => ({
       ...source,
+      is_default: autoStart ? source === autoStart : source.is_default,
       id: publicRoutingSourceId(source.id),
       label: sourceProviders.get(publicRoutingSourceId(source.id))!.label,
-    }));
-    return eligible.length ? [{ family, modality, eligible }] : [];
+    })) }] : [];
   }));
   const manualCount = pairs.filter(({ family, modality }) => preferences.has(routingKey(family, modality))).length;
+  const summary = [
+    startLabel ? 'Starts with ' + startLabel : 'Auto',
+    manualCount ? manualCount + ' custom ' + (manualCount === 1 ? 'choice' : 'choices') : 'Auto for all models',
+  ].join(' · ');
 
   return <>
     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -58,12 +81,18 @@ export default async function RoutingPage({ searchParams }: { searchParams: Prom
     <details className="mb-6 rounded-xl border border-zinc-200 bg-white">
       <summary className="cursor-pointer px-5 py-4 text-sm font-medium text-zinc-900">
         Routing preferences
-        <span className="ml-3 font-normal text-zinc-500">{manualCount ? manualCount + ' custom ' + (manualCount === 1 ? 'choice' : 'choices') : 'Auto for all models'}</span>
+        <span className="ml-3 font-normal text-zinc-500">{summary}</span>
       </summary>
       <div className="border-t border-zinc-200 p-4 sm:p-5">
         <p className="mb-4 max-w-3xl text-sm leading-6 text-zinc-600">
           Auto starts with the default provider and tries available backups if it cannot respond. You’re charged at the rate of the provider and model that answer.
         </p>
+        <DefaultProviderPicker
+          key={userProvider?.publicId ?? ''}
+          providers={providerChoices}
+          selected={userProvider?.publicId ?? ''}
+          platformLabel={defaultProvider ? publicRoutingProviderLabel(defaultProvider, providerNames) : null}
+        />
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {pairs.map(({ family, modality, eligible }) => {
             const savedInternal = preferences.get(routingKey(family, modality)) ?? '';
@@ -89,7 +118,7 @@ export default async function RoutingPage({ searchParams }: { searchParams: Prom
 
     {tab === 'channels' ? <>
       <p className="mb-4 text-sm text-zinc-500">{providers.length} {providers.length === 1 ? 'provider' : 'providers'} · Open a provider to see its configured models and prices.</p>
-      <ProviderList providers={providers} />
+      <ProviderList providers={providers} defaultProviderId={startProvider ? providerChoices.find((provider) => provider.id === startProvider)?.publicId : undefined} />
     </> : <>
       <p className="mb-4 text-sm leading-6 text-zinc-500">
         Recent recorded model-rate and price-multiplier changes. Model rates are shown in USD before the provider’s multiplier; current prices in credits are inside each channel.

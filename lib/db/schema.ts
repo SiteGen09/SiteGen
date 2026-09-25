@@ -232,6 +232,7 @@ export const routingProviders = pgTable('routing_providers', {
   id: text('id').primaryKey(),
   label: text('label'),
   creditMultiplier: numeric('credit_multiplier', { precision: 10, scale: 2 }),
+  isDefault: boolean('is_default').notNull().default(false),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

@@ -149,3 +149,54 @@ export async function releaseProviderPricingAction(
     };
   }
 }
+
+/**
+ * Picks the provider Auto routing starts with, ahead of each source's own
+ * Default flag. An empty id clears it, leaving the per-source defaults.
+ */
+export async function setDefaultProviderAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  try {
+    const ctx = await requireAdmin();
+    const id = z.string().max(255).parse(formData.get('id') ?? '');
+    let name = '';
+    await sql.begin(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(20260921)`;
+      if (id) {
+        const provider = (await listProviderPricing(tx, id))[0];
+        if (!provider) throw new ApiError('not_found', 'provider not found', 404);
+        name = provider.label ?? provider.defaultLabel;
+      }
+      const cleared = await tx`SELECT * FROM routing_providers WHERE is_default AND id <> ${id} FOR UPDATE`;
+      for (const before of cleared) {
+        const after = (
+          await tx`UPDATE routing_providers SET is_default = false, updated_at = now()
+            WHERE id = ${before.id} RETURNING *`
+        )[0];
+        await writeAudit(ctx.user.id, 'routing_provider.update', 'routing_provider:' + before.id, before, after, tx);
+      }
+      if (!id) return;
+      const before = (await tx`SELECT * FROM routing_providers WHERE id = ${id} FOR UPDATE`)[0] ?? null;
+      if (before?.is_default) return;
+      const after = (
+        await tx`
+          INSERT INTO routing_providers (id, is_default) VALUES (${id}, true)
+          ON CONFLICT (id) DO UPDATE SET is_default = true, updated_at = now()
+          RETURNING *`
+      )[0];
+      await writeAudit(ctx.user.id, 'routing_provider.update', 'routing_provider:' + id, before, after, tx);
+    });
+    invalidate();
+    return {
+      status: 'success',
+      message: id ? `Auto now starts with ${name}.` : 'Auto now follows each source’s Default flag.',
+    };
+  } catch (err) {
+    return {
+      status: 'error',
+      message: err instanceof ApiError ? err.message : 'Could not set the default provider',
+    };
+  }
+}

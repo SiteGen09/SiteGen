@@ -2,11 +2,12 @@ import { z } from 'zod';
 
 import { createServiceClient } from '@/lib/supabase/service';
 
-import { FAMILIES, MODALITIES, routingKey } from './source-types';
+import { FAMILIES, MODALITIES, PROVIDER_PREFERENCE_KEY, routingKey } from './source-types';
 export {
   FAMILIES,
   MODALITIES,
   MODALITY_LABELS,
+  PROVIDER_PREFERENCE_KEY,
   routingKey,
   taskForModality,
   type Family,
@@ -37,11 +38,16 @@ export const SOURCE_COLUMNS =
  * images and video, and those are independent choices.
  */
 export async function loadRoutingPreferences(userId: string): Promise<Map<string, string>> {
-  const { data, error } = await createServiceClient()
-    .from('user_routing_preferences')
-    .select('family, modality, source_id')
-    .eq('user_id', userId);
+  const service = createServiceClient();
+  const [{ data, error }, provider] = await Promise.all([
+    service.from('user_routing_preferences').select('family, modality, source_id').eq('user_id', userId),
+    service.from('user_routing_provider').select('provider_id').eq('user_id', userId).maybeSingle(),
+  ]);
   if (error) throw new Error(`routing preferences lookup failed: ${error.message}`);
+  // Before the migration that creates the table, nobody has a default provider.
+  if (provider.error && !['42P01', 'PGRST205'].includes(provider.error.code))
+    throw new Error(`routing provider lookup failed: ${provider.error.message}`);
+  const providerId = z.object({ provider_id: z.string() }).nullish().parse(provider.data)?.provider_id;
   const rows = z
     .array(
       z.object({
@@ -51,7 +57,9 @@ export async function loadRoutingPreferences(userId: string): Promise<Map<string
       }),
     )
     .parse(data ?? []);
-  return new Map(rows.map((row) => [routingKey(row.family, row.modality), row.source_id]));
+  const preferences = new Map(rows.map((row) => [routingKey(row.family, row.modality), row.source_id]));
+  if (providerId) preferences.set(PROVIDER_PREFERENCE_KEY, providerId);
+  return preferences;
 }
 
 export async function listSources(): Promise<Source[]> {

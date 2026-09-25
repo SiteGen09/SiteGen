@@ -3,6 +3,7 @@ import { billingPolicySchema, policyRates, type BillingPolicy } from '@/lib/ai/b
 import { PROVIDERS, type Provider } from '@/lib/ai/providers';
 
 import {
+  PROVIDER_PREFERENCE_KEY,
   routingKey,
   sourceSchema,
   SOURCE_COLUMNS,
@@ -12,6 +13,8 @@ import {
 import type { Family } from '@/lib/ai/source-types';
 import { MAX_CHAIN_DEPTH, type ChannelRow } from '@/lib/ai/fallback';
 import type { TaskAlias } from '@/lib/ai/provider';
+import { routingProviderIdentity } from '@/lib/ai/routing-provider';
+import { loadDefaultRoutingProvider } from '@/lib/ai/routing-provider-names';
 import { planMeetsMinimum } from '@/lib/billing/plans';
 import { createServiceClient } from '@/lib/supabase/service';
 
@@ -135,6 +138,35 @@ function eligibleForPlan(
   );
 }
 
+function onProvider(row: ChannelDbRow, providerId: string | null): boolean {
+  return (
+    providerId !== null &&
+    routingProviderIdentity({
+      baseUrl: row.base_url,
+      provider: row.provider,
+      sourceId: row.source_id,
+      sourceLabel: row.sources?.label,
+    }).id === providerId
+  );
+}
+
+/** Providers Auto starts on, strongest first: the user's own default, then the administrator's. */
+function startProviders(preferences: RoutingPreferences, defaultProvider: string | null): (string | null)[] {
+  return [preferences.get(PROVIDER_PREFERENCE_KEY) ?? null, defaultProvider];
+}
+
+/**
+ * Auto order: the start providers in turn, then each source's own Default
+ * flag, then {@link rankRows}. Sorting is stable, so ranking decides within
+ * each group.
+ */
+function autoOrder(rows: ChannelDbRow[], starts: (string | null)[]): ChannelDbRow[] {
+  const weight = (row: ChannelDbRow) =>
+    starts.reduce((sum, start, index) => sum + (onProvider(row, start) ? 2 ** (starts.length - index + 1) : 0), 0) +
+    (row.sources?.is_default ? 1 : 0);
+  return rankRows(rows).sort((a, b) => weight(b) - weight(a));
+}
+
 /**
  * A preference is a best effort: missing model coverage must not become a 404.
  *
@@ -146,7 +178,9 @@ function preferredOf(
   rows: ChannelDbRow[],
   preferences: RoutingPreferences,
   modality: Modality,
+  defaultProvider: string | null,
 ): ChannelRow | null {
+  const auto = autoOrder(rows, startProviders(preferences, defaultProvider))[0];
   return (
     bestOf(
       rows.filter(
@@ -154,9 +188,7 @@ function preferredOf(
           row.sources !== null &&
           preferences.get(routingKey(row.sources.family, modality)) === row.source_id,
       ),
-    ) ??
-    bestOf(rows.filter((row) => row.sources?.is_default === true)) ??
-    bestOf(rows)
+    ) ?? (auto ? toChannelRow(auto) : null)
   );
 }
 
@@ -236,7 +268,11 @@ export async function selectChannelByModel(
   planKey: string,
   preferences: RoutingPreferences = new Map(),
 ): Promise<ChannelRow | null> {
-  return preferredOf(await modelChannels(publicModelId, planKey), preferences, 'chat');
+  const [rows, defaultProvider] = await Promise.all([
+    modelChannels(publicModelId, planKey),
+    loadDefaultRoutingProvider(),
+  ]);
+  return preferredOf(rows, preferences, 'chat', defaultProvider);
 }
 
 async function modelChannels(publicModelId: string, planKey: string): Promise<ChannelDbRow[]> {
@@ -268,15 +304,20 @@ export async function selectChatRoute(
   planKey: string,
   preferences: RoutingPreferences = new Map(),
 ): Promise<{ start: ChannelRow; holdChannels?: ChannelRow[]; resolve: (id: string) => Promise<ChannelRow | null> } | null> {
-  const eligible = await modelChannels(publicModelId, planKey);
-  const selected = preferredOf(eligible, preferences, 'chat');
+  const [eligible, defaultProvider] = await Promise.all([
+    modelChannels(publicModelId, planKey),
+    loadDefaultRoutingProvider(),
+  ]);
+  const selected = preferredOf(eligible, preferences, 'chat', defaultProvider);
   if (!selected) return null;
   const source = eligible.find((row) => row.id === selected.id)!.sources!;
   if (preferences.has(routingKey(source.family, 'chat'))) {
     return { start: selected, resolve: (id) => resolveChannel(id, planKey) };
   }
-  const rest = rankRows(eligible.filter((row) => row.id !== selected.id && row.sources?.family === source.family))
-    .sort((a, b) => Number(b.sources?.is_default) - Number(a.sources?.is_default));
+  const rest = autoOrder(
+    eligible.filter((row) => row.id !== selected.id && row.sources?.family === source.family),
+    startProviders(preferences, defaultProvider),
+  );
   const ordered = [selected, ...rest.map(toChannelRow)];
   const channels = new Map(ordered.map((row) => [row.id, {
     ...row,
@@ -313,14 +354,19 @@ export interface ModelOption {
  * eligibility and cascade as the dispatch path. Family is model identity, so
  * any row serving a name carries the right one.
  */
-function optionsOf(rows: ChannelDbRow[], modality: Modality, preferences: RoutingPreferences): ModelOption[] {
+function optionsOf(
+  rows: ChannelDbRow[],
+  modality: Modality,
+  preferences: RoutingPreferences,
+  defaultProvider: string | null,
+): ModelOption[] {
   return [
     ...new Set(rows.flatMap((row) => (row.public_model_id === null ? [] : [row.public_model_id]))),
   ]
     .sort()
     .flatMap((id) => {
       const serving = rows.filter((row) => row.public_model_id === id);
-      if (preferredOf(serving, preferences, modality) === null) return [];
+      if (preferredOf(serving, preferences, modality, defaultProvider) === null) return [];
       return [{ id, family: serving.find((row) => row.sources !== null)?.sources?.family ?? 'other' }];
     });
 }
@@ -348,7 +394,7 @@ export async function listPublicModelOptions(
     .parse(data ?? [])
     .filter((row) => eligibleForPlan(row, planKey));
   // Several sources can serve the same public name.
-  return optionsOf(rows, 'chat', preferences);
+  return optionsOf(rows, 'chat', preferences, await loadDefaultRoutingProvider());
 }
 
 /**
@@ -428,7 +474,8 @@ export async function selectMediaChannel(
     .filter((row) => !row.is_byok && row.sources?.modality === kind &&
       row.request_price_usd !== null && eligibleForPlan(row, planKey, 'request'));
 
-  const best = preferredOf(eligible, preferences, kind);
+  const defaultProvider = await loadDefaultRoutingProvider();
+  const best = preferredOf(eligible, preferences, kind, defaultProvider);
   if (best === null) return null;
 
   const row = eligible.find((candidate) => candidate.id === best.id);
@@ -438,10 +485,9 @@ export async function selectMediaChannel(
 
   const selected = toMediaChannel(row);
   if (!preferences.has(routingKey(row.sources!.family, kind))) {
-    selected.fallbackChannels = rankRows(eligible.filter((candidate) =>
+    selected.fallbackChannels = autoOrder(eligible.filter((candidate) =>
       candidate.id !== row.id && candidate.sources?.family === row.sources!.family,
-    )).sort((a, b) => Number(b.sources?.is_default) - Number(a.sources?.is_default))
-      .slice(0, MAX_CHAIN_DEPTH - 1).map(toMediaChannel);
+    ), startProviders(preferences, defaultProvider)).slice(0, MAX_CHAIN_DEPTH - 1).map(toMediaChannel);
   }
   return selected;
 }
@@ -491,5 +537,5 @@ export async function listMediaModelOptions(
     .parse(data ?? [])
     .filter((row) => eligibleForPlan(row, planKey, 'request') && row.request_price_usd !== null);
 
-  return optionsOf(rows, kind, preferences);
+  return optionsOf(rows, kind, preferences, await loadDefaultRoutingProvider());
 }
