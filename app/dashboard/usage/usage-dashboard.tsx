@@ -9,7 +9,7 @@ import type {
   LedgerRow,
   UsageEventRow,
 } from "@/lib/dashboard/queries";
-import { formatCredits, formatTimestamp } from "../ui";
+import { formatCredits, formatCreditsUsd, formatTimestamp } from "../ui";
 import {
   ALL,
   DEFAULT_PAGE_SIZE,
@@ -53,6 +53,7 @@ interface UsageDashboardProps {
 interface TrendPoint {
   label: string;
   tokens: number;
+  /** Credits charged; shown as USD. */
   cost: number;
 }
 
@@ -62,11 +63,6 @@ interface TopologyPosition {
 }
 
 const NUMBER_FORMAT = new Intl.NumberFormat("en-US");
-const CURRENCY_FORMAT = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  maximumFractionDigits: 4,
-});
 const COMPACT_NUMBER_FORMAT = new Intl.NumberFormat("en-US", {
   notation: "compact",
   maximumFractionDigits: 1,
@@ -97,10 +93,6 @@ function number(value: number): string {
   return NUMBER_FORMAT.format(Math.max(0, Math.round(value)));
 }
 
-function currency(value: number): string {
-  return CURRENCY_FORMAT.format(Math.max(0, value));
-}
-
 function compact(value: number): string {
   return COMPACT_NUMBER_FORMAT.format(Math.max(0, value));
 }
@@ -113,8 +105,8 @@ function eventTokens(event: UsageEventRow): number {
   );
 }
 
-function eventCost(event: UsageEventRow): number {
-  return event.cost_usd ?? 0;
+function eventCredits(event: UsageEventRow): number {
+  return event.credits_charged ?? 0;
 }
 
 function periodStart(period: Period, now: number): number {
@@ -211,7 +203,7 @@ function buildTrend(
     const point = points[index];
     if (point === undefined) continue;
     point.tokens += eventTokens(event);
-    point.cost += eventCost(event);
+    point.cost += eventCredits(event);
   }
 
   return points;
@@ -788,7 +780,7 @@ function TrendChart({
             );
           })}
           <text x="4" y={top + 4} className="usage-chart-axis">
-            {mode === "tokens" ? compact(max) : currency(max)}
+            {mode === "tokens" ? compact(max) : formatCreditsUsd(max)}
           </text>
           <text x="4" y={top + chartHeight + 4} className="usage-chart-axis">
             0
@@ -815,7 +807,7 @@ function TrendChart({
                   {points[index]?.label}:{" "}
                   {mode === "tokens"
                     ? number(points[index]?.tokens ?? 0)
-                    : currency(points[index]?.cost ?? 0)}
+                    : formatCreditsUsd(points[index]?.cost ?? 0)}
                 </title>
               </circle>
             ))}
@@ -991,9 +983,16 @@ function DetailsView({
                         </span>
                       </td>
                       <td>
-                        {event.credits_charged === null
-                          ? "—"
-                          : formatCredits(event.credits_charged)}
+                        {event.credits_charged === null ? (
+                          "—"
+                        ) : (
+                          <>
+                            {formatCredits(event.credits_charged)}
+                            <span className="usage-table-subtext">
+                              {formatCreditsUsd(event.credits_charged)}
+                            </span>
+                          </>
+                        )}
                       </td>
                       <td className="usage-nowrap">
                         {formatTimestamp(event.created_at)}
@@ -1065,6 +1064,10 @@ function DetailsView({
                     >
                       {entry.credits > 0 ? "+" : ""}
                       {formatCredits(entry.credits)}
+                      <span className="usage-table-subtext">
+                        {entry.credits > 0 ? "+" : ""}
+                        {formatCreditsUsd(entry.credits)}
+                      </span>
                     </td>
                     <td className="usage-mono">{entry.request_id}</td>
                     <td>
@@ -1157,8 +1160,8 @@ export default function UsageDashboard({
       (total, event) => total + (event.output_tokens ?? 0),
       0,
     );
-    const providerCost = visibleEvents.reduce(
-      (total, event) => total + eventCost(event),
+    const creditsSpent = visibleEvents.reduce(
+      (total, event) => total + eventCredits(event),
       0,
     );
     return {
@@ -1166,7 +1169,7 @@ export default function UsageDashboard({
       inputTokens,
       cachedTokens,
       outputTokens,
-      providerCost,
+      creditsSpent,
     };
   }, [visibleEvents]);
 
@@ -1228,9 +1231,9 @@ export default function UsageDashboard({
                 accent="green"
               />
               <KpiCard
-                label="Provider cost"
-                value={currency(summary.providerCost)}
-                hint="Recorded from request pricing"
+                label="Cost"
+                value={formatCreditsUsd(summary.creditsSpent)}
+                hint={`${formatCredits(summary.creditsSpent)} credits charged`}
                 accent="yellow"
               />
             </div>

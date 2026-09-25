@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { MODALITY_LABELS, type Modality } from '@/lib/ai/source-types';
 import type { RoutingProvider } from '@/lib/dashboard/routing-catalog';
 import { BillingDetails } from '@/app/prices/billing-details';
-import { formatCredits, StatusBadge } from '../ui';
+import { formatCredits, formatCreditsUsd, StatusBadge } from '../ui';
 
 const PAGE_SIZE = 10;
 
@@ -101,11 +101,16 @@ function ProviderCard({ provider, isDefault }: { provider: RoutingProvider; isDe
                     {formatMultiplier(model.creditMultiplier)}
                   </td>
                   {[model.inputCreditsPerMTok, model.outputCreditsPerMTok, model.cachedCreditsPerMTok].map((price, index) =>
-                    <td key={index} className="p-4 text-right align-top tabular-nums text-zinc-700">{model.requestCredits === null ? formatCredits(price) : '—'}</td>,
+                    <td key={index} className="p-4 text-right align-top tabular-nums text-zinc-700">
+                      {model.requestCredits === null ? <>{formatCredits(price)}<span className="block text-xs text-zinc-400">{formatCreditsUsd(price)}</span></> : '—'}
+                    </td>,
                   )}
                   <td className="whitespace-nowrap p-4 text-right align-top tabular-nums text-zinc-700">
                     {model.requestCredits === null ? '—' :
-                      (model.requestPriceKind === 'up_to' ? 'Up to ' : model.requestPriceKind === 'from' ? 'From ' : '') + formatCredits(model.requestCredits)}
+                      <>
+                        {(model.requestPriceKind === 'up_to' ? 'Up to ' : model.requestPriceKind === 'from' ? 'From ' : '') + formatCredits(model.requestCredits)}
+                        <span className="block text-xs text-zinc-400">{formatCreditsUsd(model.requestCredits)}</span>
+                      </>}
                   </td>
                 </tr>
               ))}

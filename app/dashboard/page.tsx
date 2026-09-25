@@ -8,7 +8,7 @@ import {
   Stat,
   StatusBadge,
   Table,
-  formatCredits,
+  formatCredits, formatCreditsUsd,
   formatTimestamp,
 } from './ui';
 
@@ -25,17 +25,13 @@ export default async function OverviewPage() {
   ]);
 
   const plan = getPlans()[entitlement.planKey];
-  const usdValue = (balance * 0.0001).toLocaleString('en-US', {
-    style: 'currency',
-    currency: 'USD',
-  });
 
   return (
     <>
       <PageHeader title="Overview" description="Credits, plan and recent ledger activity." />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <Stat label="Credit balance" value={formatCredits(balance)} hint={`≈ ${usdValue}`} />
+        <Stat label="Credit balance" value={formatCredits(balance)} hint={`≈ ${formatCreditsUsd(balance)}`} />
         <Stat
           label="Plan"
           value={plan.label}
@@ -45,9 +41,10 @@ export default async function OverviewPage() {
           label="Monthly credits"
           value={formatCredits(entitlement.monthlyCredits)}
           hint={
-            entitlement.currentPeriodEnd === null
+            `≈ ${formatCreditsUsd(entitlement.monthlyCredits)} · ` +
+            (entitlement.currentPeriodEnd === null
               ? 'no active period'
-              : `renews ${formatTimestamp(entitlement.currentPeriodEnd)}`
+              : `renews ${formatTimestamp(entitlement.currentPeriodEnd)}`)
           }
         />
       </div>
@@ -78,6 +75,10 @@ export default async function OverviewPage() {
                 >
                   {entry.credits > 0 ? '+' : ''}
                   {formatCredits(entry.credits)}
+                  <span className="ml-2 text-xs text-zinc-500">
+                    {entry.credits > 0 ? '+' : ''}
+                    {formatCreditsUsd(entry.credits)}
+                  </span>
                 </td>
                 <td className="px-4 py-2.5 font-mono text-xs text-zinc-600">{entry.request_id}</td>
                 <td className="whitespace-nowrap px-4 py-2.5 text-zinc-600">

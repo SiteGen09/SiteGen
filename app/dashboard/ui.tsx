@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 
+import { CREDITS_PER_USD } from "@/lib/billing/catalog";
+
 import {
   ALL,
   PAGE_SIZE_OPTIONS,
@@ -163,6 +165,23 @@ export function formatTimestamp(value: string | null): string {
 
 export function formatCredits(value: number): string {
   return value.toLocaleString("en-US");
+}
+
+const CREDIT_USD_FORMAT = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 4,
+});
+
+/**
+ * What a number of credits is worth in USD. One credit is $0.0001, so amounts
+ * under a dollar keep four decimals: 6 credits reads `$0.0006`, not `$0.00`.
+ */
+export function formatCreditsUsd(credits: number): string {
+  const usd = Math.abs(credits) / CREDITS_PER_USD;
+  const text = usd >= 1 ? CREDIT_USD_FORMAT.format(Math.round(usd * 100) / 100) : CREDIT_USD_FORMAT.format(usd);
+  return credits < 0 ? `-${text}` : text;
 }
 
 /**

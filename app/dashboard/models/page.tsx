@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { BillingDetails } from '@/app/prices/billing-details';
 import { getPlans, type PlanKey } from '@/lib/billing/plans';
@@ -6,7 +7,7 @@ import { filterModelCatalog, type ModelCatalogFilters } from '@/lib/dashboard/mo
 import { FAMILIES, FAMILY_LABELS, MODALITIES } from '@/lib/ai/source-types';
 import { requireUser } from '@/lib/dashboard/session';
 import { clampPage, pageSlice, parsePage, parsePageSize } from '@/lib/ui/pagination';
-import { Card, EmptyRow, PageHeader, Pager, StatusBadge, Table, formatCredits } from '../ui';
+import { Card, EmptyRow, PageHeader, Pager, StatusBadge, Table, formatCredits, formatCreditsUsd } from '../ui';
 
 export const metadata = { title: 'Models — sitegen' };
 
@@ -39,8 +40,14 @@ function planNote(entry: ModelCatalogEntry, planKey: PlanKey): string {
   return `${plans[entry.minPlan].label} and up`;
 }
 
-function credits(entry: ModelCatalogEntry, value: number): string {
-  return entry.isByok ? 'Your key' : formatCredits(value);
+function credits(entry: ModelCatalogEntry, value: number, suffix = ''): ReactNode {
+  if (entry.isByok) return 'Your key';
+  return (
+    <>
+      {formatCredits(value) + suffix}
+      <span className="block text-xs text-zinc-400">{formatCreditsUsd(value) + suffix}</span>
+    </>
+  );
 }
 
 export default async function ModelsPage({
@@ -214,7 +221,7 @@ export default async function ModelsPage({
                 <StatusBadge status={model.status} />
               </td>
               <td className="whitespace-nowrap px-4 py-2.5 tabular-nums text-zinc-600">
-                {model.requestCredits === null ? credits(model, model.inputCreditsPerMTok) : credits(model, model.requestCredits) + ' / job'}
+                {model.requestCredits === null ? credits(model, model.inputCreditsPerMTok) : credits(model, model.requestCredits, ' / job')}
               </td>
               <td className="whitespace-nowrap px-4 py-2.5 tabular-nums text-zinc-600">
                 {credits(model, model.outputCreditsPerMTok)}

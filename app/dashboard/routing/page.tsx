@@ -13,7 +13,7 @@ import {
 import { loadDefaultRoutingProvider, loadRoutingProviderNames } from '@/lib/ai/routing-provider-names';
 import type { RoutingPriceHistoryEntry } from '@/lib/dashboard/routing-history';
 import { requireUser } from '@/lib/dashboard/session';
-import { Card, PageHeader, Table, EmptyRow, formatCredits, formatTimestamp } from '../ui';
+import { Card, PageHeader, Table, EmptyRow, formatCredits, formatCreditsUsd, formatTimestamp } from '../ui';
 import { DefaultProviderPicker } from './default-provider-picker';
 import { SourcePicker } from './source-picker';
 import { ProviderList } from './provider-list';
@@ -75,6 +75,7 @@ export default async function RoutingPage({ searchParams }: { searchParams: Prom
       <PageHeader title="Routing" description="Choose your providers and explore their models and prices." />
       <p className="rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-500">
         Available credits <span className="ml-1 font-semibold tabular-nums text-zinc-900">{formatCredits(balance)}</span>
+        <span className="ml-1 tabular-nums">(≈ {formatCreditsUsd(balance)})</span>
       </p>
     </div>
 

@@ -6,7 +6,7 @@ import { checkoutConfigured } from '@/lib/billing/purchases';
 import { formatUsd } from '@/lib/billing/catalog';
 import { getBalance, getEntitlement } from '@/lib/dashboard/queries';
 import { requireUser } from '@/lib/dashboard/session';
-import { Card, PageHeader, Stat, StatusBadge, formatCredits, formatTimestamp } from '../ui';
+import { Card, PageHeader, Stat, StatusBadge, formatCredits, formatCreditsUsd, formatTimestamp } from '../ui';
 import { CheckoutPoller } from './checkout-poller';
 import { PurchaseForm } from './purchase-form';
 import { TopupForm } from './topup-form';
@@ -26,14 +26,14 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
     {!allowed && <p role="alert" className="mb-6 rounded border border-amber-400 p-4 text-sm">Your account is frozen. AI usage and new purchases are disabled. Contact support to review your account. Your billing history remains available.</p>}
     {params.purchase && <CheckoutPoller purchaseId={params.purchase} />}
     <div className="mb-8 grid gap-4 sm:grid-cols-3">
-      <Stat label="Plan" value={plans[entitlement.planKey].label} hint={formatCredits(entitlement.monthlyCredits) + ' credits per paid period'} />
+      <Stat label="Plan" value={plans[entitlement.planKey].label} hint={formatCredits(entitlement.monthlyCredits) + ' credits (≈ ' + formatCreditsUsd(entitlement.monthlyCredits) + ') per paid period'} />
       <Card>
         <p className="text-xs text-zinc-500">Subscription</p>
         <div className="mt-2"><StatusBadge status={entitlement.status} /></div>
         <p className="mt-2 text-xs text-zinc-500">{entitlement.currentPeriodEnd ? 'Current period ends ' + formatTimestamp(entitlement.currentPeriodEnd) : 'No paid period'}</p>
         <a href="https://whop.com/@me/settings/orders/" className="mt-3 inline-block text-sm underline">Manage billing and cancellations</a>
       </Card>
-      <Stat label="Available credits" value={formatCredits(balance)} hint="$1 USD = 10,000 credits" />
+      <Stat label="Available credits" value={formatCredits(balance)} hint={`≈ ${formatCreditsUsd(balance)} · $1 USD = 10,000 credits`} />
     </div>
     <h2 className="mb-3 text-base font-semibold">Monthly plans</h2>
     <div className="grid gap-4 lg:grid-cols-3">
@@ -43,7 +43,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
         return <Card key={key} className={current ? 'border-zinc-900' : undefined}>
           <div className="flex flex-wrap items-baseline justify-between gap-2"><h3 className="font-semibold">{plan.label}</h3>{current && <span className="text-xs text-emerald-700">Current plan</span>}</div>
           <p className="mt-3 text-2xl font-semibold">{formatUsd(plan.priceCents)} <span className="text-sm font-normal text-zinc-500">USD / 30 days</span></p>
-          <p className="mt-2 text-sm">{formatCredits(plan.monthlyCredits)} credits per paid period</p>
+          <p className="mt-2 text-sm">{formatCredits(plan.monthlyCredits)} credits (≈ {formatCreditsUsd(plan.monthlyCredits)}) per paid period</p>
           <p className="mt-1 text-xs text-zinc-500">{plan.rateLimitRpm} requests / minute</p>
           {subscribed ? <a href="https://whop.com/@me/settings/orders/" className="mt-5 inline-block text-sm underline">Manage subscription on Whop</a> : <PurchaseForm plan={key} enabled={ready && Boolean(plan.whopPlanId)} />}
         </Card>;
