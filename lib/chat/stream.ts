@@ -46,6 +46,27 @@ export interface ChatStreamCompletion {
   finishReason: string;
   usage: NormalizedUsage;
   latencyMs: number;
+  /**
+   * Time to the first part only the upstream could have produced: the wait
+   * before anything is shown, including any reasoning the provider does not
+   * stream.
+   */
+  firstOutputMs: number;
+}
+
+/**
+ * Log fields that tell a slow model from a slow start: the wait for the first
+ * output, then the generation speed over the rest of the stream.
+ */
+export function streamTimingFields(done: ChatStreamCompletion): Record<string, number | null> {
+  const generatingMs = done.latencyMs - done.firstOutputMs;
+  return {
+    first_output_ms: done.firstOutputMs,
+    output_tokens: done.usage.outputTokens,
+    output_tokens_per_s: generatingMs > 0
+      ? Math.round((done.usage.outputTokens / generatingMs) * 10_000) / 10
+      : null,
+  };
 }
 
 /**
@@ -217,10 +238,10 @@ export async function streamChat(params: ChatStreamParams): Promise<ChatStreamHa
       primed.push(next.value);
       if (LOCAL_LIFECYCLE_PARTS[next.value.type] !== true) break;
     }
-    return { result, iterator, primed, state };
+    return { result, iterator, primed, state, firstOutputMs: Date.now() - startedAt };
   });
 
-  const { result, iterator, primed, state } = attempt.value;
+  const { result, iterator, primed, state, firstOutputMs } = attempt.value;
 
   const completion: Promise<ChatStreamCompletion> = (async () => {
     const [usage, finishReason, providerMetadata, text, toolCalls] = await Promise.all([
@@ -244,6 +265,7 @@ export async function streamChat(params: ChatStreamParams): Promise<ChatStreamHa
       finishReason,
       usage: normalizeUsage(usage, providerMetadata),
       latencyMs: Date.now() - startedAt,
+      firstOutputMs,
     };
   })();
 

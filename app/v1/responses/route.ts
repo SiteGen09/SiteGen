@@ -7,7 +7,7 @@ import { asUpstreamError } from '@/lib/api/upstream';
 import { openAiErrorFrom, openAiError, openAiErrorBody } from '@/lib/api/openai-errors';
 import { withIdempotency, type IdempotentResponse } from '@/lib/api/idempotency';
 import { generateChat } from '@/lib/chat/generate';
-import { streamChat, type ChatStreamHandle } from '@/lib/chat/stream';
+import { streamChat, streamTimingFields, type ChatStreamHandle } from '@/lib/chat/stream';
 import type { ChatMessage, ChatTool } from '@/lib/chat/request';
 import type { OpenAiToolCall } from '@/lib/chat/tools';
 import {
@@ -311,6 +311,7 @@ async function runResponseStream(ctx: ResponseContext): Promise<Response> {
       log.info('responses.stream_ok', {
         channel_id: handle.channel.id,
         latency_ms: done.latencyMs,
+        ...streamTimingFields(done),
         credits_charged: settled.creditsCharged,
       });
     } catch (err) {

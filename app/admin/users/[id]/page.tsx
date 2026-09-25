@@ -15,6 +15,7 @@ import { Badge, Card, EmptyRow, PageTitle, Stat, Td, Th } from '../../_component
 import { ProfitSummary, RecentRequests, UsageFilters, UsageTable } from '../../_components/usage-monitor';
 import { GrantForm } from '../_components/grant-form';
 import { SuspendForm } from '../_components/suspend-form';
+import { formatDuration } from '@/lib/ui/duration';
 
 export const dynamic = 'force-dynamic';
 
@@ -90,7 +91,7 @@ export default async function AdminUserPage({ params, searchParams }: {
         <Stat label="Requests" value={number(summary.requests)} detail={number(summary.successful_requests) + ' successful'} />
         <Stat label="Error rate" value={summary.requests === 0 ? '0%' : ((summary.errors / summary.requests) * 100).toFixed(1) + '%'} tone={summary.errors > 0 ? 'alert' : undefined} />
         <Stat label="Tokens" value={number(summary.input_tokens + summary.output_tokens + summary.cached_tokens)} />
-        <Stat label="p95 latency" value={summary.p95_latency_ms === null ? '—' : number(Math.round(summary.p95_latency_ms)) + ' ms'} />
+        <Stat label="p95 latency" value={summary.p95_latency_ms === null ? '—' : formatDuration(summary.p95_latency_ms)} />
       </div>
 
       <div className="space-y-5">

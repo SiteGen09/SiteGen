@@ -21,6 +21,7 @@ import {
   pageSlice,
   type PageSize,
 } from "@/lib/ui/pagination";
+import { formatDuration } from "@/lib/ui/duration";
 
 const PERIODS = [
   { value: "today", label: "Today" },
@@ -980,7 +981,7 @@ function DetailsView({
                       <td>
                         {event.latency_ms === null
                           ? "—"
-                          : `${number(event.latency_ms)} ms`}
+                          : formatDuration(event.latency_ms)}
                       </td>
                       <td>
                         <span

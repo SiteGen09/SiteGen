@@ -7,6 +7,7 @@ import {
 } from '@/lib/admin/usage-monitoring';
 import { clampPage, pageSlice, parsePage, parsePageSize } from '@/lib/ui/pagination';
 import { Card, EmptyRow, Pager, Stat, Td, Th } from './ui';
+import { formatDuration } from '@/lib/ui/duration';
 
 type Params = Record<string, string | undefined>;
 type Money = Pick<UsageTotals,
@@ -154,7 +155,7 @@ export function UsageTable({ rows, kind, total, params, basePath = '/admin' }: {
                   <span className={row.errors > 0 ? 'text-rose-300' : undefined}>{percent(row.errors, row.requests)}</span>
                   <div className="mt-1 text-xs text-zinc-500">{number(row.errors)} requests</div>
                 </Td>
-                <Td>{row.p95_latency_ms === null ? '—' : number(Math.round(row.p95_latency_ms)) + ' ms'}</Td>
+                <Td>{row.p95_latency_ms === null ? '—' : formatDuration(row.p95_latency_ms)}</Td>
               </tr>
             ))}
           </tbody>
@@ -321,7 +322,7 @@ export function RecentRequests({ rows, now, title = 'Live activity', showUser = 
                     <span className={'whitespace-nowrap ' + profitClass(row.revenue_usd - row.provider_cost_usd)}>{usd(row.revenue_usd - row.provider_cost_usd, true)}</span>
                   )}
                 </Td>
-                <Td><span className="whitespace-nowrap">{row.latency_ms === null ? '—' : number(row.latency_ms) + ' ms'}</span></Td>
+                <Td><span className="whitespace-nowrap">{row.latency_ms === null ? '—' : formatDuration(row.latency_ms)}</span></Td>
               </tr>
             ))}
           </tbody>

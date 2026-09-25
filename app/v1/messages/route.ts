@@ -11,7 +11,7 @@ import {
 } from '@/lib/api/anthropic-errors';
 import { withIdempotency, type IdempotentResponse } from '@/lib/api/idempotency';
 import { generateChat } from '@/lib/chat/generate';
-import { streamChat, type ChatStreamHandle } from '@/lib/chat/stream';
+import { streamChat, streamTimingFields, type ChatStreamHandle } from '@/lib/chat/stream';
 import type { ChatMessage, ChatTool } from '@/lib/chat/request';
 import {
   SSE_HEADERS,
@@ -281,6 +281,7 @@ async function runMessageStream(ctx: MessageContext): Promise<Response> {
       log.info('messages.stream_ok', {
         channel_id: handle.channel.id,
         latency_ms: done.latencyMs,
+        ...streamTimingFields(done),
         credits_charged: settled.creditsCharged,
       });
     } catch (err) {

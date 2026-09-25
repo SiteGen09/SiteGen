@@ -1,6 +1,7 @@
 import type { SourceUsage } from '@/lib/admin/metrics';
 import { clampPage, pageSlice, type PageSize } from '@/lib/ui/pagination';
 import { Card, EmptyRow, Pager, Td, Th } from '../_components/ui';
+import { formatDuration } from '@/lib/ui/duration';
 
 /**
  * Per-source load over the last 24 hours: how hard each upstream account was
@@ -80,7 +81,7 @@ export function SourceUsageTable({
                   <Td>{number(row.requests)}</Td>
                   <Td>{errorCell(row)}</Td>
                   <Td>
-                    {row.p95_latency_ms === null ? '—' : `${number(Math.round(row.p95_latency_ms))} ms`}
+                    {row.p95_latency_ms === null ? '—' : formatDuration(row.p95_latency_ms)}
                   </Td>
                   <Td>{number(row.input_tokens)}</Td>
                   <Td>{number(row.output_tokens)}</Td>

@@ -7,7 +7,7 @@ import { asUpstreamError } from '@/lib/api/upstream';
 import { openAiErrorFrom, openAiError, openAiErrorBody } from '@/lib/api/openai-errors';
 import { withIdempotency, type IdempotentResponse } from '@/lib/api/idempotency';
 import { generateChat } from '@/lib/chat/generate';
-import { streamChat, type ChatStreamHandle } from '@/lib/chat/stream';
+import { streamChat, streamTimingFields, type ChatStreamHandle } from '@/lib/chat/stream';
 import {
   chatCompletionRequestSchema,
   chatRequestHash,
@@ -225,6 +225,7 @@ async function runChatStream(ctx: ChatContext): Promise<Response> {
       log.info('chat.stream_ok', {
         channel_id: handle.channel.id,
         latency_ms: done.latencyMs,
+        ...streamTimingFields(done),
         credits_charged: creditsCharged,
       });
     } catch (err) {
