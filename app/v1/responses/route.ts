@@ -100,12 +100,50 @@ function requestShape(body: ResponsesRequest): Record<string, unknown> {
   };
 }
 
-/** DEBUG: what the model sent back — sizes and tool names, no text. */
+/** DEBUG: end offset of the first complete JSON value in `text`, or -1. */
+function firstJsonEnd(text: string): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (ch === '\\') i++;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '{' || ch === '[') depth++;
+    else if (ch === '}' || ch === ']') {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+/** DEBUG: what the model sent back — sizes and tool names, plus a peek at unparsable arguments. */
 function outputShape(content: string, toolCalls: readonly OpenAiToolCall[], finishReason: unknown) {
+  const invalid = toolCalls.flatMap((call) => {
+    try {
+      JSON.parse(call.function.arguments);
+      return [];
+    } catch {
+      const args = call.function.arguments;
+      const end = firstJsonEnd(args);
+      return [{
+        length: args.length,
+        first_value_end: end,
+        head: args.slice(0, 80),
+        around_end: end > 0 ? args.slice(Math.max(0, end - 80), end + 120) : undefined,
+        tail: args.slice(-80),
+      }];
+    }
+  });
   return {
     text_chars: content.length,
     tool_calls: toolCalls.map((call) => `${call.function.name}(${call.function.arguments.length})`),
     finish_reason: finishReason,
+    ...(invalid.length > 0 ? { invalid_arguments: invalid } : {}),
   };
 }
 
@@ -309,6 +347,7 @@ async function runResponseStream(ctx: ResponseContext): Promise<Response> {
         // the opening part have to be remembered to address later frames, and
         // the fragments joined for the terminal `completed` snapshot.
         const calls = new Map<number, StreamingToolCall>();
+        const opened: string[] = []; // DEBUG
 
         for await (const part of handle.partStream) {
           switch (part.type) {
@@ -317,6 +356,7 @@ async function runResponseStream(ctx: ResponseContext): Promise<Response> {
               send(frames.textDelta(part.text));
               break;
             case 'tool-call-start':
+              opened.push(`start#${part.index}:${part.id.slice(-6)}`);
               calls.set(part.index, {
                 id: part.id,
                 name: part.name,
@@ -336,6 +376,7 @@ async function runResponseStream(ctx: ResponseContext): Promise<Response> {
             case 'tool-call':
               // A provider that never streamed fragments: the call arrives
               // whole, so its added and done frames are emitted back to back.
+              opened.push(`whole#${part.index}:${part.id.slice(-6)}`);
               calls.set(part.index, {
                 id: part.id,
                 name: part.name,
@@ -361,7 +402,7 @@ async function runResponseStream(ctx: ResponseContext): Promise<Response> {
           type: 'function',
           function: { name: call.name, arguments: call.arguments },
         }));
-        log.info('responses.output_shape', outputShape(content, toolCalls, done.finishReason));
+        log.info('responses.output_shape', { ...outputShape(content, toolCalls, done.finishReason), opened });
 
         send(
           frames.completed({
