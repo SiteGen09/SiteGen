@@ -133,6 +133,9 @@ const APPS: [AppDef, ...AppDef[]] = [
     name: 'OpenCode',
     protocol: 'openai',
     steps: ({ openaiBase, model, os }) => [
+      {
+        text: 'Quicker: the automatic setup at the top of this page does all of this for you, lists every model your plan includes and keeps the key out of the config file. The steps below are the manual route.',
+      },
       { text: `Open ${configPath(os, '.config/opencode/opencode.json')} (create it if needed).` },
       {
         text: 'Add sitegen as an OpenAI-compatible provider. Keep the API key in the file only if your machine is private; an environment variable or secret manager is safer.',

@@ -4,9 +4,10 @@
 #   Undo:       irm __SITEGEN_BASE_URL__/uninstall.ps1 | iex
 #               (or the "Undo sitegen setup" shortcut in the Start menu)
 #
-# Points Codex (CLI, desktop app, IDE extension) and Claude Code (CLI, IDE
-# extensions) at your sitegen account, each with its own model family: GPT
-# models for Codex, Claude models for Claude Code.
+# Points Codex (CLI, desktop app, IDE extension), Claude Code (CLI, IDE
+# extensions) and OpenCode (CLI, desktop app) at your sitegen account: GPT
+# models for Codex, Claude models for Claude Code, every chat model for
+# OpenCode.
 #
 # Your API key is stored encrypted for your Windows account (DPAPI) in
 # %USERPROFILE%\.sitegen. The Codex and Claude Code settings only name a small
@@ -15,8 +16,10 @@
 # and the uninstall command puts your previous settings back.
 #
 # Optional environment variables:
-#   SITEGEN_TOOLS         codex, claude or both (skips the question); undo
-#                         reverts only the named tool when it is set
+#   SITEGEN_TOOLS         codex, claude, opencode, several joined by commas, or
+#                         all (skips the question); undo reverts only the named
+#                         tools when it is set
+#   SITEGEN_OPENCODE_MODEL  default OpenCode model (skips the question)
 #   SITEGEN_API_KEY       use this key instead of asking for it
 #   SITEGEN_CODEX_MODEL   default Codex model (skips the question)
 #   SITEGEN_CLAUDE_MODEL  default Claude Code model (skips the question)
@@ -52,6 +55,12 @@ $CodexConfig = Join-Path $CodexHome 'config.toml'
 $CodexCatalog = Join-Path $CodexHome 'sitegen-models.json'
 $ClaudeDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }
 $ClaudeSettings = Join-Path $ClaudeDir 'settings.json'
+# OpenCode reads ~/.config/opencode on every system, XDG_CONFIG_HOME if set.
+$OpenCodeDir = if ($env:XDG_CONFIG_HOME) { Join-Path $env:XDG_CONFIG_HOME 'opencode' } else { Join-Path $HOME '.config\opencode' }
+# OpenCode can only read a key from a file or a variable, never run a helper,
+# so it gets a plain copy readable by this Windows account alone.
+$PlainKeyFile = Join-Path $SitegenDir 'api-key'
+$ToolNames = [ordered]@{ codex = 'Codex'; claude = 'Claude Code'; opencode = 'OpenCode' }
 
 # Every line the installer adds to config.toml is marked, and every line it
 # turns off is commented with a prefix, so uninstall can undo exactly that.
@@ -274,6 +283,66 @@ function Find-Claude {
   $local = Join-Path $HOME '.local\bin\claude.exe'
   if (Test-Path -LiteralPath $local) { return $local }
   return $null
+}
+
+function Find-OpenCode {
+  $apps = @(Get-Command opencode -All -CommandType Application -ErrorAction SilentlyContinue)
+  if ($apps.Count -gt 0) { return $apps[0].Source }
+  foreach ($candidate in @(
+      (Join-Path $env:LOCALAPPDATA 'Programs\@opencode-aidesktop\OpenCode.exe'),
+      (Join-Path $env:LOCALAPPDATA 'Programs\OpenCode\OpenCode.exe'),
+      (Join-Path $HOME '.opencode\bin\opencode.exe'))) {
+    if (Test-Path -LiteralPath $candidate) { return $candidate }
+  }
+  return $null
+}
+
+# The file OpenCode reads: opencode.json, or the .jsonc variant already in use.
+function Get-OpenCodeConfig {
+  $json = Join-Path $OpenCodeDir 'opencode.json'
+  $jsonc = Join-Path $OpenCodeDir 'opencode.jsonc'
+  if (-not (Test-Path -LiteralPath $json) -and (Test-Path -LiteralPath $jsonc)) { return $jsonc }
+  return $json
+}
+
+# JSON with comments and trailing commas, as OpenCode allows, read as JSON.
+# Comments do not survive the rewrite; the backup keeps the original.
+function Read-JsoncFile([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) { return @{ Value = [pscustomobject]@{}; HadComments = $false } }
+  return ConvertFrom-Jsonc ([IO.File]::ReadAllText($Path)) $Path
+}
+
+function ConvertFrom-Jsonc([string]$Raw, [string]$Path) {
+  $raw = $Raw
+  if ($raw.Length -gt 0 -and $raw[0] -eq [char]0xFEFF) { $raw = $raw.Substring(1) }
+  $sb = New-Object System.Text.StringBuilder
+  $inString = $false; $escaped = $false; $i = 0; $hadComments = $false
+  while ($i -lt $raw.Length) {
+    $ch = $raw[$i]
+    if ($inString) {
+      [void]$sb.Append($ch)
+      if ($escaped) { $escaped = $false } elseif ($ch -eq '\') { $escaped = $true } elseif ($ch -eq '"') { $inString = $false }
+      $i++; continue
+    }
+    if ($ch -eq '"') { $inString = $true; [void]$sb.Append($ch); $i++; continue }
+    if ($ch -eq '/' -and $i + 1 -lt $raw.Length -and $raw[$i + 1] -eq '/') {
+      $hadComments = $true
+      while ($i -lt $raw.Length -and $raw[$i] -ne "`n") { $i++ }
+      continue
+    }
+    if ($ch -eq '/' -and $i + 1 -lt $raw.Length -and $raw[$i + 1] -eq '*') {
+      $hadComments = $true
+      $end = $raw.IndexOf('*/', $i + 2)
+      $i = if ($end -lt 0) { $raw.Length } else { $end + 2 }
+      continue
+    }
+    [void]$sb.Append($ch); $i++
+  }
+  $clean = [regex]::Replace($sb.ToString(), ',(\s*[\]}])', '$1')
+  if ($clean.Trim() -eq '') { return @{ Value = [pscustomobject]@{}; HadComments = $hadComments } }
+  $parsed = $clean | ConvertFrom-Json
+  if ($parsed -isnot [pscustomobject]) { Fail "$Path does not contain a JSON object." }
+  return @{ Value = $parsed; HadComments = $hadComments }
 }
 
 # Codex's own built-in catalog, read from a clean home so the user's current
@@ -561,7 +630,113 @@ function Install-Claude([string[]]$ClaudeIds, [string]$Model, [hashtable]$Tiers,
   }
 }
 
+# Canonical JSON text with keys sorted at every level, to compare two values
+# regardless of key order.
+function ConvertTo-SortedJson($Value) {
+  function Sort-Value($v) {
+    if ($v -is [pscustomobject]) {
+      $o = [ordered]@{}
+      foreach ($n in ($v.PSObject.Properties.Name | Sort-Object)) { $o[$n] = Sort-Value $v.$n }
+      return [pscustomobject]$o
+    }
+    if ($v -is [array]) { return ,@($v | ForEach-Object { Sort-Value $_ }) }
+    return $v
+  }
+  return ((Sort-Value $Value) | ConvertTo-Json -Depth 100 -Compress)
+}
+
+# The {file:...} reference OpenCode resolves itself, as an absolute path with
+# forward slashes (the form verified with OpenCode on Windows).
+function Get-OpenCodeKeyRef {
+  return '{file:' + $PlainKeyFile.Replace('\', '/') + '}'
+}
+
+function Install-OpenCode([string[]]$Ids, [string]$Model, [string]$SmallModel, $State, [string]$BackupDir) {
+  $path = Get-OpenCodeConfig
+  try { $read = Read-JsoncFile $path }
+  catch { Warn "$path could not be read as JSON, so OpenCode was left unchanged. Fix it and run this again."; return $null }
+  $config = $read.Value
+  Backup-File $path $BackupDir ('opencode-' + (Split-Path -Leaf $path))
+  $providers = Get-Prop $config 'provider'
+  if ($providers -isnot [pscustomobject]) { $providers = [pscustomobject]@{} }
+
+  # As for Claude Code, the values from before the FIRST install are kept.
+  $previous = Get-Prop (Get-Prop $State 'opencode') 'previous'
+  if ($null -eq $previous) {
+    $original = if (Test-Path -LiteralPath $path) { [IO.File]::ReadAllText($path) } else { $null }
+    $previous = [pscustomobject]@{
+      model = Get-Prop $config 'model'
+      small_model = Get-Prop $config 'small_model'
+      provider = Get-Prop $providers $ProviderId
+      hadProviders = ($null -ne $config.PSObject.Properties['provider'])
+      fileExisted = ($null -ne $original)
+      original = $original
+    }
+  }
+
+  $models = [ordered]@{}
+  foreach ($id in $Ids) { $models[$id] = [pscustomobject]@{ name = $id } }
+  $entry = [pscustomobject]@{
+    npm = '@ai-sdk/openai-compatible'
+    name = 'sitegen'
+    options = [pscustomobject]@{ baseURL = "$BaseUrl/v1"; apiKey = (Get-OpenCodeKeyRef) }
+    models = [pscustomobject]$models
+  }
+  if ($null -eq $config.PSObject.Properties['$schema']) { Set-Prop $config '$schema' 'https://opencode.ai/config.json' }
+  Set-Prop $providers $ProviderId $entry
+  Set-Prop $config 'provider' $providers
+  Set-Prop $config 'model' "$ProviderId/$Model"
+  Set-Prop $config 'small_model' "$ProviderId/$SmallModel"
+  Write-JsonFile $path $config
+  if ($read.HadComments) { Warn "Comments in $path are left out while sitegen is set up; undo puts the file back with them." }
+
+  return [pscustomobject]@{
+    config = $path
+    previous = $previous
+    applied = [pscustomobject]@{ model = "$ProviderId/$Model"; small_model = "$ProviderId/$SmallModel"; baseURL = "$BaseUrl/v1" }
+  }
+}
+
+function Uninstall-OpenCode($OpenCodeState, [string]$BackupDir) {
+  $path = [string](Get-Prop $OpenCodeState 'config')
+  if (-not $path -or -not (Test-Path -LiteralPath $path)) { return }
+  $read = Read-JsoncFile $path
+  $config = $read.Value
+  Backup-File $path $BackupDir ('opencode-' + (Split-Path -Leaf $path))
+  $previous = Get-Prop $OpenCodeState 'previous'
+  $applied = Get-Prop $OpenCodeState 'applied'
+  foreach ($name in @('model', 'small_model')) {
+    if ((Get-Prop $config $name) -eq (Get-Prop $applied $name)) {
+      $old = Get-Prop $previous $name
+      if ($null -eq $old) { Remove-Prop $config $name } else { Set-Prop $config $name $old }
+    }
+  }
+  $providers = Get-Prop $config 'provider'
+  if ($providers -is [pscustomobject]) {
+    # Only the provider block this installer wrote is replaced.
+    $current = Get-Prop $providers $ProviderId
+    if ($null -ne $current -and (Get-Prop (Get-Prop $current 'options') 'baseURL') -eq (Get-Prop $applied 'baseURL')) {
+      $old = Get-Prop $previous 'provider'
+      if ($null -eq $old) { Remove-Prop $providers $ProviderId } else { Set-Prop $providers $ProviderId $old }
+    }
+    if (@($providers.PSObject.Properties).Count -eq 0 -and -not (Get-Prop $previous 'hadProviders')) { Remove-Prop $config 'provider' }
+  }
+  $left = @($config.PSObject.Properties | Where-Object { $_.Name -ne '$schema' })
+  $original = Get-Prop $previous 'original'
+  if ((Get-Prop $previous 'fileExisted') -eq $false -and $left.Count -eq 0) { Remove-Item -LiteralPath $path -Force }
+  elseif ($null -ne $original -and (ConvertTo-SortedJson (ConvertFrom-Jsonc $original $path).Value) -eq (ConvertTo-SortedJson $config)) {
+    # Nothing else changed since, so the file goes back byte for byte, comments and all.
+    Write-Utf8 $path $original
+  }
+  else { Write-JsonFile $path $config }
+}
+
 function Test-Route([string]$Key, [string]$Kind, [string]$Model) {
+  if ($Kind -eq 'opencode') {
+    $r = Invoke-Sitegen 'POST' '/v1/chat/completions' $Key @{ model = $Model; max_tokens = 32; messages = @(@{ role = 'user'; content = 'Reply with the single word OK.' }) }
+    if ($r.Status -eq 200) { return $null }
+    return "HTTP $($r.Status): $(Get-ErrorMessage $r.Text)"
+  }
   if ($Kind -eq 'codex') {
     $r = Invoke-Sitegen 'POST' '/v1/responses' $Key @{ model = $Model; input = 'Reply with the single word OK.'; max_output_tokens = 32 }
   } else {
@@ -571,30 +746,43 @@ function Test-Route([string]$Key, [string]$Kind, [string]$Model) {
   return "HTTP $($r.Status): $(Get-ErrorMessage $r.Text)"
 }
 
-# SITEGEN_TOOLS as a set: codex, claude, or both when unset or 'both'.
+# SITEGEN_TOOLS as a set of tool ids; unset, 'all' or 'both' means every tool.
 function Get-ToolsFilter {
-  $raw = if ($env:SITEGEN_TOOLS) { $env:SITEGEN_TOOLS.ToLowerInvariant() } else { 'both' }
-  $codex = $raw -match 'codex' -or $raw -match 'both|all'
-  $claude = $raw -match 'claude' -or $raw -match 'both|all'
-  if (-not $codex -and -not $claude) { Fail "SITEGEN_TOOLS must be codex, claude or both (it is '$env:SITEGEN_TOOLS')." }
-  return @{ codex = $codex; claude = $claude; explicit = [bool]$env:SITEGEN_TOOLS }
+  $raw = if ($env:SITEGEN_TOOLS) { $env:SITEGEN_TOOLS.ToLowerInvariant() } else { 'all' }
+  $every = $raw -match 'all|both'
+  $filter = @{ explicit = [bool]$env:SITEGEN_TOOLS }
+  foreach ($id in $ToolNames.Keys) { $filter[$id] = $every -or $raw -match $id }
+  if (-not ($ToolNames.Keys | Where-Object { $filter[$_] })) {
+    Fail "SITEGEN_TOOLS must name codex, claude or opencode, or be all (it is '$env:SITEGEN_TOOLS')."
+  }
+  return $filter
 }
 
-function Select-Tools([bool]$CanCodex, [bool]$CanClaude) {
+# Which of the available tools to set up. The ones left out are not touched.
+function Select-Tools([hashtable]$Can) {
   $filter = Get-ToolsFilter
-  $pick = @{ codex = $CanCodex -and $filter.codex; claude = $CanClaude -and $filter.claude }
-  if ($filter.explicit -or -not ($CanCodex -and $CanClaude) -or -not (Test-Interactive)) { return $pick }
+  $available = @($ToolNames.Keys | Where-Object { $Can[$_] })
+  $pick = @{}
+  foreach ($id in $ToolNames.Keys) { $pick[$id] = [bool]$Can[$id] -and $filter[$id] }
+  if ($filter.explicit -or $available.Count -lt 2 -or -not (Test-Interactive)) { return $pick }
   Say ''
-  Say '  What should sitegen set up?'
-  Say '     1. Codex and Claude Code  (recommended)'
-  Say '     2. Only Codex             (Claude Code stays as it is)'
-  Say '     3. Only Claude Code       (Codex stays as it is)'
+  Say '  What should sitegen set up? Tools you leave out stay exactly as they are.'
+  Say ('     1. All of them: ' + (($available | ForEach-Object { $ToolNames[$_] }) -join ', ') + '  (recommended)')
+  for ($i = 0; $i -lt $available.Count; $i++) { Say ('     {0}. {1}' -f ($i + 2), $ToolNames[$available[$i]]) }
   while ($true) {
-    $answer = (Read-Host '  Press Enter for 1, or type a number').Trim()
-    if ($answer -eq '' -or $answer -eq '1') { return @{ codex = $true; claude = $true } }
-    if ($answer -eq '2') { return @{ codex = $true; claude = $false } }
-    if ($answer -eq '3') { return @{ codex = $false; claude = $true } }
-    Warn 'Type 1, 2 or 3.'
+    $answer = (Read-Host '  Press Enter for 1, or type one number or several (for example 2,3)').Trim()
+    $numbers = @($answer -split '[,\s]+' | Where-Object { $_ -ne '' })
+    if ($numbers.Count -eq 0 -or $numbers -contains '1') {
+      foreach ($id in $available) { $pick[$id] = $true }
+      return $pick
+    }
+    $valid = @($numbers | Where-Object { $_ -match '^\d+$' -and [int]$_ -ge 2 -and [int]$_ -le $available.Count + 1 })
+    if ($valid.Count -eq $numbers.Count) {
+      foreach ($id in $ToolNames.Keys) { $pick[$id] = $false }
+      foreach ($n in $valid) { $pick[$available[[int]$n - 2]] = $true }
+      return $pick
+    }
+    Warn "Type numbers from 1 to $($available.Count + 1)."
   }
 }
 
@@ -626,7 +814,7 @@ function Remove-UndoShortcut {
 
 function Invoke-Install {
   Say ''
-  Write-Host 'sitegen setup for Codex and Claude Code' -ForegroundColor White
+  Write-Host 'sitegen setup for Codex, Claude Code and OpenCode' -ForegroundColor White
   Say "Server: $BaseUrl"
 
   Step '1. Your sitegen API key'
@@ -638,23 +826,30 @@ function Invoke-Install {
   $ids = @((($models.Text | ConvertFrom-Json).data) | ForEach-Object { [string]$_.id } | Where-Object { $_ })
   $gpt = @($ids | Where-Object { $_ -match '^(gpt-|o\d|codex-)' } | Sort-Object @{ Expression = { Get-GptRank $_ }; Descending = $true }, @{ Expression = { $_ } })
   $claude = @($ids | Where-Object { $_ -match '^claude-' } | Sort-Object @{ Expression = { Get-ClaudeVersion $_ }; Descending = $true }, @{ Expression = { $_ } })
-  Ok "Key accepted: $($gpt.Count) GPT models for Codex, $($claude.Count) Claude models for Claude Code."
+  # OpenCode speaks the chat completions format, which serves every family.
+  $others = @($ids | Where-Object { $gpt -notcontains $_ -and $claude -notcontains $_ } | Sort-Object)
+  $everything = @($claude) + @($gpt) + @($others)
+  Ok "Key accepted: $($ids.Count) models ($($gpt.Count) GPT, $($claude.Count) Claude)."
 
-  Step '2. Looking for Codex and Claude Code'
+  Step '2. Looking for Codex, Claude Code and OpenCode'
   $codex = Find-Codex
   $claudeExe = Find-Claude
+  $openCodeExe = Find-OpenCode
+  $openCodeFound = [bool]$openCodeExe -or (Test-Path -LiteralPath $OpenCodeDir)
   if ($codex) { Ok "Codex found: $codex" } else { Warn 'Codex was not found. Install it first (npm i -g @openai/codex, or the Codex app), then run this again to set it up.' }
   if ($claudeExe) { Ok "Claude Code found: $claudeExe" } else { Warn 'Claude Code was not found. Its settings will still be written, ready for when you install it (irm https://claude.ai/install.ps1 | iex).' }
-  $canCodex = [bool]$codex -and $gpt.Count -gt 0
-  $canClaude = $claude.Count -gt 0
+  if ($openCodeExe) { Ok "OpenCode found: $openCodeExe" } elseif ($openCodeFound) { Ok "OpenCode settings found: $OpenCodeDir" } else { Warn 'OpenCode was not found (https://opencode.ai). Install it and run this again to set it up too.' }
   if ($codex -and $gpt.Count -eq 0) { Warn 'Your plan has no GPT models, so Codex was left unchanged.' }
   if ($claude.Count -eq 0) { Warn 'Your plan has no Claude models, so Claude Code was left unchanged.' }
-  $tools = Select-Tools $canCodex $canClaude
+  # Named explicitly, OpenCode is set up even before it is installed.
+  $openCodeWanted = $openCodeFound -or ($env:SITEGEN_TOOLS -and $env:SITEGEN_TOOLS.ToLowerInvariant() -match 'opencode')
+  $tools = Select-Tools @{ codex = ([bool]$codex -and $gpt.Count -gt 0); claude = ($claude.Count -gt 0); opencode = ($openCodeWanted -and $ids.Count -gt 0) }
   $doCodex = $tools.codex
   $doClaude = $tools.claude
-  if (-not $doCodex -and -not $doClaude) { Fail 'Nothing to set up.' }
+  $doOpenCode = $tools.opencode
+  if (-not $doCodex -and -not $doClaude -and -not $doOpenCode) { Fail 'Nothing to set up.' }
 
-  $codexModel = $null; $claudeModel = $null; $tiers = $null
+  $codexModel = $null; $claudeModel = $null; $tiers = $null; $openCodeModel = $null; $openCodeSmall = $null
   if ($doCodex) { $codexModel = Select-Model 'Default model for Codex (you can switch any time with /model):' $gpt $gpt[0] $env:SITEGEN_CODEX_MODEL }
   if ($doClaude) {
     $opus = Get-FirstOf @((Get-ClaudeBest $claude 'opus'), (Get-ClaudeBest $claude 'fable'), (Get-ClaudeBest $claude 'sonnet'), $claude[0])
@@ -662,6 +857,12 @@ function Invoke-Install {
     $haiku = Get-FirstOf @((Get-ClaudeBest $claude 'haiku'), $sonnet)
     $tiers = @{ opus = $opus; sonnet = $sonnet; haiku = $haiku }
     $claudeModel = Select-Model 'Default model for Claude Code (you can switch any time with /model):' $claude $opus $env:SITEGEN_CLAUDE_MODEL
+  }
+  if ($doOpenCode) {
+    $best = Get-FirstOf @((Get-ClaudeBest $claude 'opus'), (Get-ClaudeBest $claude 'sonnet'), $gpt[0], $everything[0])
+    $openCodeModel = Select-Model 'Default model for OpenCode (you can switch any time with /models):' $everything $best $env:SITEGEN_OPENCODE_MODEL
+    # Session titles and summaries go to a small, cheap model.
+    $openCodeSmall = Get-FirstOf @((Get-ClaudeBest $claude 'haiku'), ($gpt | Where-Object { $_ -match 'mini|nano|luna' } | Select-Object -First 1), $openCodeModel)
   }
 
   Step '3. Saving your key securely'
@@ -682,6 +883,11 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR(`$ptr) }
   $probe = Invoke-Native 'powershell.exe' @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $HelperFile)
   if ($probe.Output.Trim() -ne $key) { Fail 'The key helper could not read the saved key back. Nothing else was changed.' }
   Ok "Key encrypted for your Windows account in $SitegenDir"
+  if ($doOpenCode) {
+    Write-Utf8 $PlainKeyFile $key
+    Restrict-ToCurrentUser $PlainKeyFile
+    Ok 'OpenCode reads the key from a copy in the same folder that only your Windows account can open.'
+  }
 
   $state = Read-State
   $backupDir = New-BackupDir
@@ -691,6 +897,7 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR(`$ptr) }
     version = $InstallerVersion; baseUrl = $BaseUrl; installedAt = (Get-Date).ToString('o')
     codex = $(if ($doCodex) { $null } else { Get-Prop $state 'codex' })
     claude = $(if ($doClaude) { $null } else { Get-Prop $state 'claude' })
+    opencode = $(if ($doOpenCode) { $null } else { Get-Prop $state 'opencode' })
   }
 
   Step '4. Setting up the apps'
@@ -705,6 +912,13 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR(`$ptr) }
     if ($null -ne $result) {
       $newState.claude = $result
       Ok "Claude Code now uses sitegen ($claudeModel by default; opus=$($tiers.opus), sonnet=$($tiers.sonnet), haiku=$($tiers.haiku))."
+    }
+  }
+  if ($doOpenCode) {
+    $result = Install-OpenCode $everything $openCodeModel $openCodeSmall $state $backupDir
+    if ($null -ne $result) {
+      $newState.opencode = $result
+      Ok "OpenCode now uses sitegen ($openCodeModel by default, $($everything.Count) models under the sitegen provider)."
     }
   }
   Write-JsonFile $StateFile ([pscustomobject]$newState)
@@ -722,6 +936,10 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR(`$ptr) }
     if ($doClaude -and $newState.claude) {
       $err = Test-Route $key 'claude' $claudeModel
       if ($err) { Warn "Claude Code route test failed: $err" } else { Ok "Claude Code route answered ($claudeModel)." }
+    }
+    if ($doOpenCode -and $newState.opencode) {
+      $err = Test-Route $key 'opencode' $openCodeModel
+      if ($err) { Warn "OpenCode route test failed: $err" } else { Ok "OpenCode route answered ($openCodeModel)." }
     }
   }
 
@@ -741,6 +959,9 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR(`$ptr) }
   if ($doClaude -and $newState.claude) { Say '  Claude Code:  open a new terminal and run: claude  (IDE extensions pick it up on restart)' }
   elseif ($newState.claude) { Say '  Claude Code:  not changed this time (still on sitegen from an earlier setup)' }
   else { Say '  Claude Code:  not changed' }
+  if ($doOpenCode -and $newState.opencode) { Say '  OpenCode:     restart the OpenCode app if it is open, or run: opencode' }
+  elseif ($newState.opencode) { Say '  OpenCode:     not changed this time (still on sitegen from an earlier setup)' }
+  else { Say '  OpenCode:     not changed' }
   Say ''
   Say '  To go back to your previous setup:'
   if ($shortcut) { Say '    press the Windows key, type "Undo sitegen", press Enter; or run' }
@@ -751,7 +972,7 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR(`$ptr) }
 
 function Invoke-Uninstall {
   $filter = Get-ToolsFilter
-  $names = @(@(if ($filter.codex) { 'Codex' }) + @(if ($filter.claude) { 'Claude Code' })) -join ' and '
+  $names = @($ToolNames.Keys | Where-Object { $filter[$_] } | ForEach-Object { $ToolNames[$_] }) -join ', '
   Say ''
   Write-Host "Putting $names back to how they were before sitegen setup" -ForegroundColor White
   $state = Read-State
@@ -812,22 +1033,34 @@ function Invoke-Uninstall {
     } catch { Warn "Could not restore $ClaudeSettings ($($_.Exception.Message)). Your backups are in $BackupRoot." }
   }
 
-  # The key stays while either tool still uses sitegen.
-  $keepCodex = if ($filter.codex) { $null } else { Get-Prop $state 'codex' }
-  $keepClaude = if ($filter.claude) { $null } else { Get-Prop $state 'claude' }
-  if ($null -ne $keepCodex -or $null -ne $keepClaude) {
-    $remaining = [ordered]@{ version = Get-Prop $state 'version'; baseUrl = Get-Prop $state 'baseUrl'; installedAt = Get-Prop $state 'installedAt'; codex = $keepCodex; claude = $keepClaude }
+  $openCodeState = Get-Prop $state 'opencode'
+  if ($filter.opencode -and $null -ne $openCodeState) {
+    try {
+      Uninstall-OpenCode $openCodeState $backupDir
+      Ok 'OpenCode settings restored.'
+    } catch { Warn "Could not restore OpenCode's settings ($($_.Exception.Message)). Your backups are in $BackupRoot." }
+  }
+  if ($filter.opencode -and (Test-Path -LiteralPath $PlainKeyFile)) { Remove-Item -LiteralPath $PlainKeyFile -Force }
+
+  # The key stays while any tool still uses sitegen.
+  $remaining = [ordered]@{ version = Get-Prop $state 'version'; baseUrl = Get-Prop $state 'baseUrl'; installedAt = Get-Prop $state 'installedAt' }
+  $kept = @()
+  foreach ($id in $ToolNames.Keys) {
+    $remaining[$id] = if ($filter[$id]) { $null } else { Get-Prop $state $id }
+    if ($null -ne $remaining[$id]) { $kept += $ToolNames[$id] }
+  }
+  if ($kept.Count -gt 0) {
     Write-JsonFile $StateFile ([pscustomobject]$remaining)
-    Ok "Saved key kept: $(if ($keepCodex) { 'Codex' } else { 'Claude Code' }) still uses sitegen."
+    Ok "Saved key kept: $($kept -join ', ') still use$(if ($kept.Count -eq 1) { 's' }) sitegen."
   } else {
-    foreach ($path in @($KeyFile, $HelperFile, $StateFile)) {
+    foreach ($path in @($KeyFile, $PlainKeyFile, $HelperFile, $StateFile)) {
       if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
     }
     Remove-UndoShortcut
     Ok 'Saved key and the Undo shortcut removed.'
   }
   Say "  Backups are kept in $BackupRoot (safe to delete)."
-  Write-Host 'Done. Restart the Codex app or any open Claude Code sessions.' -ForegroundColor Green
+  Write-Host 'Done. Restart Codex, OpenCode or any open Claude Code sessions.' -ForegroundColor Green
 }
 
 try {

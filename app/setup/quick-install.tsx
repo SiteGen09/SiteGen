@@ -75,11 +75,13 @@ export function QuickInstall({ base }: { base: string }) {
 
   return (
     <section className="mb-8 rounded-xl border border-zinc-200 bg-white p-5 sm:p-6">
-      <h2 className="text-base font-semibold text-zinc-900">Automatic setup for Codex and Claude Code</h2>
+      <h2 className="text-base font-semibold text-zinc-900">
+        Automatic setup for Codex, Claude Code and OpenCode
+      </h2>
       <p className="mt-1 text-sm leading-6 text-zinc-600">
         One command connects Codex (CLI, desktop app and IDE extension) to the GPT models your plan
-        includes, and Claude Code (CLI and IDE extensions) to the Claude models. Install the ones you
-        use first, then run it.
+        includes, Claude Code (CLI and IDE extensions) to the Claude models, and OpenCode (CLI and
+        desktop app) to every chat model. Install the ones you use first, then run it.
       </p>
 
       <div role="tablist" aria-label="Operating system" className="mt-5 flex flex-wrap gap-2">
@@ -107,8 +109,8 @@ export function QuickInstall({ base }: { base: string }) {
 
         <ul className="mt-4 list-disc space-y-1.5 pl-5 text-sm leading-6 text-zinc-600">
           <li>
-            It asks what to set up: Codex and Claude Code, only Codex, or only Claude Code. The one
-            you leave out is not touched.
+            It asks which of the tools it finds to set up: all of them, or any you pick. The ones
+            you leave out are not touched.
           </li>
           <li>
             It asks for an API key from Dashboard -&gt; API keys and stores it{' '}
@@ -137,8 +139,8 @@ export function QuickInstall({ base }: { base: string }) {
           </p>
           <Command code={current.uninstall} />
           <p className="mt-2 text-xs leading-5 text-zinc-500">
-            It puts your previous Codex and Claude Code settings back exactly as they were and
-            deletes the saved key.
+            It puts your previous Codex, Claude Code and OpenCode settings back exactly as they were
+            and deletes the saved key.
           </p>
         </details>
       </div>

@@ -1,24 +1,28 @@
 #!/bin/sh
-# sitegen setup for Codex and Claude Code on macOS and Linux.
+# sitegen setup for Codex, Claude Code and OpenCode on macOS and Linux.
 #
 #   Install:    curl -fsSL __SITEGEN_BASE_URL__/install.sh | sh
 #   Undo:       curl -fsSL __SITEGEN_BASE_URL__/uninstall.sh | sh
 #               (or, offline: sh ~/.sitegen/uninstall.sh)
 #
-# Points Codex (CLI, desktop app, IDE extension) and Claude Code (CLI, IDE
-# extensions) at your sitegen account, each with its own model family: GPT
-# models for Codex, Claude models for Claude Code.
+# Points Codex (CLI, desktop app, IDE extension), Claude Code (CLI, IDE
+# extensions) and OpenCode (CLI, desktop app) at your sitegen account: GPT
+# models for Codex, Claude models for Claude Code, every chat model for
+# OpenCode.
 #
-# Your API key is stored in ~/.sitegen/api-key, readable only by you. The Codex
-# and Claude Code settings only name a small helper script that prints it; the
-# key itself is never written into them. Every file this changes is backed up
+# Your API key is stored in ~/.sitegen/api-key, readable only by you. The
+# apps' settings only point at it (Codex and Claude Code through a small
+# helper script, OpenCode through a {file:} reference); the key itself is never
+# written into them. Every file this changes is backed up
 # to ~/.sitegen/backups first, and --uninstall puts your previous settings back.
 #
 # Needs curl and Python 3 (on macOS, Apple's command line tools provide it).
 #
 # Optional environment variables:
-#   SITEGEN_TOOLS         codex, claude or both (skips the question); undo
-#                         reverts only the named tool when it is set
+#   SITEGEN_TOOLS         codex, claude, opencode, several joined by commas, or
+#                         all (skips the question); undo reverts only the named
+#                         tools when it is set
+#   SITEGEN_OPENCODE_MODEL  default OpenCode model (skips the question)
 #   SITEGEN_API_KEY       use this key instead of asking for it
 #   SITEGEN_CODEX_MODEL   default Codex model (skips the question)
 #   SITEGEN_CLAUDE_MODEL  default Claude Code model (skips the question)
@@ -87,6 +91,9 @@ CODEX_CONFIG = os.path.join(CODEX_HOME, "config.toml")
 CODEX_CATALOG = os.path.join(CODEX_HOME, "sitegen-models.json")
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
 CLAUDE_SETTINGS = os.path.join(CLAUDE_DIR, "settings.json")
+OPENCODE_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config"), "opencode")
+TOOL_NAMES = {"codex": "Codex", "claude": "Claude Code", "opencode": "OpenCode"}
+TOOL_ORDER = ("codex", "claude", "opencode")
 
 # Every line the installer adds to config.toml is marked, and every line it
 # turns off is commented with a prefix, so uninstall can undo exactly that.
@@ -311,6 +318,165 @@ def find_claude():
         if os.access(candidate, os.X_OK):
             return candidate
     return None
+
+
+def find_opencode():
+    found = shutil.which("opencode")
+    if found:
+        return found
+    for candidate in (os.path.join(HOME, ".opencode", "bin", "opencode"), "/Applications/OpenCode.app",
+                      os.path.join(HOME, "Applications", "OpenCode.app")):
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def opencode_config_path():
+    """The file OpenCode reads: opencode.json, or the .jsonc variant already in use."""
+    json_path = os.path.join(OPENCODE_DIR, "opencode.json")
+    jsonc_path = os.path.join(OPENCODE_DIR, "opencode.jsonc")
+    if not os.path.exists(json_path) and os.path.exists(jsonc_path):
+        return jsonc_path
+    return json_path
+
+
+def read_jsonc(path):
+    """JSON with comments and trailing commas, as OpenCode allows, read as
+    JSON. Comments do not survive the rewrite; the original text is kept so
+    undo can put it back as it was."""
+    if not os.path.exists(path):
+        return {}, False
+    with open(path, encoding="utf-8-sig") as handle:
+        return parse_jsonc(handle.read(), path)
+
+
+def parse_jsonc(raw, path):
+    out, i, in_string, escaped, had_comments = [], 0, False, False, False
+    while i < len(raw):
+        ch = raw[i]
+        if in_string:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        if raw.startswith("//", i):
+            had_comments = True
+            end = raw.find("\n", i)
+            i = len(raw) if end < 0 else end
+            continue
+        if raw.startswith("/*", i):
+            had_comments = True
+            end = raw.find("*/", i + 2)
+            i = len(raw) if end < 0 else end + 2
+            continue
+        out.append(ch)
+        i += 1
+    clean = re.sub(r",(\s*[\]}])", r"\1", "".join(out))
+    if clean.strip() == "":
+        return {}, had_comments
+    value = json.loads(clean)
+    if not isinstance(value, dict):
+        raise ValueError("%s does not contain a JSON object" % path)
+    return value, had_comments
+
+
+def opencode_key_ref():
+    """The {file:...} reference OpenCode resolves itself; ~ keeps it portable."""
+    if os.path.abspath(SITEGEN_DIR) == os.path.join(HOME, ".sitegen"):
+        return "{file:~/.sitegen/api-key}"
+    return "{file:%s}" % KEY_FILE
+
+
+def install_opencode(ids, model, small_model, state, backup_dir):
+    path = opencode_config_path()
+    try:
+        config, had_comments = read_jsonc(path)
+    except ValueError:
+        warn("%s could not be read as JSON, so OpenCode was left unchanged. Fix it and run this again." % path)
+        return None
+    backup(path, backup_dir, "opencode-" + os.path.basename(path))
+    providers = config.get("provider") if isinstance(config.get("provider"), dict) else {}
+
+    # As for Claude Code, the values from before the FIRST install are kept.
+    previous = ((state or {}).get("opencode") or {}).get("previous")
+    if previous is None:
+        original = None
+        if os.path.exists(path):
+            with open(path, encoding="utf-8-sig") as handle:
+                original = handle.read()
+        previous = {
+            "model": config.get("model"),
+            "small_model": config.get("small_model"),
+            "provider": providers.get(PROVIDER_ID),
+            "hadProviders": "provider" in config,
+            "fileExisted": original is not None,
+            "original": original,
+        }
+
+    providers[PROVIDER_ID] = {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "sitegen",
+        "options": {"baseURL": BASE_URL + "/v1", "apiKey": opencode_key_ref()},
+        "models": {model_id: {"name": model_id} for model_id in ids},
+    }
+    config.setdefault("$schema", "https://opencode.ai/config.json")
+    config["provider"] = providers
+    config["model"] = "%s/%s" % (PROVIDER_ID, model)
+    config["small_model"] = "%s/%s" % (PROVIDER_ID, small_model)
+    write_json(path, config)
+    if had_comments:
+        warn("Comments in %s are left out while sitegen is set up; undo puts the file back with them." % path)
+    return {
+        "config": path,
+        "previous": previous,
+        "applied": {"model": config["model"], "small_model": config["small_model"], "baseURL": BASE_URL + "/v1"},
+    }
+
+
+def uninstall_opencode(opencode_state, backup_dir):
+    path = opencode_state.get("config")
+    if not path or not os.path.exists(path):
+        return
+    config, _ = read_jsonc(path)
+    backup(path, backup_dir, "opencode-" + os.path.basename(path))
+    previous = opencode_state.get("previous") or {}
+    applied = opencode_state.get("applied") or {}
+    for name in ("model", "small_model"):
+        if config.get(name) == applied.get(name):
+            if previous.get(name) is None:
+                config.pop(name, None)
+            else:
+                config[name] = previous[name]
+    providers = config.get("provider")
+    if isinstance(providers, dict):
+        # Only the provider block this installer wrote is replaced.
+        current = providers.get(PROVIDER_ID)
+        if isinstance(current, dict) and (current.get("options") or {}).get("baseURL") == applied.get("baseURL"):
+            if previous.get("provider") is None:
+                providers.pop(PROVIDER_ID, None)
+            else:
+                providers[PROVIDER_ID] = previous["provider"]
+        if not providers and not previous.get("hadProviders"):
+            config.pop("provider", None)
+    original = previous.get("original")
+    if previous.get("fileExisted") is False and not [k for k in config if k != "$schema"]:
+        os.remove(path)
+    elif original is not None and parse_jsonc(original, path)[0] == config:
+        # Nothing else changed since, so the file goes back byte for byte,
+        # comments and all.
+        write_text(path, original)
+    else:
+        write_json(path, config)
 
 
 def run(cmd, env_overrides=None):
@@ -587,7 +753,11 @@ def install_claude(model, tiers, state, backup_dir):
 
 
 def test_route(key, kind, model):
-    if kind == "codex":
+    if kind == "opencode":
+        status, text = request("POST", "/v1/chat/completions", key,
+                               {"model": model, "max_tokens": 32,
+                                "messages": [{"role": "user", "content": "Reply with the single word OK."}]})
+    elif kind == "codex":
         status, text = request("POST", "/v1/responses", key,
                                {"model": model, "input": "Reply with the single word OK.", "max_output_tokens": 32})
     else:
@@ -601,34 +771,38 @@ def test_route(key, kind, model):
 
 
 def tools_filter():
-    """SITEGEN_TOOLS as a set: codex, claude, or both when unset or 'both'."""
-    raw = (os.environ.get("SITEGEN_TOOLS") or "both").lower()
-    codex = "codex" in raw or "both" in raw or "all" in raw
-    claude = "claude" in raw or "both" in raw or "all" in raw
-    if not codex and not claude:
-        raise SetupError("SITEGEN_TOOLS must be codex, claude or both (it is '%s')." % os.environ.get("SITEGEN_TOOLS"))
-    return {"codex": codex, "claude": claude, "explicit": bool(os.environ.get("SITEGEN_TOOLS"))}
+    """SITEGEN_TOOLS as a set of tool ids; unset, 'all' or 'both' means every tool."""
+    raw = (os.environ.get("SITEGEN_TOOLS") or "all").lower()
+    every = "all" in raw or "both" in raw
+    wanted = {tool: every or tool in raw for tool in TOOL_ORDER}
+    if not any(wanted.values()):
+        raise SetupError("SITEGEN_TOOLS must name codex, claude or opencode, or be all (it is '%s')."
+                         % os.environ.get("SITEGEN_TOOLS"))
+    wanted["explicit"] = bool(os.environ.get("SITEGEN_TOOLS"))
+    return wanted
 
 
-def select_tools(can_codex, can_claude):
+def select_tools(can):
+    """Which of the available tools to set up. The ones left out are not touched."""
     wanted = tools_filter()
-    pick = {"codex": can_codex and wanted["codex"], "claude": can_claude and wanted["claude"]}
-    if wanted["explicit"] or not (can_codex and can_claude) or not interactive():
+    available = [tool for tool in TOOL_ORDER if can.get(tool)]
+    pick = {tool: bool(can.get(tool)) and wanted[tool] for tool in TOOL_ORDER}
+    if wanted["explicit"] or len(available) < 2 or not interactive():
         return pick
     say()
-    say("  What should sitegen set up?")
-    say("     1. Codex and Claude Code  (recommended)")
-    say("     2. Only Codex             (Claude Code stays as it is)")
-    say("     3. Only Claude Code       (Codex stays as it is)")
+    say("  What should sitegen set up? Tools you leave out stay exactly as they are.")
+    say("     1. All of them: %s  (recommended)" % ", ".join(TOOL_NAMES[t] for t in available))
+    for index, tool in enumerate(available, 2):
+        say("     %d. %s" % (index, TOOL_NAMES[tool]))
     while True:
-        answer = input("  Press Enter for 1, or type a number: ").strip()
-        if answer in ("", "1"):
-            return {"codex": True, "claude": True}
-        if answer == "2":
-            return {"codex": True, "claude": False}
-        if answer == "3":
-            return {"codex": False, "claude": True}
-        warn("Type 1, 2 or 3.")
+        answer = input("  Press Enter for 1, or type one number or several (for example 2,3): ").strip()
+        numbers = [n for n in re.split(r"[,\s]+", answer) if n]
+        if not numbers or "1" in numbers:
+            return {tool: tool in available for tool in TOOL_ORDER}
+        if all(n.isdigit() and 2 <= int(n) <= len(available) + 1 for n in numbers):
+            chosen = {available[int(n) - 2] for n in numbers}
+            return {tool: tool in chosen for tool in TOOL_ORDER}
+        warn("Type numbers from 1 to %d." % (len(available) + 1))
 
 
 def install_undo_script():
@@ -649,7 +823,7 @@ def install_undo_script():
 
 def install():
     say()
-    say(paint("1", "sitegen setup for Codex and Claude Code"))
+    say(paint("1", "sitegen setup for Codex, Claude Code and OpenCode"))
     say("Server: " + BASE_URL)
 
     step("1. Your sitegen API key")
@@ -664,11 +838,15 @@ def install():
     ids = [str(item.get("id")) for item in (json.loads(text).get("data") or []) if item.get("id")]
     gpt = sorted((i for i in ids if re.match(r"(gpt-|o\d|codex-)", i)), key=lambda i: (-gpt_rank(i), i))
     claude = sorted((i for i in ids if i.startswith("claude-")), key=lambda i: (-claude_version(i), i))
-    ok("Key accepted: %d GPT models for Codex, %d Claude models for Claude Code." % (len(gpt), len(claude)))
+    # OpenCode speaks the chat completions format, which serves every family.
+    everything = claude + gpt + sorted(i for i in ids if i not in gpt and i not in claude)
+    ok("Key accepted: %d models (%d GPT, %d Claude)." % (len(ids), len(gpt), len(claude)))
 
-    step("2. Looking for Codex and Claude Code")
+    step("2. Looking for Codex, Claude Code and OpenCode")
     codex = find_codex()
     claude_exe = find_claude()
+    opencode_exe = find_opencode()
+    opencode_found = bool(opencode_exe) or os.path.isdir(OPENCODE_DIR)
     if codex:
         ok("Codex found: " + codex)
     else:
@@ -678,16 +856,25 @@ def install():
     else:
         warn("Claude Code was not found. Its settings will still be written, ready for when you install it "
              "(curl -fsSL https://claude.ai/install.sh | bash).")
+    if opencode_exe:
+        ok("OpenCode found: " + opencode_exe)
+    elif opencode_found:
+        ok("OpenCode settings found: " + OPENCODE_DIR)
+    else:
+        warn("OpenCode was not found (https://opencode.ai). Install it and run this again to set it up too.")
     if codex and not gpt:
         warn("Your plan has no GPT models, so Codex was left unchanged.")
     if not claude:
         warn("Your plan has no Claude models, so Claude Code was left unchanged.")
-    tools = select_tools(bool(codex) and bool(gpt), bool(claude))
-    do_codex, do_claude = tools["codex"], tools["claude"]
-    if not do_codex and not do_claude:
+    # Named explicitly, OpenCode is set up even before it is installed.
+    opencode_wanted = opencode_found or "opencode" in (os.environ.get("SITEGEN_TOOLS") or "").lower()
+    tools = select_tools({"codex": bool(codex) and bool(gpt), "claude": bool(claude),
+                          "opencode": opencode_wanted and bool(ids)})
+    do_codex, do_claude, do_opencode = tools["codex"], tools["claude"], tools["opencode"]
+    if not do_codex and not do_claude and not do_opencode:
         raise SetupError("Nothing to set up.")
 
-    codex_model = claude_model = tiers = None
+    codex_model = claude_model = tiers = opencode_model = opencode_small = None
     if do_codex:
         codex_model = select_model("Default model for Codex (you can switch any time with /model):", gpt, gpt[0],
                                    os.environ.get("SITEGEN_CODEX_MODEL"))
@@ -698,6 +885,13 @@ def install():
         tiers = {"opus": opus, "sonnet": sonnet, "haiku": haiku}
         claude_model = select_model("Default model for Claude Code (you can switch any time with /model):", claude, opus,
                                     os.environ.get("SITEGEN_CLAUDE_MODEL"))
+    if do_opencode:
+        best = first_of(claude_best(claude, "opus"), claude_best(claude, "sonnet"), gpt[0] if gpt else None, everything[0])
+        opencode_model = select_model("Default model for OpenCode (you can switch any time with /models):", everything,
+                                      best, os.environ.get("SITEGEN_OPENCODE_MODEL"))
+        # Session titles and summaries go to a small, cheap model.
+        opencode_small = first_of(claude_best(claude, "haiku"),
+                                  next((i for i in gpt if re.search(r"mini|nano|luna", i)), None), opencode_model)
 
     step("3. Saving your key securely")
     os.makedirs(SITEGEN_DIR, exist_ok=True)
@@ -722,7 +916,8 @@ def install():
     new_state = {"version": INSTALLER_VERSION, "baseUrl": BASE_URL,
                  "installedAt": datetime.datetime.now().isoformat(),
                  "codex": None if do_codex else (state or {}).get("codex"),
-                 "claude": None if do_claude else (state or {}).get("claude")}
+                 "claude": None if do_claude else (state or {}).get("claude"),
+                 "opencode": None if do_opencode else (state or {}).get("opencode")}
 
     step("4. Setting up the apps")
     if do_codex and install_codex(codex, gpt, codex_model, backup_dir):
@@ -734,6 +929,12 @@ def install():
             new_state["claude"] = result
             ok("Claude Code now uses sitegen (%s by default; opus=%s, sonnet=%s, haiku=%s)."
                % (claude_model, tiers["opus"], tiers["sonnet"], tiers["haiku"]))
+    if do_opencode:
+        result = install_opencode(everything, opencode_model, opencode_small, state, backup_dir)
+        if result is not None:
+            new_state["opencode"] = result
+            ok("OpenCode now uses sitegen (%s by default, %d models under the sitegen provider)."
+               % (opencode_model, len(everything)))
     write_private(STATE_FILE, json.dumps(new_state, indent=2) + "\n")
     say("  Backups of your previous settings: " + backup_dir)
     undo_script = install_undo_script()
@@ -752,6 +953,12 @@ def install():
                 warn("Claude Code route test failed: " + err)
             else:
                 ok("Claude Code route answered (%s)." % claude_model)
+        if do_opencode and new_state["opencode"]:
+            err = test_route(key, "opencode", opencode_model)
+            if err:
+                warn("OpenCode route test failed: " + err)
+            else:
+                ok("OpenCode route answered (%s)." % opencode_model)
 
     for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"):
         if os.environ.get(name):
@@ -762,7 +969,8 @@ def install():
     say(paint("32", "Done."))
     for name, done, label, hint in (
             ("codex", do_codex, "Codex:       ", "restart the Codex app if it is open, or run: codex"),
-            ("claude", do_claude, "Claude Code: ", "open a new terminal and run: claude  (IDE extensions pick it up on restart)")):
+            ("claude", do_claude, "Claude Code: ", "open a new terminal and run: claude  (IDE extensions pick it up on restart)"),
+            ("opencode", do_opencode, "OpenCode:    ", "restart the OpenCode app if it is open, or run: opencode")):
         if done and new_state[name]:
             say("  %s %s" % (label, hint))
         elif new_state[name]:
@@ -783,7 +991,7 @@ def install():
 
 def uninstall():
     wanted = tools_filter()
-    names = " and ".join(n for n, on in (("Codex", wanted["codex"]), ("Claude Code", wanted["claude"])) if on)
+    names = ", ".join(TOOL_NAMES[t] for t in TOOL_ORDER if wanted[t])
     say()
     say(paint("1", "Putting %s back to how they were before sitegen setup" % names))
     try:
@@ -843,20 +1051,29 @@ def uninstall():
         except (ValueError, OSError) as exc:
             warn("Could not restore %s (%s). Your backups are in %s." % (CLAUDE_SETTINGS, exc, BACKUP_ROOT))
 
-    # The key stays while either tool still uses sitegen.
-    keep = {name: (None if wanted[name] else (state or {}).get(name)) for name in ("codex", "claude")}
-    if keep["codex"] or keep["claude"]:
+    opencode_state = (state or {}).get("opencode")
+    if wanted["opencode"] and opencode_state:
+        try:
+            uninstall_opencode(opencode_state, backup_dir)
+            ok("OpenCode settings restored.")
+        except (ValueError, OSError) as exc:
+            warn("Could not restore OpenCode's settings (%s). Your backups are in %s." % (exc, BACKUP_ROOT))
+
+    # The key stays while any tool still uses sitegen.
+    keep = {name: (None if wanted[name] else (state or {}).get(name)) for name in TOOL_ORDER}
+    kept = [TOOL_NAMES[t] for t in TOOL_ORDER if keep[t]]
+    if kept:
         remaining = dict(state or {})
         remaining.update(keep)
         write_private(STATE_FILE, json.dumps(remaining, indent=2) + "\n")
-        ok("Saved key kept: %s still uses sitegen." % ("Codex" if keep["codex"] else "Claude Code"))
+        ok("Saved key kept: %s still use%s sitegen." % (", ".join(kept), "s" if len(kept) == 1 else ""))
     else:
         for path in (KEY_FILE, HELPER_FILE, STATE_FILE, UNDO_SCRIPT, LOCAL_COPY):
             if os.path.exists(path):
                 os.remove(path)
         ok("Saved key and the undo script removed.")
     say("  Backups are kept in %s (safe to delete)." % BACKUP_ROOT)
-    say(paint("32", "Done. Restart the Codex app or any open Claude Code sessions."))
+    say(paint("32", "Done. Restart Codex, OpenCode or any open Claude Code sessions."))
 
 
 def main():
