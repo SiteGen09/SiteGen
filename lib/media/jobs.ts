@@ -9,6 +9,7 @@ import { generateRelayImage, prepareRelayImage, relayImageResultSchema, type Rel
 import { selectMediaChannel } from '@/lib/ai/channels';
 import { MEDIA_UPSTREAM_USD_PER_CREDIT, creditsForUsage } from '@/lib/ai/pricing';
 import { loadRoutingPreferences } from '@/lib/ai/sources';
+import { applyKeyRouting, type KeyPolicy } from '@/lib/keys/key-policy';
 import { isProvider } from '@/lib/ai/providers';
 import { resolvePlatformCreds } from '@/lib/admin/credentials';
 import { ApiError } from '@/lib/api/errors';
@@ -135,6 +136,8 @@ export function callbackUrlFor(jobId: string, token: string): string | null {
 export interface CreateJobInput {
   userId: string;
   apiKeyId: string | null;
+  /** The calling key's routing overrides; absent for a dashboard session. */
+  keyPolicy?: KeyPolicy;
   publicModelId: string;
   kind: MediaKind;
   /** Set when the job was started from a dashboard conversation. */
@@ -154,7 +157,7 @@ export interface CreateJobInput {
  */
 export async function createMediaJob(input: CreateJobInput): Promise<MediaJob> {
   await enforceLocalPolicy(policyText(input.input));
-  const preferences = await loadRoutingPreferences(input.userId);
+  const preferences = applyKeyRouting(await loadRoutingPreferences(input.userId), input.keyPolicy);
   const channel = await selectMediaChannel(
     input.publicModelId,
     input.planKey,

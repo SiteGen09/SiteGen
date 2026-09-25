@@ -6,6 +6,7 @@ import type { ChannelRow } from '@/lib/ai/fallback';
 import { MODELS } from '@/lib/ai/models';
 import { ApiError } from '@/lib/api/errors';
 import { parseBearerKey, requireScope, type AuthenticatedKey } from '@/lib/api/api-key-auth';
+import { UNRESTRICTED_POLICY } from '@/lib/keys/key-policy';
 import { costUsd, creditsForUsage } from '@/lib/ai/pricing';
 import { HOLD_BUDGET, estimateHoldCredits } from '@/lib/generate/estimate';
 import { generateSpec } from '@/lib/generate/generate';
@@ -319,6 +320,7 @@ describe('requireScope', () => {
     ownerId: 'u1',
     rateLimitRpm: 60,
     scopes: ['generate'],
+    policy: UNRESTRICTED_POLICY,
   };
 
   it('passes when the scope is granted', () => {

@@ -5,6 +5,7 @@ import { openAiErrorFrom } from '@/lib/api/openai-errors';
 import { loadRoutingPreferences } from '@/lib/ai/sources';
 import { listPublicModels } from '@/lib/ai/channels';
 import { isPlanKey, type PlanKey } from '@/lib/billing/plans';
+import { applyKeyRouting } from '@/lib/keys/key-policy';
 import { logger } from '@/lib/log';
 import { createServiceClient } from '@/lib/supabase/service';
 
@@ -37,11 +38,14 @@ export async function GET(req: Request): Promise<Response> {
   const log = logger({ request_id: requestId, route: 'v1.models' });
 
   try {
-    const auth = await authenticateApiKey(req.headers.get('authorization'), log);
+    const auth = await authenticateApiKey(req.headers.get('authorization'), log, req);
     requireScope(auth, SCOPE);
 
     const planKey = await loadPlanKey(auth.ownerId);
-    const models = await listPublicModels(planKey, await loadRoutingPreferences(auth.ownerId));
+    const allowed = auth.policy.allowedModels;
+    const models = (
+      await listPublicModels(planKey, applyKeyRouting(await loadRoutingPreferences(auth.ownerId), auth.policy))
+    ).filter((id) => allowed === null || allowed.includes(id));
 
     return Response.json({
       object: 'list',

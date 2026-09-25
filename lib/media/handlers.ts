@@ -15,6 +15,7 @@ import {
   type MediaKind,
 } from '@/lib/media/jobs';
 import { mediaRequestSchema } from '@/lib/media/request';
+import { enforceKeyModel, enforceKeyQuota } from '@/lib/keys/key-policy';
 import { logger } from '@/lib/log';
 import { mediaAvailability } from './availability';
 
@@ -67,7 +68,7 @@ export async function handleCreate(request: Request, kind: MediaKind): Promise<R
   const log = logger({ request_id: requestId, route: `v1.${kind}s` });
 
   try {
-    const auth = await authenticateApiKey(request.headers.get('authorization'), log);
+    const auth = await authenticateApiKey(request.headers.get('authorization'), log, request);
     requireScope(auth, SCOPE);
     await admitGeneration(auth.ownerId);
     const limit = await consumeRateLimit(auth.apiKeyId, auth.rateLimitRpm);
@@ -92,10 +93,14 @@ export async function handleCreate(request: Request, kind: MediaKind): Promise<R
       );
     }
 
+    enforceKeyModel(auth.policy, parsed.data.model);
+    enforceKeyQuota(auth.policy);
+
     const plan = await loadPlan(auth.ownerId);
     const job = await createMediaJob({
       userId: auth.ownerId,
       apiKeyId: auth.apiKeyId,
+      keyPolicy: auth.policy,
       publicModelId: parsed.data.model,
       kind,
       conversationId: null,
@@ -143,7 +148,7 @@ export async function handleRead(
   const log = logger({ request_id: requestId, route: `v1.${kind}s.read` });
 
   try {
-    const auth = await authenticateApiKey(request.headers.get('authorization'), log);
+    const auth = await authenticateApiKey(request.headers.get('authorization'), log, request);
     requireScope(auth, SCOPE);
 
     const job = await loadJob(id);

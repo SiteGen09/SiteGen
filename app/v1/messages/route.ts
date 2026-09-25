@@ -395,7 +395,7 @@ async function handlePost(req: Request): Promise<Response> {
   // the caller's usage history.
   let caller: AuthenticatedKey | undefined;
   try {
-    const auth = await authenticateApiKey(readAuthHeader(req), log);
+    const auth = await authenticateApiKey(readAuthHeader(req), log, req);
     caller = auth;
     requireScope(auth, SCOPE);
     await admitGeneration(auth.ownerId);

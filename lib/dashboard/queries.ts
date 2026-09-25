@@ -42,6 +42,15 @@ export const apiKeyRowSchema = z.object({
   last_used_at: z.string().nullable(),
   created_at: z.string(),
   rate_limit_rpm: numeric,
+  // Per-key settings; defaulted so the page still lists keys on a database
+  // that has not yet run 20260925150000_api_key_settings.
+  expires_at: z.string().nullable().default(null),
+  quota_credits: nullableNumeric.default(null),
+  used_credits: numeric.default(0),
+  allowed_models: z.array(z.string()).nullable().default(null),
+  allowed_ips: z.array(z.string()).nullable().default(null),
+  routing_provider_id: z.string().nullable().default(null),
+  routing_sources: z.record(z.string(), z.string()).default({}),
 });
 export type ApiKeyRow = z.infer<typeof apiKeyRowSchema>;
 
@@ -218,10 +227,14 @@ export async function getEntitlement(userId: string): Promise<Entitlement> {
 
 export async function listApiKeys(): Promise<ApiKeyRow[]> {
   const supabase = await createClient();
-  const { data, error } = await supabase
-    .from('api_keys')
-    .select('id, name, key_prefix, last_four, status, last_used_at, created_at, rate_limit_rpm')
-    .order('created_at', { ascending: false });
+  const base = 'id, name, key_prefix, last_four, status, last_used_at, created_at, rate_limit_rpm';
+  const list = (columns: string) =>
+    supabase.from('api_keys').select(columns).order('created_at', { ascending: false });
+  let { data, error } = await list(
+    `${base}, expires_at, quota_credits, used_credits, allowed_models, allowed_ips, routing_provider_id, routing_sources`,
+  );
+  // 42703: the settings columns do not exist yet.
+  if (error?.code === '42703') ({ data, error } = await list(base));
   if (error) fail('api keys', error.message);
   return z.array(apiKeyRowSchema).parse(data);
 }

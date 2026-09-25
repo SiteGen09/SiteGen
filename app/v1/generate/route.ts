@@ -30,6 +30,7 @@ import { recordRequestFailure } from '@/lib/chat/pipeline';
 import { buildSpecPrompt } from '@/lib/generate/prompt';
 import { generateRequestSchema, requestHash, type GenerateRequest } from '@/lib/generate/request';
 import type { Logger } from '@/lib/log';
+import { enforceKeyQuota } from '@/lib/keys/key-policy';
 import { logger } from '@/lib/log';
 import { createServiceClient } from '@/lib/supabase/service';
 
@@ -308,9 +309,10 @@ async function handlePost(req: Request): Promise<Response> {
   // the caller's usage history.
   let caller: AuthenticatedKey | undefined;
   try {
-    const auth = await authenticateApiKey(req.headers.get('authorization'), log);
+    const auth = await authenticateApiKey(req.headers.get('authorization'), log, req);
     caller = auth;
     requireScope(auth, 'generate');
+    enforceKeyQuota(auth.policy);
     await admitGeneration(auth.ownerId);
 
     const limit = await consumeRateLimit(auth.apiKeyId, auth.rateLimitRpm);

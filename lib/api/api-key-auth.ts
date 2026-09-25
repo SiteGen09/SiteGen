@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import { ApiError } from '@/lib/api/errors';
 import { hashApiKey, timingSafeEqualHex } from '@/lib/keys/api-key';
+import { ipAllowed, trustedClientIp, UNRESTRICTED_POLICY, type KeyPolicy } from '@/lib/keys/key-policy';
 import type { Logger } from '@/lib/log';
 import { createServiceClient } from '@/lib/supabase/service';
 
@@ -21,6 +22,7 @@ export interface AuthenticatedKey {
   ownerId: string;
   rateLimitRpm: number;
   scopes: string[];
+  policy: KeyPolicy;
 }
 
 /**
@@ -40,7 +42,23 @@ const apiKeyRowSchema = z.object({
    * `null` when the profile is missing; both are handled rather than assumed.
    */
   profiles: z.object({ status: z.string(), billing_hold: z.boolean().optional() }).nullable(),
+  // Per-key settings. Optional so a database that has not yet run
+  // 20260925150000_api_key_settings keeps authenticating unrestricted keys.
+  expires_at: z.string().nullish(),
+  quota_credits: z.coerce.number().nullish(),
+  used_credits: z.coerce.number().nullish(),
+  allowed_models: z.array(z.string()).nullish(),
+  allowed_ips: z.array(z.string()).nullish(),
+  routing_provider_id: z.string().nullish(),
+  routing_sources: z.record(z.string(), z.string()).nullish(),
 });
+
+const BASE_COLUMNS =
+  'id, owner_id, key_hash, scopes, status, rate_limit_rpm, revoked_at, profiles(status,billing_hold)';
+const POLICY_COLUMNS =
+  'expires_at, quota_credits, used_credits, allowed_models, allowed_ips, routing_provider_id, routing_sources';
+/** Postgres "undefined column": the settings migration has not been applied. */
+const UNDEFINED_COLUMN = '42703';
 
 /**
  * One message for every rejection reason. Distinguishing "no such key" from
@@ -100,18 +118,16 @@ function touchLastUsed(service: SupabaseClient, apiKeyId: string, log?: Logger):
 export async function authenticateApiKey(
   authHeader: string | null,
   log?: Logger,
+  request?: Request,
 ): Promise<AuthenticatedKey> {
   const key = parseBearerKey(authHeader);
   const keyHash = hashApiKey(key);
   const service = createServiceClient();
 
-  const { data, error } = await service
-    .from('api_keys')
-    .select(
-      'id, owner_id, key_hash, scopes, status, rate_limit_rpm, revoked_at, profiles(status,billing_hold)',
-    )
-    .eq('key_hash', keyHash)
-    .maybeSingle();
+  const lookup = (columns: string) =>
+    service.from('api_keys').select(columns).eq('key_hash', keyHash).maybeSingle();
+  let { data, error } = await lookup(`${BASE_COLUMNS}, ${POLICY_COLUMNS}`);
+  if (error?.code === UNDEFINED_COLUMN) ({ data, error } = await lookup(BASE_COLUMNS));
 
   if (error !== null) {
     log?.error('api_key.lookup_failed', { db_error: error.code });
@@ -122,6 +138,7 @@ export async function authenticateApiKey(
   const row = apiKeyRowSchema.parse(data);
   if (!timingSafeEqualHex(row.key_hash, keyHash)) throw unauthorized();
   if (row.status !== 'active' || row.revoked_at !== null) throw unauthorized();
+  if (row.expires_at != null && Date.parse(row.expires_at) <= Date.now()) throw unauthorized();
 
   // The kill switch: one check here covers every present and future endpoint,
   // since all of them authenticate through this function. The message stays
@@ -131,6 +148,17 @@ export async function authenticateApiKey(
     throw new ApiError('forbidden', 'invalid or missing API key', 403);
   }
 
+  // Checked after suspension so an owner cannot learn their account state by
+  // calling from an unlisted address. Fails closed: with no trusted address
+  // header the caller's IP is unknown, and a restricted key is refused.
+  if (row.allowed_ips != null) {
+    const ip = request === undefined ? null : trustedClientIp(request.headers);
+    if (!ipAllowed(ip, row.allowed_ips)) {
+      log?.warn('api_key.ip_refused', { api_key_id: row.id });
+      throw new ApiError('forbidden', 'this API key may not be used from this IP address', 403);
+    }
+  }
+
   touchLastUsed(service, row.id, log);
 
   return {
@@ -138,6 +166,14 @@ export async function authenticateApiKey(
     ownerId: row.owner_id,
     rateLimitRpm: row.rate_limit_rpm,
     scopes: row.scopes,
+    policy: {
+      ...UNRESTRICTED_POLICY,
+      quotaCredits: row.quota_credits ?? null,
+      usedCredits: row.used_credits ?? 0,
+      allowedModels: row.allowed_models ?? null,
+      routingProviderId: row.routing_provider_id ?? null,
+      routingSources: row.routing_sources ?? {},
+    },
   };
 }
 

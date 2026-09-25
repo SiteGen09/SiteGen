@@ -31,12 +31,15 @@ import type { NormalizedUsage } from '@/lib/generate/usage';
 import { checkContent } from '@/lib/moderation/check';
 import { recordStrikeAndMaybeSuspend } from '@/lib/moderation/strikes';
 import type { Logger } from '@/lib/log';
+import { applyKeyRouting, enforceKeyModel, enforceKeyQuota, type KeyPolicy } from '@/lib/keys/key-policy';
 import { createServiceClient } from '@/lib/supabase/service';
 
 /** Shared caller identity: dashboard sessions do not manufacture an API key. */
 export interface CallIdentity {
   ownerId: string;
   apiKeyId: string | null;
+  /** The key's own limits and routing; absent for a dashboard session. */
+  policy?: KeyPolicy;
 }
 
 export const SSE_HEADERS = {
@@ -115,8 +118,9 @@ export async function resolveChannelAndCreds(
   publicModelId: string,
   userId: string,
   planKey: string,
+  policy?: KeyPolicy,
 ): Promise<ResolvedChannel | null> {
-  const preferences = await loadRoutingPreferences(userId);
+  const preferences = applyKeyRouting(await loadRoutingPreferences(userId), policy);
   const route = await selectChatRoute(publicModelId, planKey, preferences);
   if (route === null) return null;
   const channel = route.start;
@@ -286,6 +290,13 @@ export async function prepareCall(input: PreflightInput): Promise<Preflight> {
 
 async function preflight(input: PreflightInput): Promise<Preflight> {
   const { requestId, auth, log, model, messages, tools, maxOutputTokens, maxOutputField } = input;
+  try {
+    enforceKeyModel(auth.policy, model);
+    enforceKeyQuota(auth.policy);
+  } catch (err) {
+    if (err instanceof ApiError) return failure(err, requestId);
+    throw err;
+  }
   const plan = await loadPlan(auth.ownerId);
 
   // Enforce the plan's output ceiling — reject, never clamp.
@@ -320,7 +331,7 @@ async function preflight(input: PreflightInput): Promise<Preflight> {
   }
 
   // Resolve the channel by public model name.
-  const resolved = await resolveChannelAndCreds(model, auth.ownerId, plan.key);
+  const resolved = await resolveChannelAndCreds(model, auth.ownerId, plan.key, auth.policy);
   if (resolved === null) {
     return failure(
       new ApiError('model_not_found', `the model '${model}' does not exist`, 404),

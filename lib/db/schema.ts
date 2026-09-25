@@ -24,11 +24,18 @@ export const apiKeys = pgTable('api_keys', {
   keyPrefix: text('key_prefix').notNull(),
   lastFour: text('last_four').notNull(),
   scopes: text('scopes').array().notNull().default(['generate', 'chat']),
-  status: text('status').notNull().default('active'), // active | revoked
+  status: text('status').notNull().default('active'), // active | disabled | revoked
   lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
   rateLimitRpm: integer('rate_limit_rpm').notNull().default(60),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  quotaCredits: bigint('quota_credits', { mode: 'number' }), // null = unlimited
+  usedCredits: bigint('used_credits', { mode: 'number' }).notNull().default(0),
+  allowedModels: text('allowed_models').array(), // null = every model
+  allowedIps: text('allowed_ips').array(), // null = any address
+  routingProviderId: text('routing_provider_id'),
+  routingSources: jsonb('routing_sources').notNull().default({}),
 }, (table) => ({
   ownerIdx: index('api_keys_owner_id_idx').on(table.ownerId),
   hashIdx: index('api_keys_key_hash_idx').on(table.keyHash),
