@@ -24,7 +24,7 @@ const questions = [
 
 export default function LandingPage() {
   const plans = getPlans();
-  const publicPlans = (['starter', 'pro', 'max'] as const).map((key) => ({ key, label: plans[key].label, priceCents: plans[key].priceCents, credits: plans[key].monthlyCredits, requestsPerMinute: plans[key].rateLimitRpm, maxOutputTokens: plans[key].maxOutputTokens }));
+  const publicPlans = (['starter', 'pro', 'max'] as const).map((key) => ({ key, label: plans[key].label, priceCents: plans[key].priceCents, credits: plans[key].monthlyCredits, requestsPerMinute: plans[key].rateLimitRpm }));
 
   return <div className={styles.page}>
     <a className={styles.skipLink} href="#main-content">Skip to content</a>

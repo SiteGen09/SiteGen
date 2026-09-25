@@ -16,7 +16,7 @@ import {
   type IdempotentResponse,
 } from '@/lib/api/idempotency';
 import { resolvePlatformCreds } from '@/lib/admin/credentials';
-import { getPlans, isPlanKey, type PlanKey } from '@/lib/billing/plans';
+import { isPlanKey, type PlanKey } from '@/lib/billing/plans';
 import type { ChatMessage, ChatTool } from '@/lib/chat/request';
 import { totalMessageChars, totalToolChars } from '@/lib/chat/request';
 import { moderationText } from '@/lib/chat/tools';
@@ -83,7 +83,7 @@ export function readIdempotencyKey(req: Request): string {
   return key;
 }
 
-export async function loadPlan(userId: string): Promise<{ key: PlanKey; maxOutputTokens: number }> {
+export async function loadPlan(userId: string): Promise<{ key: PlanKey }> {
   const service = createServiceClient();
   const { data, error } = await service
     .from('entitlements')
@@ -96,7 +96,7 @@ export async function loadPlan(userId: string): Promise<{ key: PlanKey; maxOutpu
   }
   const parsed = z.object({ plan_key: z.string() }).nullable().parse(data);
   const key: PlanKey = parsed !== null && isPlanKey(parsed.plan_key) ? parsed.plan_key : 'free';
-  return { key, maxOutputTokens: getPlans()[key].maxOutputTokens };
+  return { key };
 }
 
 export interface ResolvedChannel {
@@ -234,7 +234,14 @@ export async function recordRequestFailure(input: {
   }
 }
 
-/** Protocol-agnostic preflight input. `maxOutputField` only names the wire field in the refusal message. */
+/**
+ * Output ceiling used when the caller sends no `max_tokens`. Plans do not cap
+ * output: the credit hold, sized from whatever ceiling is in effect, is what
+ * bounds a request.
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 16384;
+
+/** Protocol-agnostic preflight input. */
 export interface PreflightInput {
   requestId: string;
   auth: CallIdentity;
@@ -243,14 +250,13 @@ export interface PreflightInput {
   messages: ChatMessage[];
   tools?: readonly ChatTool[] | undefined;
   maxOutputTokens?: number | undefined;
-  maxOutputField: string;
 }
 
 export type Preflight =
   | { ok: false; response: IdempotentResponse; error: ApiError }
   | {
       ok: true;
-      plan: { key: PlanKey; maxOutputTokens: number };
+      plan: { key: PlanKey };
       resolved: ResolvedChannel;
       requestedMax: number;
       held: boolean;
@@ -289,7 +295,7 @@ export async function prepareCall(input: PreflightInput): Promise<Preflight> {
 }
 
 async function preflight(input: PreflightInput): Promise<Preflight> {
-  const { requestId, auth, log, model, messages, tools, maxOutputTokens, maxOutputField } = input;
+  const { requestId, auth, log, model, messages, tools, maxOutputTokens } = input;
   try {
     enforceKeyModel(auth.policy, model);
     enforceKeyQuota(auth.policy);
@@ -298,16 +304,7 @@ async function preflight(input: PreflightInput): Promise<Preflight> {
     throw err;
   }
   const plan = await loadPlan(auth.ownerId);
-
-  // Enforce the plan's output ceiling — reject, never clamp.
-  const requestedMax = maxOutputTokens ?? plan.maxOutputTokens;
-  if (requestedMax > plan.maxOutputTokens) {
-    return failure(new ApiError(
-      'invalid_request',
-      `${maxOutputField} ${requestedMax} exceeds the ${plan.key} plan limit of ${plan.maxOutputTokens}`,
-      400,
-    ), requestId);
-  }
+  const requestedMax = maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
 
   // Moderation — before any upstream call, so a flagged prompt is never billed.
   const prompt = moderationText(messages);

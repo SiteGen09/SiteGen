@@ -111,7 +111,6 @@ type Plan = {
   priceCents: number;
   credits: number;
   requestsPerMinute: number;
-  maxOutputTokens: number;
 };
 
 const planDescriptions: Record<string, string> = {
@@ -150,7 +149,6 @@ export function PricingOptions({ plans }: { plans: Plan[] }) {
                   <li><Icon name="check" size={15} /> Chat models and enabled capabilities</li>
                   <li><Icon name="check" size={15} /> Usage tracking & API access</li>
                   <li><Icon name="check" size={15} /> {plan.requestsPerMinute} requests / minute</li>
-                  <li><Icon name="check" size={15} /> Up to {plan.maxOutputTokens.toLocaleString('en-US')} output tokens</li>
                 </ul>
                 <Link href="/dashboard/billing" className={plan.key === 'pro' ? styles.planButtonDark : styles.planButton}>Get {plan.label} <Icon name="arrow-right" size={15} /></Link>
               </article>

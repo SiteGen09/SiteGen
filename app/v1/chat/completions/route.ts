@@ -68,7 +68,6 @@ async function prepareChat(ctx: ChatContext): Promise<Preflight> {
     messages: ctx.body.messages,
     tools: ctx.body.tools,
     maxOutputTokens: ctx.body.max_tokens,
-    maxOutputField: 'max_tokens',
   });
 }
 

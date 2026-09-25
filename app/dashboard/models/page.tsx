@@ -108,12 +108,8 @@ export default async function ModelsPage({
           .
         </p>
         <p className="mt-2 text-xs text-zinc-500">
-          You are on the <span className="font-medium text-zinc-700">{planLabel}</span> plan, capped
-          at{' '}
-          <span className="tabular-nums">
-            {formatCredits(plans[entitlement.planKey].maxOutputTokens)}
-          </span>{' '}
-          output tokens per request. The Plan column shows which tier each model needs —{' '}
+          You are on the <span className="font-medium text-zinc-700">{planLabel}</span> plan. The
+          Plan column shows which tier each model needs —{' '}
           <Link href="/dashboard/billing" className="underline hover:text-zinc-700">
             change plan
           </Link>

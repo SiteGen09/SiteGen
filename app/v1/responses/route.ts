@@ -88,7 +88,6 @@ async function prepareResponse(ctx: ResponseContext): Promise<PreparedResponse> 
     messages,
     tools,
     maxOutputTokens: ctx.body.max_output_tokens,
-    maxOutputField: 'max_output_tokens',
   });
 
   return { preflight, messages, tools };

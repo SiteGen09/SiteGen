@@ -37,7 +37,7 @@ const backup: ChannelRow = {
 const input = {
   requestId: 'test-request', auth: { ownerId: 'owner', apiKeyId: null },
   model: 'model', messages: [{ role: 'user' as const, content: 'test' }],
-  maxOutputTokens: 1000, maxOutputField: 'max_tokens',
+  maxOutputTokens: 1000,
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: vi.fn() },
 };
 

@@ -239,7 +239,6 @@ async function handlePost(req: Request): Promise<Response> {
       log,
       model: input.model,
       messages,
-      maxOutputField: 'max_tokens',
     });
     if (!prepared.ok) throw prepared.error;
     held = prepared.held;

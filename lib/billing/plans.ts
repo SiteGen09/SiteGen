@@ -19,12 +19,6 @@ export interface PlanDef {
   rateLimitRpm: number;
   /** Ordering for channels.min_plan comparisons. */
   rank: number;
-  /**
-   * Largest `max_tokens` a gateway chat request may ask for on this plan. A
-   * request above it is rejected, not clamped, so the caller's cost estimate
-   * and ours stay in agreement.
-   */
-  maxOutputTokens: number;
 }
 
 function configuredPlanId(value: string | undefined): string | null {
@@ -41,7 +35,6 @@ export function getPlans(): Record<PlanKey, PlanDef> {
       monthlyCredits: 0,
       rateLimitRpm: 20,
       rank: 0,
-      maxOutputTokens: 1024,
     },
     starter: {
       key: 'starter',
@@ -51,7 +44,6 @@ export function getPlans(): Record<PlanKey, PlanDef> {
       monthlyCredits: 149_000,
       rateLimitRpm: 60,
       rank: 1,
-      maxOutputTokens: 4096,
     },
     pro: {
       key: 'pro',
@@ -61,7 +53,6 @@ export function getPlans(): Record<PlanKey, PlanDef> {
       monthlyCredits: 299_000,
       rateLimitRpm: 300,
       rank: 2,
-      maxOutputTokens: 16384,
     },
     max: {
       key: 'max',
@@ -71,7 +62,6 @@ export function getPlans(): Record<PlanKey, PlanDef> {
       monthlyCredits: 499_000,
       rateLimitRpm: 300,
       rank: 3,
-      maxOutputTokens: 16384,
     },
   };
 }

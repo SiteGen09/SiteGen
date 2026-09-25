@@ -114,7 +114,6 @@ async function prepareMessage(ctx: MessageContext): Promise<PreparedMessage> {
     messages,
     tools,
     maxOutputTokens: ctx.body.max_tokens,
-    maxOutputField: 'max_tokens',
   });
 
   return { preflight, messages, tools };
