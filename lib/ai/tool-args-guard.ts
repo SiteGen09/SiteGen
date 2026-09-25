@@ -37,8 +37,11 @@ interface CallState {
  * left alone.
  */
 export function createToolArgsGuard(): (frame: string) => string {
-  const calls = new Map<string, CallState>();
-  let latest: string | undefined;
+  // Looked up the way the SDK's tool-call tracker does: by id when the
+  // fragment has one, else by index, else the most recent call.
+  const byId = new Map<string, CallState>();
+  const byIndex = new Map<string, CallState>();
+  let latest: CallState | undefined;
 
   return (frame) => {
     const lines = frame.split(/\r?\n/);
@@ -65,18 +68,24 @@ export function createToolArgsGuard(): (frame: string) => string {
         const call = record(rawCall);
         if (!call) return true;
         const id = typeof call.id === 'string' && call.id.length > 0 ? call.id : undefined;
-        const key = typeof call.index === 'number' ? `${choiceIndex}:${call.index}` : id ?? latest;
-        if (key === undefined) return true;
-        latest = key;
-
+        const indexKey = typeof call.index === 'number' ? `${choiceIndex}:${call.index}` : undefined;
         const fn = record(call.function);
         const args = typeof fn?.arguments === 'string' ? fn.arguments : '';
-        const state = calls.get(key);
-        if (state === undefined || (id !== undefined && state.id !== undefined && id !== state.id)) {
-          calls.set(key, { id, arguments: args });
+
+        let state = id !== undefined ? byId.get(id) : indexKey !== undefined ? byIndex.get(indexKey) : latest;
+        if (state === undefined) {
+          state = { id, arguments: args };
+          if (id !== undefined) byId.set(id, state);
+          if (indexKey !== undefined) byIndex.set(indexKey, state);
+          latest = state;
           return true;
         }
-        state.id ??= id;
+        if (indexKey !== undefined) byIndex.set(indexKey, state);
+        latest = state;
+        if (state.id === undefined && id !== undefined) {
+          state.id = id;
+          byId.set(id, state);
+        }
         if (args.length === 0) return true;
         if (isCompleteJson(state.arguments)) {
           dropped += args.length;

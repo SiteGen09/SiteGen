@@ -24,6 +24,18 @@ describe('createToolArgsGuard', () => {
     expect(toolCallsOf(namedRepeat)).toEqual([{ index: 0, id: 'call_1', function: { name: 'exec_command' } }]);
   });
 
+  it('drops a repeat addressed by id alone, or by nothing at all', () => {
+    const guard = createToolArgsGuard();
+    guard(frame([{ index: 0, id: 'call_1', function: { name: 'exec_command', arguments: '' } }]));
+    guard(frame([{ index: 0, function: { arguments: '{"cmd":"ls"}' } }]));
+
+    const byId = guard(frame([{ id: 'call_1', type: 'function', function: { name: 'exec_command', arguments: '{"cmd":"ls"}' } }]));
+    expect(toolCallsOf(byId)).toEqual([{ id: 'call_1', type: 'function', function: { name: 'exec_command' } }]);
+
+    const bare = guard(frame([{ function: { arguments: '{"cmd":"ls"}' } }]));
+    expect(toolCallsOf(bare)).toBeUndefined();
+  });
+
   it('passes fragments through until the arguments are complete', () => {
     const guard = createToolArgsGuard();
     const parts = ['{"cmd":"echo }', '{"', '}"', '}'];
