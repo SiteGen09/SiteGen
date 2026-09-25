@@ -1,5 +1,6 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
+import { publicOrigin } from '@/lib/auth/redirect';
 
 /** Signed-in-only surfaces. Anything else is public. */
 const PROTECTED_PREFIXES = ['/dashboard'] as const;
@@ -47,19 +48,16 @@ export async function middleware(request: NextRequest) {
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   );
 
+  const origin = publicOrigin(request.headers, request.nextUrl.origin);
+
   if (!user && isProtected) {
-    const url = request.nextUrl.clone();
-    url.pathname = '/login';
-    url.search = '';
+    const url = new URL('/login', origin);
     url.searchParams.set('next', pathname);
     return NextResponse.redirect(url);
   }
 
   if (user && (AUTH_PATHS as readonly string[]).includes(pathname)) {
-    const url = request.nextUrl.clone();
-    url.pathname = '/dashboard';
-    url.search = '';
-    return NextResponse.redirect(url);
+    return NextResponse.redirect(new URL('/dashboard', origin));
   }
 
   return response;

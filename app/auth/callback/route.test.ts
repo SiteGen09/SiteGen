@@ -12,6 +12,13 @@ it('exchanges an OAuth code and redirects to the requested local page', async ()
   expect(result.headers.get('location')).toBe('http://localhost/dashboard/billing');
 });
 
+it('redirects to the public host behind the tunnel, not the listen address', async () => {
+  const result = await GET(new NextRequest('http://localhost:3000/auth/callback?code=valid&next=%2Fdashboard', {
+    headers: { 'x-forwarded-host': 'gensite.tech', 'x-forwarded-proto': 'https' },
+  }));
+  expect(result.headers.get('location')).toBe('https://gensite.tech/dashboard');
+});
+
 it('ignores external destinations after a successful exchange', async () => {
   const result = await GET(new NextRequest('http://localhost/auth/callback?code=valid&next=%2F%2Fevil.example'));
   expect(result.headers.get('location')).toBe('http://localhost/dashboard');

@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 import { dashboardErrorFrom } from '@/lib/api/dashboard-errors';
 import { ApiError } from '@/lib/api/errors';
+import { requestOriginMatches } from '@/lib/api/request-origin';
 import { loadPlan } from '@/lib/chat/pipeline';
 import { createMediaJob, mediaMarker } from '@/lib/media/jobs';
 import { mediaAvailability } from '@/lib/media/availability';
@@ -48,8 +49,8 @@ async function handlePost(request: Request): Promise<Response> {
       throw new ApiError('unauthorized', 'sign in to generate media', 401);
     }
     const userId = userData.user.id;
-    const origin = request.headers.get('origin');
-    if (origin !== null && origin !== new URL(request.url).origin) throw new ApiError('forbidden', 'Invalid request origin.', 403);
+    if (!requestOriginMatches(request))
+      throw new ApiError('forbidden', 'Invalid request origin.', 403);
 
     const parsed = requestSchema.safeParse(await request.json().catch(() => null));
     if (!parsed.success) {

@@ -6,6 +6,7 @@ import type { ModelMessage } from 'ai';
 
 import { dashboardErrorFrom } from '@/lib/api/dashboard-errors';
 import { ApiError } from '@/lib/api/errors';
+import { requestOriginMatches } from '@/lib/api/request-origin';
 import { asUpstreamError } from '@/lib/api/upstream';
 import { savedMessageSchema, type SavedMessage } from '@/lib/chat/conversations';
 import { attachmentsSchema, decodeTurn, encodeTurn, supportsImages, turnText } from '@/lib/chat/composer';
@@ -136,8 +137,7 @@ async function handlePost(req: Request): Promise<Response> {
     if (authError || !user) throw new ApiError('unauthorized', 'Sign in to chat.', 401);
     ownerId = user.id;
     await admitGeneration(user.id);
-    const origin = req.headers.get('origin');
-    if (origin !== null && origin !== new URL(req.url).origin)
+    if (!requestOriginMatches(req))
       throw new ApiError('forbidden', 'Invalid request origin.', 403);
     const profile = await service.from('profiles').select('status').eq('id', user.id).single();
     if (profile.error || profile.data?.status !== 'active')

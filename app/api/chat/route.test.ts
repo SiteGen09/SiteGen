@@ -119,15 +119,15 @@ beforeEach(() => {
   state.prepareCall.mockReset();
   state.prepareCall.mockImplementation(async () => accepted());
 });
-afterEach(() => { vi.unstubAllGlobals(); });
+afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
-async function requestChat(done: boolean, extra: Record<string, unknown> = {}): Promise<string> {
+async function requestChat(done: boolean, extra: Record<string, unknown> = {}, headers: Record<string, string> = {}): Promise<string> {
   vi.stubGlobal('fetch', vi.fn(async () => new Response(upstream + (done ? 'data: [DONE]\n\n' : ''), {
     headers: { 'content-type': 'text/event-stream' },
   })));
   const response = await POST(new Request('http://localhost/api/chat', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify({ model: 'public-gemini', content: 'Reply with OK', ...extra }),
   }));
   expect(response.status).toBe(200);
@@ -135,6 +135,14 @@ async function requestChat(done: boolean, extra: Record<string, unknown> = {}): 
   for (const callback of state.after) await callback();
   return body;
 }
+
+describe('dashboard chat origin validation behind a proxy', () => {
+  it('accepts the configured HTTPS app origin when Next receives an internal HTTP URL', async () => {
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://gensite.tech');
+    const body = await requestChat(true, {}, { origin: 'https://gensite.tech' });
+    expect(body).toContain('"content":"OK"');
+  });
+});
 
 describe('dashboard chat settlement after a Kie stream', () => {
   it('delivers text files and images upstream and saves them for later turns', async () => {

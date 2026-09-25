@@ -1,12 +1,13 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { authRedirectPath } from '@/lib/auth/redirect';
+import { authRedirectPath, publicOrigin } from '@/lib/auth/redirect';
 
 /**
  * Completes the Google OAuth / PKCE flow and preserves the intended destination.
  */
 export async function GET(request: NextRequest) {
-  const { searchParams, origin } = request.nextUrl;
+  const { searchParams } = request.nextUrl;
+  const origin = publicOrigin(request.headers, request.nextUrl.origin);
   const code = searchParams.get('code');
   const target = authRedirectPath(searchParams.get('next'));
   function failed(reason: string) {
