@@ -1,0 +1,5 @@
+# The installers are served byte for byte by /install.sh and /install.ps1.
+# core.autocrlf would give the shell script CRLF endings on Windows checkouts,
+# and `sh` cannot run those.
+installers/*.sh text eol=lf
+installers/*.ps1 text eol=crlf

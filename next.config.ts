@@ -13,6 +13,12 @@ const nextConfig: NextConfig = {
   // which warns under standalone, and Windows cannot run the bundle's pnpm
   // symlinks.
   output: process.env.BUILD_STANDALONE === "1" ? "standalone" : undefined,
+  // The install routes read these at request time; tracing cannot see a path
+  // built from process.cwd(), so a standalone bundle needs them named.
+  outputFileTracingIncludes: {
+    "/install.ps1": ["./installers/**"],
+    "/install.sh": ["./installers/**"],
+  },
   async headers() {
     return [
       {

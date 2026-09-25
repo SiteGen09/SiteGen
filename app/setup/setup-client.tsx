@@ -64,6 +64,9 @@ const APPS: [AppDef, ...AppDef[]] = [
     name: 'Claude Code (CLI / IDE)',
     protocol: 'anthropic',
     steps: ({ anthropicBase, model, os }) => [
+      {
+        text: 'Quicker: the automatic setup at the top of this page does all of this for you, IDE extensions included. The steps below are the manual route.',
+      },
       { text: 'Make sure Claude Code is already installed on this computer.' },
       {
         text: `Point it at this gateway with three environment variables. ${envNote(os)}`,
@@ -84,6 +87,9 @@ const APPS: [AppDef, ...AppDef[]] = [
     name: 'Codex',
     protocol: 'openai',
     steps: ({ openaiBase, model, os }) => [
+      {
+        text: "Quicker: the automatic setup at the top of this page does all of this for you, adds sitegen's GPT models to Codex's model picker and covers the Codex app too. The steps below are the manual route.",
+      },
       { text: 'Make sure the Codex CLI is already installed on this computer.' },
       {
         text: `Add a provider block to ${configPath(os, '.codex/config.toml')}, creating the file if it does not exist.`,

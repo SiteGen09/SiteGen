@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { listPublicPrices } from '@/lib/dashboard/queries';
 import { ThemeToggle } from '../theme-toggle';
 import { ApiExamples } from './api-examples';
+import { QuickInstall } from './quick-install';
 import { SetupClient, type ReserveEndpoints } from './setup-client';
 import { SitegenLogo } from '../_components/sitegen-logo';
 
@@ -79,6 +80,7 @@ export default async function SetupPage() {
         </p>
 
         <div className="mt-8">
+          <QuickInstall base={APP_URL} />
           <SetupClient
             openaiBase={openaiBase}
             anthropicBase={APP_URL}
