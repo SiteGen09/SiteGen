@@ -6,6 +6,7 @@ import type { LanguageModel } from 'ai';
 import type { Provider } from '@/lib/ai/providers';
 import { kieChatFetch } from '@/lib/ai/kie-chat';
 import { kieResponsesFetch } from '@/lib/ai/kie-responses';
+import { withToolArgsGuard } from '@/lib/ai/tool-args-guard';
 
 /** Logical unit of work a channel is asked to perform. */
 export type TaskAlias = 'site.spec' | 'site.copy' | 'interview';
@@ -86,7 +87,7 @@ export function buildAI(creds: ProviderCreds): AI {
     apiKey: creds.apiKey,
     baseURL,
     includeUsage: true,
-    fetch: new URL(baseURL).hostname === 'api.kie.ai' ? kieChatFetch : undefined,
+    fetch: withToolArgsGuard(new URL(baseURL).hostname === 'api.kie.ai' ? kieChatFetch : undefined),
   });
 }
 
