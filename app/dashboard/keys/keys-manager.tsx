@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { useActionState, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   createApiKey,
+  regenerateApiKey,
+  revealApiKey,
   revokeApiKey,
   setApiKeyEnabled,
   updateApiKey,
@@ -23,6 +25,8 @@ export interface KeyView {
   id: string;
   name: string;
   masked: string;
+  /** False for keys created before copies were stored; those cannot be copied. */
+  copyable: boolean;
   status: string;
   createdAt: string;
   lastUsedAt: string | null;
@@ -260,7 +264,12 @@ function KeyRow({
       <td className="whitespace-nowrap px-4 py-3">
         <span className={`inline-flex rounded px-1.5 py-0.5 text-xs font-medium ${STATUS_STYLES[status]}`}>{STATUS_LABELS[status]}</span>
       </td>
-      <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-zinc-600">{apiKey.masked}</td>
+      <td className="whitespace-nowrap px-4 py-3">
+        <div className="flex items-center gap-1">
+          <span className="font-mono text-xs text-zinc-600">{apiKey.masked}</span>
+          {!revoked && <CopyKeyButton apiKey={apiKey} />}
+        </div>
+      </td>
       <td className="whitespace-nowrap px-4 py-3">
         <QuotaCell quotaUsd={apiKey.quotaUsd} usedUsd={apiKey.usedUsd} />
       </td>
@@ -370,12 +379,11 @@ function MoreMenu({ apiKey, endpoints, onEdit }: { apiKey: KeyView; endpoints: E
   }, [open]);
 
   async function copyConnection() {
-    const text = [
-      ...endpoints.map((endpoint) => `${endpoint.label} base URL: ${endpoint.url}`),
-      `API key: the full key for “${apiKey.name}” (${apiKey.masked}) that you saved when it was created`,
-    ].join('\n');
+    const fallback = `API key: the full key for “${apiKey.name}” (${apiKey.masked}) that you saved when it was created`;
+    const text = (apiKey.copyable ? fetchKey(apiKey.id).catch(() => null) : Promise.resolve(null)).then((key) =>
+      [...endpoints.map((endpoint) => `${endpoint.label} base URL: ${endpoint.url}`), key ? `API key: ${key}` : fallback].join('\n'));
     try {
-      await navigator.clipboard.writeText(text);
+      await writeClipboard(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -435,7 +443,7 @@ function NewKeyBanner({
     <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 p-4">
       <div className="flex items-start justify-between gap-3">
         <p className="text-sm font-medium text-amber-900">
-          Key “{name}” created. Copy it now — it is never shown again.
+          Key “{name}” created. You can copy it again later from its row.
         </p>
         <button type="button" onClick={onDismiss} className="text-xs font-medium text-amber-900 underline">
           Dismiss
@@ -896,6 +904,73 @@ function PairSelect({ pair, saved }: { pair: RoutingPair; saved: string }) {
 }
 
 // ---------------------------------------------------------------- small parts
+
+async function fetchKey(id: string, regenerate = false): Promise<string> {
+  const result = await (regenerate ? regenerateApiKey(id) : revealApiKey(id));
+  if (result.status !== 'ok') throw new Error(result.message);
+  return result.key;
+}
+
+/**
+ * Writes text that is still being fetched. Safari only allows a clipboard
+ * write inside the click, so the pending text goes in a ClipboardItem there.
+ */
+async function writeClipboard(text: Promise<string>): Promise<void> {
+  if (typeof ClipboardItem !== 'undefined' && navigator.clipboard.write) {
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({ 'text/plain': text.then((value) => new Blob([value], { type: 'text/plain' })) }),
+      ]);
+      return;
+    } catch {
+      // Fall through: a failed fetch rethrows below, and a browser without
+      // promise support in ClipboardItem gets a plain write.
+    }
+  }
+  await navigator.clipboard.writeText(await text);
+}
+
+function CopyKeyButton({ apiKey }: { apiKey: KeyView }) {
+  const [state, setState] = useState<'idle' | 'copying' | 'copied'>('idle');
+  const [error, setError] = useState<string | null>(null);
+  // Keys made before copies were stored cannot be recovered; the owner can
+  // swap in a new secret that keeps the key's name and settings.
+  const regenerate = !apiKey.copyable;
+  async function copy() {
+    if (regenerate && !window.confirm(
+      `The full key for “${apiKey.name}” can’t be shown: it was created before keys could be copied.\n\n`
+      + 'Regenerate it? You get a new key, copied now and copyable later, with the same name and settings. '
+      + `The current key (${apiKey.masked}) stops working immediately.`,
+    )) return;
+    setError(null);
+    setState('copying');
+    try {
+      await writeClipboard(fetchKey(apiKey.id, regenerate));
+      setState('copied');
+      setTimeout(() => setState('idle'), 1500);
+    } catch (caught) {
+      setState('idle');
+      setError(caught instanceof Error && caught.message ? caught.message : 'Could not copy the key.');
+    }
+  }
+  return (
+    <span className="relative">
+      <IconButton
+        label={state === 'copied' ? 'Copied' : regenerate ? `Regenerate and copy ${apiKey.name} key` : `Copy ${apiKey.name} key`}
+        onClick={copy}
+        disabled={state === 'copying'}
+        className={regenerate ? 'text-zinc-400' : undefined}
+      >
+        {state === 'copied' ? <CheckIcon /> : <CopyIcon />}
+      </IconButton>
+      {error !== null && (
+        <span role="alert" className="absolute left-0 top-full z-10 mt-1 w-64 whitespace-normal rounded bg-red-50 px-2 py-1 text-xs text-red-700">
+          {error}
+        </span>
+      )}
+    </span>
+  );
+}
 
 function CopyButton({ text, label, showLabel = false }: { text: string; label: string; showLabel?: boolean }) {
   const [copied, setCopied] = useState(false);

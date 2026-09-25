@@ -9,6 +9,7 @@ import { loadKeyRoutingChoices } from '@/lib/dashboard/key-routing-choices';
 import { getEntitlement } from '@/lib/dashboard/queries';
 import { requireUser } from '@/lib/dashboard/session';
 import { generateApiKey } from '@/lib/keys/api-key';
+import { decryptApiKey, encryptApiKey, type StoredKeyColumns } from '@/lib/keys/stored-key';
 import { MAX_ALLOWED_IPS, parseIpList } from '@/lib/keys/key-policy';
 import { logger } from '@/lib/log';
 import { createServiceClient } from '@/lib/supabase/service';
@@ -22,8 +23,10 @@ import { createServiceClient } from '@/lib/supabase/service';
 export type CreateKeyState =
   | { status: 'idle' }
   | { status: 'error'; message: string }
-  /** `key` is the only moment the plaintext is available — it is never stored. */
+  /** Only the hash authenticates; an encrypted copy lets the owner copy it again. */
   | { status: 'created'; name: string; key: string };
+
+export type RevealKeyResult = { status: 'ok'; key: string } | { status: 'error'; message: string };
 
 export type UpdateKeyState =
   | { status: 'idle' }
@@ -151,6 +154,13 @@ export async function createApiKey(
   const rateLimitRpm = getPlans()[entitlement.planKey].rateLimitRpm;
 
   const generated = generateApiKey();
+  // A key without a stored copy still works; it just cannot be copied later.
+  let copy: StoredKeyColumns | null = null;
+  try {
+    copy = encryptApiKey(generated.key);
+  } catch (error) {
+    log.error('api key copy encryption failed', { error: error instanceof Error ? error.message : String(error) });
+  }
   const supabase = createServiceClient();
   const { data, error } = await supabase
     .from('api_keys')
@@ -161,6 +171,7 @@ export async function createApiKey(
       key_prefix: generated.prefix,
       last_four: generated.lastFour,
       rate_limit_rpm: rateLimitRpm,
+      ...copy,
     })
     .select('id')
     .single();
@@ -272,7 +283,13 @@ export async function revokeApiKey(
   // otherwise happily revoke somebody else's key.
   const { data, error } = await supabase
     .from('api_keys')
-    .update({ status: 'revoked', revoked_at: new Date().toISOString() })
+    .update({
+      status: 'revoked',
+      revoked_at: new Date().toISOString(),
+      key_ciphertext: null,
+      key_iv: null,
+      key_auth_tag: null,
+    })
     .eq('id', parsed.data.id)
     .eq('owner_id', user.id)
     .neq('status', 'revoked')
@@ -291,4 +308,84 @@ export async function revokeApiKey(
   log.info('api key revoked', { key_id: parsed.data.id });
   revalidatePath('/dashboard/keys');
   return { status: 'idle' };
+}
+
+/** Returns the full key so its owner can copy it. Revoked keys keep no copy. */
+export async function revealApiKey(id: string): Promise<RevealKeyResult> {
+  const user = await requireUser();
+  const log = logger({ request_id: `dashboard:keys:reveal:${user.id}` });
+
+  const parsed = idSchema.safeParse(id);
+  if (!parsed.success) return { status: 'error', message: firstIssue(parsed.error) };
+
+  const { data, error } = await createServiceClient()
+    .from('api_keys')
+    .select('status, key_ciphertext, key_iv, key_auth_tag')
+    .eq('id', parsed.data)
+    .eq('owner_id', user.id)
+    .maybeSingle();
+
+  if (error) {
+    log.error('api key reveal failed', { error: error.message });
+    return { status: 'error', message: 'Could not load the key. Try again.' };
+  }
+  if (!data || data.status === 'revoked') return { status: 'error', message: 'That key does not exist or is revoked.' };
+
+  let key: string | null;
+  try {
+    key = decryptApiKey(data);
+  } catch (error) {
+    log.error('api key decrypt failed', { key_id: parsed.data, error: error instanceof Error ? error.message : String(error) });
+    return { status: 'error', message: 'Could not load the key. Try again.' };
+  }
+  if (key === null) {
+    return { status: 'error', message: 'This key was created before keys could be copied. Create a new key to get one you can copy.' };
+  }
+
+  log.info('api key copied', { key_id: parsed.data });
+  return { status: 'ok', key };
+}
+
+/**
+ * Replaces a key's secret and keeps its name and settings. The old secret
+ * stops working at once. Lets keys made before copies were stored become
+ * copyable without being set up again.
+ */
+export async function regenerateApiKey(id: string): Promise<RevealKeyResult> {
+  const user = await requireUser();
+  const log = logger({ request_id: `dashboard:keys:regenerate:${user.id}` });
+
+  const parsed = idSchema.safeParse(id);
+  if (!parsed.success) return { status: 'error', message: firstIssue(parsed.error) };
+
+  const generated = generateApiKey();
+  let copy: StoredKeyColumns;
+  try {
+    copy = encryptApiKey(generated.key);
+  } catch (error) {
+    log.error('api key copy encryption failed', { error: error instanceof Error ? error.message : String(error) });
+    return { status: 'error', message: 'Could not regenerate the key. Try again.' };
+  }
+
+  // The owner_id filter IS the authorization check; revoked keys stay revoked.
+  const { data, error } = await createServiceClient()
+    .from('api_keys')
+    .update({ key_hash: generated.hash, key_prefix: generated.prefix, last_four: generated.lastFour, ...copy })
+    .eq('id', parsed.data)
+    .eq('owner_id', user.id)
+    .neq('status', 'revoked')
+    .select('id');
+
+  if (error) {
+    log.error('api key regenerate failed', { error: error.message });
+    return { status: 'error', message: 'Could not regenerate the key. Try again.' };
+  }
+  const affected = z.array(insertedIdSchema).safeParse(data);
+  if (!affected.success || affected.data.length === 0) {
+    return { status: 'error', message: 'That key does not exist or is revoked.' };
+  }
+
+  log.info('api key regenerated', { key_id: parsed.data, key_prefix: generated.prefix, last_four: generated.lastFour });
+  revalidatePath('/dashboard/keys');
+  return { status: 'ok', key: generated.key };
 }

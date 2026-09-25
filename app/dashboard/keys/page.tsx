@@ -5,6 +5,7 @@ import { loadRoutingPreferences } from '@/lib/ai/sources';
 import { loadKeyRoutingChoices } from '@/lib/dashboard/key-routing-choices';
 import { getEntitlement, listApiKeys } from '@/lib/dashboard/queries';
 import { requireUser } from '@/lib/dashboard/session';
+import { createClient } from '@/lib/supabase/server';
 import { PageHeader } from '../ui';
 import { KeysManager, type KeyView, type ModelGroup } from './keys-manager';
 
@@ -14,10 +15,11 @@ const APP_URL = (process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000').rep
 
 export default async function KeysPage() {
   const user = await requireUser();
-  const [keys, entitlement, preferences] = await Promise.all([
+  const [keys, entitlement, preferences, copyable] = await Promise.all([
     listApiKeys(),
     getEntitlement(user.id),
     loadRoutingPreferences(user.id),
+    listCopyableKeyIds(),
   ]);
   const [chat, image, video, routing] = await Promise.all([
     listPublicModelOptions(entitlement.planKey, preferences),
@@ -38,6 +40,7 @@ export default async function KeysPage() {
     id: key.id,
     name: key.name,
     masked: `${key.key_prefix}…${key.last_four}`,
+    copyable: copyable.has(key.id),
     status: key.status,
     createdAt: key.created_at,
     lastUsedAt: key.last_used_at,
@@ -59,7 +62,7 @@ export default async function KeysPage() {
     <>
       <PageHeader
         title="API keys"
-        description="Authenticate requests with Authorization: Bearer <key>. Keys are shown once at creation; everything else can be changed later."
+        description="Authenticate requests with Authorization: Bearer <key>. Copy a key any time from its row; everything else can be changed later."
       />
       <KeysManager
         keys={views}
@@ -75,4 +78,12 @@ export default async function KeysPage() {
       />
     </>
   );
+}
+
+/** Keys with a stored encrypted copy. Empty until 20260925160000_api_key_copy runs. */
+async function listCopyableKeyIds(): Promise<Set<string>> {
+  const supabase = await createClient();
+  const { data, error } = await supabase.from('api_keys').select('id').not('key_ciphertext', 'is', null);
+  if (error || !data) return new Set();
+  return new Set(data.map((row: { id: string }) => row.id));
 }
