@@ -137,6 +137,7 @@ function creditsIn(text: string): number[] {
 interface ChatPrice {
   inputPerMTok: number;
   outputPerMTok: number;
+  cachedPerMTok: number;
 }
 
 /**
@@ -166,15 +167,29 @@ function parseChat(desc: string | null): ChatPrice | null {
   const input = labelFirst('input') ?? figureFirst('input');
   const output = labelFirst('output') ?? figureFirst('output');
   if (input !== null && output !== null) {
+    const cachedCredits = /cached\s+input[^0-9]{0,20}([0-9]+(?:\.[0-9]+)?)\s*credits?/i.exec(text);
+    const cachedUsd = /cached\s+input[^;|\n]{0,100}?\$\s?([0-9]+(?:\.[0-9]+)?)/i.exec(text);
+    const inputPerMTok = Number(input[1]) * USD_PER_CREDIT;
     return {
-      inputPerMTok: Number(input[1]) * USD_PER_CREDIT,
+      inputPerMTok,
       outputPerMTok: Number(output[1]) * USD_PER_CREDIT,
+      // If Kie does not publish a separate cache rate, bill cache reads at the
+      // normal input rate rather than assume an unpriced discount.
+      cachedPerMTok: cachedCredits !== null
+        ? Number(cachedCredits[1]) * USD_PER_CREDIT
+        : cachedUsd !== null ? Number(cachedUsd[1]) : inputPerMTok,
     };
   }
   const inputUsd = /input[^0-9$]{0,30}\$\s?([0-9]+(?:\.[0-9]+)?)/i.exec(text);
   const outputUsd = /output[^0-9$]{0,30}\$\s?([0-9]+(?:\.[0-9]+)?)/i.exec(text);
   if (inputUsd !== null && outputUsd !== null) {
-    return { inputPerMTok: Number(inputUsd[1]), outputPerMTok: Number(outputUsd[1]) };
+    const cachedUsd = /cached\s+input[^;|\n]{0,100}?\$\s?([0-9]+(?:\.[0-9]+)?)/i.exec(text);
+    const inputPerMTok = Number(inputUsd[1]);
+    return {
+      inputPerMTok,
+      outputPerMTok: Number(outputUsd[1]),
+      cachedPerMTok: cachedUsd === null ? inputPerMTok : Number(cachedUsd[1]),
+    };
   }
   return null;
 }
@@ -228,6 +243,7 @@ interface Row {
   vendor: string;
   inputPerMTok: number;
   outputPerMTok: number;
+  cachedPerMTok: number;
   requestPriceUsd: number | null;
 }
 
@@ -257,6 +273,7 @@ for (const model of models) {
       vendor: slug(model.provider),
       inputPerMTok: price.inputPerMTok,
       outputPerMTok: price.outputPerMTok,
+      cachedPerMTok: price.cachedPerMTok,
       requestPriceUsd: null,
     });
     continue;
@@ -277,6 +294,7 @@ for (const model of models) {
     vendor: slug(model.provider),
     inputPerMTok: 0,
     outputPerMTok: 0,
+    cachedPerMTok: 0,
     requestPriceUsd: Number(ceiling.toFixed(6)),
   });
 }
@@ -366,13 +384,13 @@ for (const row of rows) {
     INSERT INTO channels (
       id, label, task, provider, base_url, model_id, source_id, public_model_id, vendor,
       pricing_type, request_price_usd, input_per_mtok, output_per_mtok, cached_per_mtok,
-      list_input_per_mtok, list_output_per_mtok, status, min_plan, priority
+      list_input_per_mtok, list_output_per_mtok, list_cached_per_mtok, status, min_plan, priority
     ) VALUES (
       ${row.id}, ${row.label}, ${surface.task}, ${surface.provider}, ${surface.base},
       ${row.upstreamModel}, ${sourceIdFor(row.family, row.kind)}, ${row.publicModel}, ${row.vendor},
       ${row.kind === 'chat' ? 'token' : 'request'}, ${row.requestPriceUsd},
-      ${row.inputPerMTok}, ${row.outputPerMTok}, 0,
-      ${row.inputPerMTok}, ${row.outputPerMTok}, 'active', 'free', 0
+      ${row.inputPerMTok}, ${row.outputPerMTok}, ${row.cachedPerMTok},
+      ${row.inputPerMTok}, ${row.outputPerMTok}, ${row.cachedPerMTok}, 'active', 'free', 0
     )
     ON CONFLICT (id) DO UPDATE SET
       label = EXCLUDED.label,
@@ -387,8 +405,10 @@ for (const row of rows) {
       request_price_usd = EXCLUDED.request_price_usd,
       input_per_mtok = EXCLUDED.input_per_mtok,
       output_per_mtok = EXCLUDED.output_per_mtok,
+      cached_per_mtok = EXCLUDED.cached_per_mtok,
       list_input_per_mtok = EXCLUDED.list_input_per_mtok,
       list_output_per_mtok = EXCLUDED.list_output_per_mtok,
+      list_cached_per_mtok = EXCLUDED.list_cached_per_mtok,
       updated_at = now()`;
   written += 1;
 }
