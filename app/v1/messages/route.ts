@@ -398,9 +398,12 @@ async function handlePost(req: Request): Promise<Response> {
     const auth = await authenticateApiKey(readAuthHeader(req), log, req);
     caller = auth;
     requireScope(auth, SCOPE);
-    await admitGeneration(auth.ownerId);
-
-    const limit = await consumeRateLimit(auth.apiKeyId, auth.rateLimitRpm);
+    // Independent checks, run together: each is a database round-trip. A slot
+    // the guard grants is released after the request whatever the limiter says.
+    const [, limit] = await Promise.all([
+      admitGeneration(auth.ownerId),
+      consumeRateLimit(auth.apiKeyId, auth.rateLimitRpm),
+    ]);
     if (!limit.allowed) {
       await recordRequestFailure({
         requestId, auth, log, error: new ApiError('rate_limited', 'rate limit exceeded', 429),

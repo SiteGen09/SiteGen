@@ -216,6 +216,8 @@ export const chatCompletionRequestSchema = z.looseObject({
     .optional(),
   tools: z.array(chatToolSchema).optional(),
   tool_choice: chatToolChoiceSchema.optional(),
+  /** Passed through as the SDK's reasoning level; unknown levels are ignored. */
+  reasoning_effort: z.string().nullish(),
 });
 
 export type ChatCompletionRequest = z.infer<typeof chatCompletionRequestSchema>;
@@ -265,6 +267,7 @@ export function chatRequestHash(request: ChatCompletionRequest): string {
     stop: request.stop ?? null,
     tools: request.tools ?? null,
     tool_choice: request.tool_choice ?? null,
+    reasoning_effort: request.reasoning_effort ?? null,
   };
   return createHash('sha256').update(JSON.stringify(canonical), 'utf8').digest('hex');
 }

@@ -4,6 +4,7 @@ import { generateText } from 'ai';
 import type { ChannelRow } from '@/lib/ai/fallback';
 import { callWithFallback } from '@/lib/ai/fallback';
 import type { ProviderCreds } from '@/lib/ai/provider';
+import type { ReasoningEffort } from '@/lib/chat/reasoning';
 import { buildAI } from '@/lib/ai/provider';
 import { ApiError } from '@/lib/api/errors';
 import type { TokenRates } from '@/lib/ai/pricing';
@@ -44,6 +45,8 @@ export interface ChatGenerationParams {
   stop?: string | string[] | undefined;
   tools?: readonly ChatTool[] | undefined;
   toolChoice?: ChatToolChoice | undefined;
+  /** Omitted: the provider's own default effort. */
+  reasoning?: ReasoningEffort | undefined;
 }
 
 /**
@@ -96,6 +99,11 @@ export async function generateChat(params: ChatGenerationParams): Promise<ChatGe
         params.stop === undefined ? undefined : Array.isArray(params.stop) ? params.stop : [params.stop],
       tools: toToolSet(params.tools),
       toolChoice: toToolChoice(params.toolChoice),
+      // On a native Anthropic channel the SDK turns any level into extended
+      // thinking, which changes cost and turn-replay rules; leave those alone.
+      reasoning: creds.provider === 'anthropic' || creds.provider === 'anthropic_compatible'
+        ? undefined
+        : params.reasoning,
     });
   });
 

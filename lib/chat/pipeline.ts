@@ -119,8 +119,10 @@ export async function resolveChannelAndCreds(
   userId: string,
   planKey: string,
   policy?: KeyPolicy,
+  /** Already loaded by a caller that fetched it alongside other reads. */
+  storedPreferences?: Map<string, string>,
 ): Promise<ResolvedChannel | null> {
-  const preferences = applyKeyRouting(await loadRoutingPreferences(userId), policy);
+  const preferences = applyKeyRouting(storedPreferences ?? await loadRoutingPreferences(userId), policy);
   const route = await selectChatRoute(publicModelId, planKey, preferences);
   if (route === null) return null;
   const channel = route.start;
@@ -303,7 +305,11 @@ async function preflight(input: PreflightInput): Promise<Preflight> {
     if (err instanceof ApiError) return failure(err, requestId);
     throw err;
   }
-  const plan = await loadPlan(auth.ownerId);
+  // Both are plain reads the route lookup needs; one round-trip, not two.
+  const [plan, preferences] = await Promise.all([
+    loadPlan(auth.ownerId),
+    loadRoutingPreferences(auth.ownerId),
+  ]);
   const requestedMax = maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
 
   // Moderation — before any upstream call, so a flagged prompt is never billed.
@@ -328,7 +334,7 @@ async function preflight(input: PreflightInput): Promise<Preflight> {
   }
 
   // Resolve the channel by public model name.
-  const resolved = await resolveChannelAndCreds(model, auth.ownerId, plan.key, auth.policy);
+  const resolved = await resolveChannelAndCreds(model, auth.ownerId, plan.key, auth.policy, preferences);
   if (resolved === null) {
     return failure(
       new ApiError('model_not_found', `the model '${model}' does not exist`, 404),

@@ -313,9 +313,12 @@ async function handlePost(req: Request): Promise<Response> {
     caller = auth;
     requireScope(auth, 'generate');
     enforceKeyQuota(auth.policy);
-    await admitGeneration(auth.ownerId);
-
-    const limit = await consumeRateLimit(auth.apiKeyId, auth.rateLimitRpm);
+    // Independent checks, run together: each is a database round-trip. A slot
+    // the guard grants is released after the request whatever the limiter says.
+    const [, limit] = await Promise.all([
+      admitGeneration(auth.ownerId),
+      consumeRateLimit(auth.apiKeyId, auth.rateLimitRpm),
+    ]);
     if (!limit.allowed) {
       log.warn('generate.rate_limited', { retry_after: limit.retryAfterSeconds });
       await recordRequestFailure({

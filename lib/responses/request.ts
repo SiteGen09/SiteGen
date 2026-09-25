@@ -235,6 +235,8 @@ export const responsesRequestSchema = z.looseObject({
   stream: z.boolean().optional(),
   tools: z.array(responsesToolSchema).optional(),
   tool_choice: responsesToolChoiceSchema.optional(),
+  /** Only `effort` is used, as the SDK's reasoning level. */
+  reasoning: z.looseObject({ effort: z.string().nullish() }).nullish(),
 });
 
 export type ResponsesRequest = z.infer<typeof responsesRequestSchema>;
@@ -396,6 +398,7 @@ export function responsesRequestHash(request: ResponsesRequest): string {
     top_p: request.top_p ?? null,
     tools: request.tools ?? null,
     tool_choice: request.tool_choice ?? null,
+    reasoning_effort: request.reasoning?.effort ?? null,
   };
   return createHash('sha256').update(JSON.stringify(canonical), 'utf8').digest('hex');
 }

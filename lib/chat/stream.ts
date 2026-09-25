@@ -4,6 +4,7 @@ import { streamText, type ModelMessage, type TextStreamPart, type ToolSet } from
 import type { ChannelRow } from '@/lib/ai/fallback';
 import { callWithFallback } from '@/lib/ai/fallback';
 import type { ProviderCreds } from '@/lib/ai/provider';
+import type { ReasoningEffort } from '@/lib/chat/reasoning';
 import { buildAI } from '@/lib/ai/provider';
 import { assertDelivered } from '@/lib/chat/generate';
 import type { ChatMessage, ChatTool, ChatToolChoice } from '@/lib/chat/request';
@@ -33,6 +34,8 @@ export interface ChatStreamParams {
   stop?: string | string[] | undefined;
   tools?: readonly ChatTool[] | undefined;
   toolChoice?: ChatToolChoice | undefined;
+  /** Omitted: the provider's own default effort. */
+  reasoning?: ReasoningEffort | undefined;
   /**
    * Stops the upstream request. The part stream then simply ends and
    * `completion` rejects with the abort reason, because the provider never
@@ -218,6 +221,11 @@ export async function streamChat(params: ChatStreamParams): Promise<ChatStreamHa
             : [params.stop],
       tools: toToolSet(params.tools),
       toolChoice: toToolChoice(params.toolChoice),
+      // On a native Anthropic channel the SDK turns any level into extended
+      // thinking, which changes cost and turn-replay rules; leave those alone.
+      reasoning: creds.provider === 'anthropic' || creds.provider === 'anthropic_compatible'
+        ? undefined
+        : params.reasoning,
       abortSignal: params.abortSignal,
       onError({ error }) {
         state.failure ??= { error };

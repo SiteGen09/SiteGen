@@ -7,6 +7,7 @@ import { asUpstreamError } from '@/lib/api/upstream';
 import { openAiErrorFrom, openAiError, openAiErrorBody } from '@/lib/api/openai-errors';
 import { withIdempotency, type IdempotentResponse } from '@/lib/api/idempotency';
 import { generateChat } from '@/lib/chat/generate';
+import { parseReasoningEffort } from '@/lib/chat/reasoning';
 import { streamChat, streamTimingFields, type ChatStreamHandle } from '@/lib/chat/stream';
 import type { ChatMessage, ChatTool } from '@/lib/chat/request';
 import type { OpenAiToolCall } from '@/lib/chat/tools';
@@ -96,6 +97,7 @@ function requestShape(body: ResponsesRequest): Record<string, unknown> {
     last_tool_output: excerpt,
     tools_offered: (body.tools ?? []).length,
     tool_choice: body.tool_choice,
+    reasoning_effort: body.reasoning?.effort,
     ignored_fields: Object.keys(body).filter((key) => !KNOWN_FIELDS.has(key)),
   };
 }
@@ -191,6 +193,7 @@ async function runResponse(ctx: ResponseContext): Promise<IdempotentResponse> {
       topP: body.top_p,
       tools,
       toolChoice: toChatToolChoice(body),
+      reasoning: parseReasoningEffort(body.reasoning?.effort),
     });
 
     const settled = await settleCall({
@@ -284,6 +287,7 @@ async function runResponseStream(ctx: ResponseContext): Promise<Response> {
       topP: body.top_p,
       tools,
       toolChoice: toChatToolChoice(body),
+      reasoning: parseReasoningEffort(body.reasoning?.effort),
     });
   } catch (err) {
     // Nothing has been written yet, so this can still be a normal JSON error.
@@ -450,9 +454,12 @@ async function handlePost(req: Request): Promise<Response> {
     const auth = await authenticateApiKey(req.headers.get('authorization'), log, req);
     caller = auth;
     requireScope(auth, SCOPE);
-    await admitGeneration(auth.ownerId);
-
-    const limit = await consumeRateLimit(auth.apiKeyId, auth.rateLimitRpm);
+    // Independent checks, run together: each is a database round-trip. A slot
+    // the guard grants is released after the request whatever the limiter says.
+    const [, limit] = await Promise.all([
+      admitGeneration(auth.ownerId),
+      consumeRateLimit(auth.apiKeyId, auth.rateLimitRpm),
+    ]);
     if (!limit.allowed) {
       await recordRequestFailure({
         requestId, auth, log, error: new ApiError('rate_limited', 'rate limit exceeded', 429),

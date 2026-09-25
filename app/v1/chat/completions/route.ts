@@ -7,6 +7,7 @@ import { asUpstreamError } from '@/lib/api/upstream';
 import { openAiErrorFrom, openAiError, openAiErrorBody } from '@/lib/api/openai-errors';
 import { withIdempotency, type IdempotentResponse } from '@/lib/api/idempotency';
 import { generateChat } from '@/lib/chat/generate';
+import { parseReasoningEffort } from '@/lib/chat/reasoning';
 import { streamChat, streamTimingFields, type ChatStreamHandle } from '@/lib/chat/stream';
 import {
   chatCompletionRequestSchema,
@@ -96,6 +97,7 @@ async function runChat(ctx: ChatContext): Promise<IdempotentResponse> {
       stop: body.stop,
       tools: body.tools,
       toolChoice: body.tool_choice,
+      reasoning: parseReasoningEffort(body.reasoning_effort),
     });
 
     const { creditsCharged } = await settleCall({
@@ -198,6 +200,7 @@ async function runChatStream(ctx: ChatContext): Promise<Response> {
       stop: body.stop,
       tools: body.tools,
       toolChoice: body.tool_choice,
+      reasoning: parseReasoningEffort(body.reasoning_effort),
     });
   } catch (err) {
     // Nothing has been written yet, so this can still be a normal JSON error.
@@ -367,9 +370,12 @@ async function handlePost(req: Request): Promise<Response> {
     const auth = await authenticateApiKey(req.headers.get('authorization'), log, req);
     caller = auth;
     requireScope(auth, SCOPE);
-    await admitGeneration(auth.ownerId);
-
-    const limit = await consumeRateLimit(auth.apiKeyId, auth.rateLimitRpm);
+    // Independent checks, run together: each is a database round-trip. A slot
+    // the guard grants is released after the request whatever the limiter says.
+    const [, limit] = await Promise.all([
+      admitGeneration(auth.ownerId),
+      consumeRateLimit(auth.apiKeyId, auth.rateLimitRpm),
+    ]);
     if (!limit.allowed) {
       await recordRequestFailure({
         requestId, auth, log, error: new ApiError('rate_limited', 'rate limit exceeded', 429),
