@@ -74,11 +74,47 @@ interface PreparedResponse {
   tools: ChatTool[] | undefined;
 }
 
+/** Known top-level request fields; anything else is logged as ignored. */
+const KNOWN_FIELDS = new Set(Object.keys(responsesRequestSchema.shape));
+
+/**
+ * DEBUG: the shape of one turn, for diagnosing clients that loop. Item types,
+ * names and sizes only; the one text excerpt is the latest tool result, which
+ * is what tells a stuck poll ("still running") from a rejected call.
+ */
+function requestShape(body: ResponsesRequest): Record<string, unknown> {
+  const items = typeof body.input === 'string' ? [] : body.input;
+  const tail = items.slice(-4).map((item) =>
+    item.type === 'function_call' ? `function_call:${item.name}` : (item.type ?? `message:${item.role}`));
+  const lastOutput = [...items].reverse().find((item) => item.type === 'function_call_output');
+  const excerpt = lastOutput?.type === 'function_call_output'
+    ? (typeof lastOutput.output === 'string' ? lastOutput.output : JSON.stringify(lastOutput.output)).slice(0, 160)
+    : undefined;
+  return {
+    items: items.length,
+    tail,
+    last_tool_output: excerpt,
+    tools_offered: (body.tools ?? []).length,
+    tool_choice: body.tool_choice,
+    ignored_fields: Object.keys(body).filter((key) => !KNOWN_FIELDS.has(key)),
+  };
+}
+
+/** DEBUG: what the model sent back — sizes and tool names, no text. */
+function outputShape(content: string, toolCalls: readonly OpenAiToolCall[], finishReason: unknown) {
+  return {
+    text_chars: content.length,
+    tool_calls: toolCalls.map((call) => `${call.function.name}(${call.function.arguments.length})`),
+    finish_reason: finishReason,
+  };
+}
+
 async function prepareResponse(ctx: ResponseContext): Promise<PreparedResponse> {
   const messages = toChatMessages(ctx.body);
   const tools = toChatTools(ctx.body);
   const hosted = hostedToolTypes(ctx.body);
   if (hosted.length > 0) ctx.log.info('responses.hosted_tools_skipped', { types: hosted });
+  ctx.log.info('responses.request_shape', requestShape(ctx.body));
 
   const preflight = await prepareCall({
     requestId: ctx.requestId,
@@ -141,6 +177,7 @@ async function runResponse(ctx: ResponseContext): Promise<IdempotentResponse> {
       latency_ms: generation.latencyMs,
       credits_charged: settled.creditsCharged,
       balance_after: balanceAfter,
+      ...outputShape(generation.content ?? '', generation.toolCalls ?? [], generation.finishReason),
     });
 
     // A finished Responses object is `incomplete` only when the model was cut
@@ -324,6 +361,7 @@ async function runResponseStream(ctx: ResponseContext): Promise<Response> {
           type: 'function',
           function: { name: call.name, arguments: call.arguments },
         }));
+        log.info('responses.output_shape', outputShape(content, toolCalls, done.finishReason));
 
         send(
           frames.completed({
