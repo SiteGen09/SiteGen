@@ -19,6 +19,7 @@ export interface PublicPrice {
   endpoints: string[];
   tags: string[];
   pricingType: 'token' | 'request';
+  status: 'active' | 'degraded';
   modality: Modality;
   providerId: string;
   sourceLabel: string;
@@ -37,6 +38,20 @@ export interface PublicPrice {
 }
 
 export type PriceSort = 'input' | 'output' | 'request';
+
+/** Match every useful catalog label, including metadata hidden in table columns. */
+export function matchesPublicPriceSearch(row: PublicPrice, search: string): boolean {
+  const terms = search.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return true;
+  const haystack = [
+    row.model, row.label, row.vendor, row.sourceLabel, row.group, row.modality,
+    row.pricingType, row.status, ...row.tags, ...row.endpoints,
+    row.contextWindow === null ? '' : String(row.contextWindow),
+    row.input, row.output, row.cached, row.request, row.listInput, row.listOutput,
+    row.listCached, row.listRequest,
+  ].join(' ').toLocaleLowerCase();
+  return terms.every((term) => haystack.includes(term));
+}
 
 /** Inapplicable or unpublished prices stay last in either sort direction. */
 export function comparePublicPrices(a: PublicPrice, b: PublicPrice, key: PriceSort, ascending: boolean): number {

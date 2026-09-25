@@ -182,8 +182,8 @@ export async function modelStatusHistory(): Promise<{
   rows: ModelHistoryRow[];
   sla: number | null;
 }> {
-  // Aggregate usage and probes independently before joining. Joining the raw
-  // tables would multiply request counts by probe count and distort the SLA.
+  // Aggregate usage that already happened. The public status page is
+  // intentionally read-only: it never calls an upstream model to fill gaps.
   const raw = await sql.unsafe(`
     WITH eligible AS (
       SELECT c.id, c.public_model_id, c.label,
@@ -204,12 +204,6 @@ export async function modelStatusHistory(): Promise<{
       FROM usage_events u JOIN eligible c ON c.id=u.channel_id
       WHERE u.created_at >= date_trunc('hour',now()) - interval '23 hours' AND u.created_at <= now()
       GROUP BY c.public_model_id, date_trunc('hour',u.created_at)
-    ), probes AS (
-      SELECT c.public_model_id, h.bucket_hour, count(*) AS probes,
-        count(*) FILTER (WHERE h.status <> 'ok') AS probe_failures
-      FROM model_health_checks h JOIN eligible c ON c.id=h.channel_id
-      WHERE h.bucket_hour >= date_trunc('hour',now()) - interval '23 hours' AND h.bucket_hour <= now()
-      GROUP BY c.public_model_id,h.bucket_hour
     ), metrics AS (
       SELECT c.public_model_id,
         percentile_cont(0.95) WITHIN GROUP (ORDER BY u.latency_ms) FILTER (WHERE u.status='ok') AS p95_latency_ms,
@@ -220,11 +214,10 @@ export async function modelStatusHistory(): Promise<{
       GROUP BY c.public_model_id
     )
     SELECT m.*, h.bucket_hour, coalesce(u.requests,0) AS requests, coalesce(u.failed,0) AS failed,
-      coalesce(u.rejected,0) AS rejected, coalesce(p.probes,0) AS probes, coalesce(p.probe_failures,0) AS probe_failures,
+      coalesce(u.rejected,0) AS rejected, 0 AS probes, 0 AS probe_failures,
       x.p95_latency_ms,x.last_success_at,x.last_failure_at
     FROM models m CROSS JOIN hours h
     LEFT JOIN usage u USING (public_model_id,bucket_hour)
-    LEFT JOIN probes p USING (public_model_id,bucket_hour)
     LEFT JOIN metrics x USING (public_model_id)
     ORDER BY m.public_model_id,h.bucket_hour
   `);

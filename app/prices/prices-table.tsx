@@ -7,6 +7,7 @@ import { useMemo, useState } from "react";
 import {
   discountPercent,
   comparePublicPrices,
+  matchesPublicPriceSearch,
   type PriceSort,
   type PublicPrice,
 } from "@/lib/dashboard/public-prices";
@@ -29,6 +30,8 @@ const FILTERS = [
   "Tags",
   "Pricing Type",
   "Endpoint Type",
+  "Capability",
+  "Route Status",
 ] as const;
 type Filter = (typeof FILTERS)[number];
 function values(row: PublicPrice, filter: Filter): string[] {
@@ -45,6 +48,10 @@ function values(row: PublicPrice, filter: Filter): string[] {
       return [row.pricingType];
     case "Endpoint Type":
       return row.endpoints;
+    case "Capability":
+      return [row.modality];
+    case "Route Status":
+      return [row.status === "active" ? "Active" : "Degraded"];
   }
 }
 const number = (value: number) =>
@@ -108,6 +115,10 @@ function VendorIcon({ vendor }: { vendor: string }) {
 export function PricesTable({ prices }: { prices: PublicPrice[] }) {
   const [search, setSearch] = useState("");
   const [filters, setFilters] = useState<Partial<Record<Filter, string>>>({});
+  const [maxInput, setMaxInput] = useState("");
+  const [maxOutput, setMaxOutput] = useState("");
+  const [maxCached, setMaxCached] = useState("");
+  const [maxRequest, setMaxRequest] = useState("");
   const [ascending, setAscending] = useState(true);
   const [sort, setSort] = useState<PriceSort>("input");
   const [size, setSize] = useState<PageSize>(DEFAULT_PAGE_SIZE);
@@ -126,9 +137,11 @@ export function PricesTable({ prices }: { prices: PublicPrice[] }) {
       prices
         .filter(
           (row) =>
-            (row.model + " " + row.label + " " + row.vendor)
-              .toLowerCase()
-              .includes(search.toLowerCase()) &&
+            matchesPublicPriceSearch(row, search) &&
+            (maxInput === "" || (row.input !== null && row.input <= Number(maxInput))) &&
+            (maxOutput === "" || (row.output !== null && row.output <= Number(maxOutput))) &&
+            (maxCached === "" || (row.cached !== null && row.cached <= Number(maxCached))) &&
+            (maxRequest === "" || (row.request !== null && row.request <= Number(maxRequest))) &&
             FILTERS.every(
               (filter) =>
                 !filters[filter] ||
@@ -136,7 +149,7 @@ export function PricesTable({ prices }: { prices: PublicPrice[] }) {
             ),
         )
         .sort((a, b) => comparePublicPrices(a, b, sort, ascending)),
-    [prices, search, filters, ascending, sort],
+    [prices, search, filters, maxInput, maxOutput, maxCached, maxRequest, ascending, sort],
   );
   // Narrowing the list can strand the reader past the last page; clamping on
   // render brings them back to the last real page without an extra render pass.
@@ -161,7 +174,7 @@ export function PricesTable({ prices }: { prices: PublicPrice[] }) {
       <input
         type="search"
         aria-label="Search models"
-        placeholder="Search models or vendors…"
+        placeholder="Search models, providers, tags, endpoints…"
         value={search}
         onChange={(e) => {
           setSearch(e.target.value);
@@ -169,6 +182,24 @@ export function PricesTable({ prices }: { prices: PublicPrice[] }) {
         }}
         className="w-full rounded-lg border border-zinc-300 bg-white p-3 text-sm sm:max-w-lg"
       />
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <label className="text-xs text-zinc-600">
+          Max input · credits / 1M tokens
+          <input type="number" min="0" step="any" value={maxInput} onChange={(event) => { setMaxInput(event.target.value); setPage(1); }} placeholder="Any price" className="mt-1 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900" />
+        </label>
+        <label className="text-xs text-zinc-600">
+          Max cached · credits / 1M tokens
+          <input type="number" min="0" step="any" value={maxCached} onChange={(event) => { setMaxCached(event.target.value); setPage(1); }} placeholder="Any price" className="mt-1 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900" />
+        </label>
+        <label className="text-xs text-zinc-600">
+          Max output · credits / 1M tokens
+          <input type="number" min="0" step="any" value={maxOutput} onChange={(event) => { setMaxOutput(event.target.value); setPage(1); }} placeholder="Any price" className="mt-1 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900" />
+        </label>
+        <label className="text-xs text-zinc-600">
+          Max per job · credits
+          <input type="number" min="0" step="any" value={maxRequest} onChange={(event) => { setMaxRequest(event.target.value); setPage(1); }} placeholder="Any price" className="mt-1 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900" />
+        </label>
+      </div>
       <div className="my-4 flex flex-wrap gap-2">
         {FILTERS.map((filter) => (
           <label
@@ -198,6 +229,10 @@ export function PricesTable({ prices }: { prices: PublicPrice[] }) {
           onClick={() => {
             setFilters({});
             setSearch("");
+            setMaxInput("");
+            setMaxOutput("");
+            setMaxCached("");
+            setMaxRequest("");
             setPage(1);
           }}
           className="px-2 text-xs text-zinc-500 underline"
@@ -269,6 +304,7 @@ export function PricesTable({ prices }: { prices: PublicPrice[] }) {
                 </button>
               </th>
               <th className="p-4">Vendor</th>
+              <th className="p-4">Status</th>
               <th className="p-4">Context</th>
               <th className="p-4">Endpoints</th>
             </tr>
@@ -276,7 +312,7 @@ export function PricesTable({ prices }: { prices: PublicPrice[] }) {
           <tbody className="divide-y divide-zinc-100">
             {!rows.length && (
               <tr>
-                <td colSpan={9} className="p-10 text-center text-zinc-500">
+                <td colSpan={10} className="p-10 text-center text-zinc-500">
                   No models match these filters.
                 </td>
               </tr>
@@ -324,6 +360,7 @@ export function PricesTable({ prices }: { prices: PublicPrice[] }) {
                     </>}
                 </td>
                 <td className="p-4">{row.vendor}</td>
+                <td className="p-4"><span className={"rounded px-2 py-1 text-xs " + (row.status === "active" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700")}>{row.status === "active" ? "Active" : "Degraded"}</span></td>
                 <td className="p-4 tabular-nums">
                   {row.contextWindow === null
                     ? "Unknown"

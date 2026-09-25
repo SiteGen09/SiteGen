@@ -133,6 +133,7 @@ export interface ModelCatalogEntry {
   family: Family | null;
   /** From the source: what this channel produces. */
   modality: Modality;
+  pricingType: 'token' | 'request';
   publicModelId: string;
   label: string;
   provider: Provider;
@@ -396,6 +397,7 @@ export async function listModelCatalog(): Promise<ModelCatalogEntry[]> {
         sourceDescription: row.sources?.description ?? '',
         family: row.sources?.family ?? null,
         modality: row.sources?.modality ?? 'chat',
+        pricingType: row.pricing_type,
         publicModelId: row.public_model_id,
         label: publicRoutingText(row.label, names),
         provider: row.provider,
@@ -552,6 +554,7 @@ export async function listPublicPrices(): Promise<import('./public-prices').Publ
         tags: publicRoutingTags(row.tags),
         pricingType: row.pricing_type,
         modality: row.sources.modality,
+        status: row.status === 'degraded' || row.sources.status === 'degraded' ? 'degraded' : 'active',
         providerId: row.routingProvider.id,
         sourceLabel: row.routingProvider.label,
         multiplier,

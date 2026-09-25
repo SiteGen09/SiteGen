@@ -5,6 +5,7 @@ import {
   type ModelHealth,
   type ModelStatusRow,
 } from '@/lib/dashboard/model-status';
+import { filterModelStatusRows } from '@/lib/dashboard/model-catalog-filters';
 import { clampPage, pageSlice, parsePage, parsePageSize } from '@/lib/ui/pagination';
 import { Card, EmptyRow, PageHeader, Pager, Stat, Table, formatTimestamp } from '../ui';
 
@@ -12,6 +13,12 @@ export const metadata = { title: 'Model status — sitegen' };
 
 // Health is computed from live traffic, so this must never be cached.
 export const dynamic = 'force-dynamic';
+
+type SearchParams = Record<string, string | string[] | undefined>;
+
+function searchValue(value: string | string[] | undefined): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
 
 const HEAD = ['Model', 'Health', 'Requests', 'Errors', 'p95 latency', 'Last success'] as const;
 
@@ -65,7 +72,7 @@ function headline(rows: ModelStatusRow[]): string {
 export default async function StatusPage({
   searchParams,
 }: {
-  searchParams: Promise<{ page?: string; size?: string }>;
+  searchParams: Promise<SearchParams>;
 }) {
   const [sp, { rows, sla }] = await Promise.all([searchParams, modelStatusHistory()]);
   const healthy = rows.filter((row) => row.health === 'operational').length;
@@ -73,9 +80,14 @@ export default async function StatusPage({
   // The headline stats and the observed SLA stay whole-fleet figures; only the
   // two per-model lists below are paged, and they page together so a model's
   // hourly strip and its summary row are always on the same screen.
-  const size = parsePageSize(sp.size);
-  const page = clampPage(parsePage(sp.page), rows.length, size);
-  const visible = pageSlice(rows, page, size);
+  const search = { page: searchValue(sp.page), size: searchValue(sp.size), q: searchValue(sp.q), health: searchValue(sp.health) };
+  const size = parsePageSize(search.size);
+  const health = ['operational', 'degraded', 'outage', 'idle'].includes(search.health ?? '')
+    ? (search.health as ModelHealth)
+    : undefined;
+  const filtered = filterModelStatusRows(rows, { query: search.q, health });
+  const page = clampPage(parsePage(search.page), filtered.length, size);
+  const visible = pageSlice(filtered, page, size);
 
   return (
     <>
@@ -97,6 +109,22 @@ export default async function StatusPage({
         />
       </div>
 
+      <form action="/dashboard/status" method="get" className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-zinc-200 bg-white p-4">
+        <label className="min-w-56 flex-1 text-xs font-medium text-zinc-600">
+          Search models
+          <input type="search" name="q" defaultValue={search.q ?? ''} placeholder="Model name or health…" className="mt-1 block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal text-zinc-900" />
+        </label>
+        <label className="text-xs font-medium text-zinc-600">
+          Health
+          <select name="health" defaultValue={health ?? ''} className="mt-1 block min-w-44 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal text-zinc-900">
+            <option value="">All health states</option><option value="operational">Operational</option><option value="degraded">Degraded</option><option value="outage">Outage</option><option value="idle">No recent traffic</option>
+          </select>
+        </label>
+        <input type="hidden" name="size" value={String(size)} />
+        <button type="submit" className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700">Apply</button>
+        <Link href="/dashboard/status" className="px-2 py-2 text-sm text-zinc-600 underline">Clear</Link>
+      </form>
+
       <Card className="mb-6">
         <div className="mb-4 flex flex-wrap justify-between gap-2">
           <h2 className="font-semibold text-zinc-900">Hourly availability · 24h</h2>
@@ -104,7 +132,9 @@ export default async function StatusPage({
             Observed SLA: {sla === null ? 'No data' : sla.toFixed(2) + '%'}
           </p>
         </div>
-        <div className="space-y-4">
+        {filtered.length === 0 ? (
+          <p className="py-4 text-sm text-zinc-500">No models match these filters.</p>
+        ) : <div className="space-y-4">
           {visible.map((row) => (
             <div key={row.publicModelId}>
               <div className="mb-1 flex justify-between text-sm">
@@ -136,7 +166,7 @@ export default async function StatusPage({
               </div>
             </div>
           ))}
-        </div>
+        </div>}
         <div className="mt-3 flex justify-between text-xs text-zinc-500">
           <span>23 hours ago · UTC</span>
           <span>Current hour</span>
@@ -149,7 +179,7 @@ export default async function StatusPage({
 
       <Table head={HEAD} minWidth="min-w-[46rem]">
         {visible.length === 0 ? (
-          <EmptyRow colSpan={HEAD.length}>No models are configured yet.</EmptyRow>
+          <EmptyRow colSpan={HEAD.length}>{rows.length === 0 ? 'No models are configured yet.' : 'No models match these filters.'}</EmptyRow>
         ) : (
           visible.map((row) => (
             <tr key={row.publicModelId}>
@@ -180,7 +210,8 @@ export default async function StatusPage({
         basePath="/dashboard/status"
         page={page}
         pageSize={size}
-        total={rows.length}
+        total={filtered.length}
+        query={{ q: search.q, health }}
         label="models"
       />
 

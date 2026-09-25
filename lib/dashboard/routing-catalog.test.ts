@@ -8,7 +8,7 @@ import type { ModelCatalogEntry } from './queries';
 function model(overrides: Partial<ModelCatalogEntry> = {}): ModelCatalogEntry {
   return {
     id: 'relay-gpt-5', sourceId: 'relay-gpt-chat', sourceLabel: 'Relay.fast',
-    sourceDescription: 'Configured provider description.', family: 'gpt', modality: 'chat',
+    sourceDescription: 'Configured provider description.', family: 'gpt', modality: 'chat', pricingType: 'token',
     publicModelId: 'gpt-5', label: 'GPT 5', provider: 'openai_compatible',
     upstreamModelId: 'private-upstream-model', status: 'active', minPlan: 'free', isByok: false,
     creditMultiplier: 1.5, inputCreditsPerMTok: 15000, outputCreditsPerMTok: 30000,
