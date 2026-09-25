@@ -20,11 +20,13 @@ import {
   type Preflight,
 } from '@/lib/chat/pipeline';
 import {
+  hostedToolTypes,
   responsesRequestSchema,
   responsesRequestHash,
   toChatMessages,
   toChatTools,
   toChatToolChoice,
+  toolNameResolver,
   type ResponsesRequest,
 } from '@/lib/responses/request';
 import { createResponseFrames, responseObject } from '@/lib/responses/response';
@@ -75,6 +77,8 @@ interface PreparedResponse {
 async function prepareResponse(ctx: ResponseContext): Promise<PreparedResponse> {
   const messages = toChatMessages(ctx.body);
   const tools = toChatTools(ctx.body);
+  const hosted = hostedToolTypes(ctx.body);
+  if (hosted.length > 0) ctx.log.info('responses.hosted_tools_skipped', { types: hosted });
 
   const preflight = await prepareCall({
     requestId: ctx.requestId,
@@ -157,6 +161,7 @@ async function runResponse(ctx: ResponseContext): Promise<IdempotentResponse> {
         toolCalls: generation.toolCalls,
         finishReason: generation.finishReason,
         usage: generation.usage,
+        resolveToolName: toolNameResolver(body),
       }),
     };
   } catch (err) {
@@ -250,7 +255,12 @@ async function runResponseStream(ctx: ResponseContext): Promise<Response> {
 
   const encoder = new TextEncoder();
   const createdAt = Math.floor(Date.now() / 1000);
-  const frames = createResponseFrames({ requestId, model: body.model, createdAt });
+  const frames = createResponseFrames({
+    requestId,
+    model: body.model,
+    createdAt,
+    resolveToolName: toolNameResolver(body),
+  });
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {

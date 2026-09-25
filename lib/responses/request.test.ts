@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  hostedToolTypes,
+  namespacedToolName,
   responsesRequestHash,
   responsesRequestSchema,
   toChatMessages,
   toChatToolChoice,
   toChatTools,
+  toolNameResolver,
   type ResponsesRequest,
 } from './request';
 
@@ -289,6 +292,95 @@ describe('toChatTools', () => {
     });
     expect(tools?.[0]?.function).not.toHaveProperty('description');
     expect(tools?.[0]?.function).not.toHaveProperty('parameters');
+  });
+
+  // Codex groups tools this way (sub-agents, clock, MCP servers).
+  const CLOCK = {
+    type: 'namespace',
+    name: 'clock',
+    description: 'Tools for reading and waiting on time.',
+    tools: [
+      { type: 'function', name: 'curr_time', description: 'Current time', parameters: { type: 'object' } },
+      { type: 'function', name: 'wait' },
+    ],
+  };
+
+  it('offers each namespace member as its own tool under a combined name', () => {
+    const request = parseBody({ tools: [WEATHER_TOOL, CLOCK] });
+    expect(toChatTools(request)?.map((tool) => tool.function.name)).toEqual([
+      'get_weather',
+      'clock__curr_time',
+      'clock__wait',
+    ]);
+    expect(toChatTools(request)?.[1]?.function).toEqual({
+      name: 'clock__curr_time',
+      description: 'Current time',
+      parameters: { type: 'object' },
+    });
+  });
+
+  it('leaves hosted tools out instead of rejecting the request', () => {
+    const request = parseBody({
+      tools: [WEATHER_TOOL, { type: 'web_search' }, { type: 'custom', name: 'apply_patch', format: {} }],
+    });
+    expect(toChatTools(request)?.map((tool) => tool.function.name)).toEqual(['get_weather']);
+    expect(hostedToolTypes(request)).toEqual(['web_search', 'custom']);
+  });
+
+  it('sends no tools at all when only hosted tools were offered', () => {
+    expect(toChatTools(parseBody({ tools: [{ type: 'tool_search' }] }))).toBeUndefined();
+  });
+
+  it('still rejects a function tool without a name', () => {
+    const parsed = responsesRequestSchema.safeParse({ model: 'm', input: 'x', tools: [{ type: 'function' }] });
+    expect(parsed.success).toBe(false);
+  });
+});
+
+describe('namespace tool names', () => {
+  it('maps an upstream call back to the member and its namespace', () => {
+    const resolve = toolNameResolver(parseBody({
+      tools: [WEATHER_TOOL, { type: 'namespace', name: 'mcp__supabase', tools: [{ type: 'function', name: 'list_tables' }] }],
+    }));
+    expect(resolve('mcp__supabase__list_tables')).toEqual({ name: 'list_tables', namespace: 'mcp__supabase' });
+    expect(resolve('get_weather')).toEqual({ name: 'get_weather' });
+  });
+
+  it('replays a namespaced call under the name it was offered with', () => {
+    const request = parseBody({
+      input: [
+        { type: 'function_call', call_id: 'c1', name: 'curr_time', namespace: 'clock', arguments: '{}' },
+        { type: 'function_call_output', call_id: 'c1', output: '12:00' },
+      ],
+    });
+    expect(toChatMessages(request)[0]?.tool_calls?.[0]?.function.name).toBe('clock__curr_time');
+  });
+
+  it('keeps the text of a tool result that arrives as content parts', () => {
+    const request = parseBody({
+      input: [
+        { type: 'function_call', call_id: 'c1', name: 'shot', arguments: '{}' },
+        {
+          type: 'function_call_output',
+          call_id: 'c1',
+          output: [{ type: 'input_text', text: 'captured' }, { type: 'input_image', image_url: 'data:image/png;base64,AAAA' }],
+        },
+      ],
+    });
+    expect(toChatMessages(request)[1]).toEqual({
+      role: 'tool',
+      tool_call_id: 'c1',
+      content: 'captured\n[input_image omitted: this gateway passes tool results as text only]',
+    });
+  });
+
+  it('keeps combined names within the 64-character limit, stably', () => {
+    const long = namespacedToolName('mcp__a_really_long_server_name_for_testing', 'a_tool_with_a_long_name_too');
+    expect(long.length).toBeLessThanOrEqual(64);
+    expect(long).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(namespacedToolName('mcp__a_really_long_server_name_for_testing', 'a_tool_with_a_long_name_too')).toBe(long);
+    expect(namespacedToolName('mcp__a_really_long_server_name_for_testing', 'a_tool_with_a_long_name_2')).not.toBe(long);
+    expect(namespacedToolName('mcp.server', 'x')).toBe('mcp_server__x');
   });
 });
 

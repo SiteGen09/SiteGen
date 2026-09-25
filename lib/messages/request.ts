@@ -48,8 +48,13 @@ const contentBlockSchema = z.union([textBlockSchema, toolUseBlockSchema, toolRes
 
 export type ContentBlock = z.infer<typeof contentBlockSchema>;
 
+/**
+ * `system` inside `messages` is Anthropic's mid-conversation system message
+ * (the `mid-conversation-system` beta). Claude Code sends one on every
+ * request, so rejecting the role would turn every Claude Code session away.
+ */
 const messageSchema = z.looseObject({
-  role: z.enum(['user', 'assistant']),
+  role: z.enum(['user', 'assistant', 'system']),
   content: z.union([z.string(), z.array(contentBlockSchema)]),
 });
 
@@ -109,6 +114,23 @@ export function toChatMessages(request: MessagesRequest): ChatMessage[] {
   }
 
   for (const message of request.messages) {
+    if (message.role === 'system') {
+      const text = typeof message.content === 'string' ? message.content : blockText(
+        message.content.filter((block): block is z.infer<typeof textBlockSchema> => block.type === 'text'),
+      );
+      if (text.length === 0) continue;
+      // Before any turn it simply extends the system prompt. Later it rides on
+      // a user turn instead: upstreams differ on whether a system message may
+      // follow a turn (Anthropic's own prompt format rejects it), while a user
+      // message carrying the note is accepted everywhere and is how Claude
+      // Code delivered these notes before the beta.
+      const leading = messages.every((prior) => prior.role === 'system');
+      messages.push(leading
+        ? { role: 'system', content: text }
+        : { role: 'user', content: `<system-reminder>\n${text}\n</system-reminder>` });
+      continue;
+    }
+
     if (typeof message.content === 'string') {
       messages.push({ role: message.role, content: message.content });
       continue;

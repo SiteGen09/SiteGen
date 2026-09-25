@@ -201,23 +201,17 @@ describe('createResponseFrames', () => {
       createdAt: 1700000000,
     });
 
-    const created = frames.created();
-    expect(created).toContain('"sequence_number":0');
+    const numbers = (text: string) =>
+      [...text.matchAll(/"sequence_number":(\d+)/g)].map((match) => Number(match[1]));
 
-    const delta1 = frames.textDelta('hello');
-    expect(delta1).toContain('"sequence_number":1');
-
-    const delta2 = frames.textDelta(' world');
-    expect(delta2).toContain('"sequence_number":2');
-
-    const added = frames.functionCallAdded(0, 'call_x', 'test_fn');
-    expect(added).toContain('"sequence_number":3');
-
-    const argsDelta = frames.functionCallArgumentsDelta(0, 'call_x', '{"a');
-    expect(argsDelta).toContain('"sequence_number":4');
-
-    const done = frames.functionCallDone(0, 'call_x', 'test_fn', '{"a":1}');
-    expect(done).toContain('"sequence_number":5');
+    expect(numbers(frames.created())).toEqual([0]);
+    // The first text also opens the message item and its content part.
+    expect(numbers(frames.textDelta('hello'))).toEqual([1, 2, 3]);
+    expect(numbers(frames.textDelta(' world'))).toEqual([4]);
+    // A tool call closes the message first: text done, part done, item done.
+    expect(numbers(frames.functionCallAdded(0, 'call_x', 'test_fn'))).toEqual([5, 6, 7, 8]);
+    expect(numbers(frames.functionCallArgumentsDelta(0, 'call_x', '{"a'))).toEqual([9]);
+    expect(numbers(frames.functionCallDone(0, 'call_x', 'test_fn', '{"a":1}'))).toEqual([10]);
 
     const completed = frames.completed({
       content: 'hello world',
@@ -225,7 +219,92 @@ describe('createResponseFrames', () => {
       finishReason: 'stop',
       usage: { inputTokens: 10, outputTokens: 5, cachedTokens: 0 },
     });
-    expect(completed).toContain('"sequence_number":6');
+    expect(numbers(completed)).toEqual([11]);
+  });
+
+  it('announces the message item before its text and closes it before completing', () => {
+    const frames = createResponseFrames({ requestId: 'life', model: 'gpt-4', createdAt: 1700000000 });
+    frames.created();
+    const stream =
+      frames.textDelta('hi') +
+      frames.textDelta(' there') +
+      frames.completed({
+        content: 'hi there',
+        toolCalls: [],
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 2, cachedTokens: 0 },
+      });
+
+    const events = [...stream.matchAll(/^event: (.+)$/gm)].map((match) => match[1]);
+    expect(events).toEqual([
+      'response.output_item.added',
+      'response.content_part.added',
+      'response.output_text.delta',
+      'response.output_text.delta',
+      'response.output_text.done',
+      'response.content_part.done',
+      'response.output_item.done',
+      'response.completed',
+    ]);
+    expect(stream).toContain(
+      '"item":{"type":"message","id":"msg_life","status":"in_progress","role":"assistant","content":[]}',
+    );
+    expect(stream).toContain('"type":"response.output_text.done","sequence_number":5,"item_id":"msg_life","output_index":0,"content_index":0,"text":"hi there"');
+    expect(stream).toContain(
+      '"item":{"type":"message","id":"msg_life","status":"completed","role":"assistant","content":[{"type":"output_text","text":"hi there","annotations":[]}]}',
+    );
+  });
+
+  it('numbers output items in the order they are announced', () => {
+    const frames = createResponseFrames({ requestId: 'order', model: 'gpt-4', createdAt: 1700000000 });
+    frames.created();
+    const text = frames.textDelta('checking');
+    const first = frames.functionCallAdded(0, 'call_a', 'a');
+    const second = frames.functionCallAdded(1, 'call_b', 'b');
+    const secondArgs = frames.functionCallArgumentsDelta(1, 'call_b', '{}');
+    const firstDone = frames.functionCallDone(0, 'call_a', 'a', '{}');
+
+    expect(text).toContain('"output_index":0');
+    expect(first).toMatch(/"type":"response\.output_item\.added","sequence_number":\d+,"output_index":1,/);
+    expect(second).toContain('"output_index":2');
+    expect(secondArgs).toContain('"output_index":2');
+    expect(firstDone).toContain('"output_index":1');
+  });
+
+  it('names a namespace member call the way the client offered it', () => {
+    const resolveToolName = (name: string) =>
+      name === 'clock__curr_time' ? { name: 'curr_time', namespace: 'clock' } : { name };
+    const frames = createResponseFrames({ requestId: 'ns', model: 'gpt-4', createdAt: 1700000000, resolveToolName });
+    const stream =
+      frames.functionCallAdded(0, 'call_n', 'clock__curr_time') +
+      frames.functionCallDone(0, 'call_n', 'clock__curr_time', '{}') +
+      frames.completed({
+        content: '',
+        toolCalls: [{ id: 'call_n', type: 'function', function: { name: 'clock__curr_time', arguments: '{}' } }],
+        finishReason: 'tool-calls',
+        usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
+      });
+
+    expect(stream.match(/"name":"curr_time","namespace":"clock"/g)).toHaveLength(3);
+    expect(stream).not.toContain('clock__curr_time');
+  });
+
+  it('starts a tool-only response at output index 0 and never emits message frames', () => {
+    const frames = createResponseFrames({ requestId: 'tools', model: 'gpt-4', createdAt: 1700000000 });
+    const stream =
+      frames.created() +
+      frames.functionCallAdded(0, 'call_t', 'run') +
+      frames.functionCallDone(0, 'call_t', 'run', '{}') +
+      frames.completed({
+        content: '',
+        toolCalls: [{ id: 'call_t', type: 'function', function: { name: 'run', arguments: '{}' } }],
+        finishReason: 'tool-calls',
+        usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
+      });
+
+    expect(stream).toMatch(/"type":"response\.output_item\.added","sequence_number":1,"output_index":0,/);
+    expect(stream).not.toContain('"type":"message"');
+    expect(stream).not.toContain('response.output_text');
   });
 
   it('echoes the public model name in created and completed frames', () => {
@@ -293,7 +372,7 @@ describe('createResponseFrames', () => {
 
     expect(frame).toContain('event: response.output_item.added\n');
     expect(frame).toContain('"type":"response.output_item.added"');
-    expect(frame).toContain('"output_index":1'); // index + 1
+    expect(frame).toContain('"output_index":0'); // first announced item
     expect(frame).toContain('"id":"fc_call_abc"');
     expect(frame).toContain('"call_id":"call_abc"');
     expect(frame).toContain('"name":"get_weather"');
@@ -314,7 +393,7 @@ describe('createResponseFrames', () => {
     expect(frame).toContain('event: response.function_call_arguments.delta\n');
     expect(frame).toContain('"type":"response.function_call_arguments.delta"');
     expect(frame).toContain('"item_id":"fc_call_xyz"');
-    expect(frame).toContain('"output_index":1');
+    expect(frame).toContain('"output_index":0');
     expect(frame).toContain('"delta":"{\\"city\\""');
   });
 
@@ -330,7 +409,7 @@ describe('createResponseFrames', () => {
 
     expect(frame).toContain('event: response.output_item.done\n');
     expect(frame).toContain('"type":"response.output_item.done"');
-    expect(frame).toContain('"output_index":1');
+    expect(frame).toContain('"output_index":0');
     expect(frame).toContain('"id":"fc_call_done"');
     expect(frame).toContain('"call_id":"call_done"');
     expect(frame).toContain('"name":"test_fn"');

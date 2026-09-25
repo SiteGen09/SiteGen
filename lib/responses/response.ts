@@ -2,6 +2,18 @@ import type { OpenAiToolCall } from '@/lib/chat/tools';
 import { openAiFinishReason } from '@/lib/chat/tools';
 import type { OpenAiErrorBody } from '@/lib/api/openai-errors';
 import type { NormalizedUsage } from '@/lib/generate/usage';
+import type { ToolName } from '@/lib/responses/request';
+
+/** Upstream tool names back to the client's, for namespace members. */
+type ResolveToolName = (upstreamName: string) => ToolName;
+
+const plainToolName: ResolveToolName = (name) => ({ name });
+
+/** A `function_call` item's name fields, with `namespace` only when there is one. */
+function callName(resolve: ResolveToolName, upstreamName: string): { name: string; namespace?: string } {
+  const { name, namespace } = resolve(upstreamName);
+  return namespace === undefined ? { name } : { name, namespace };
+}
 
 export interface ResponseObjectParams {
   requestId: string;
@@ -12,10 +24,12 @@ export interface ResponseObjectParams {
   toolCalls: readonly OpenAiToolCall[];
   finishReason: string | null;
   usage: NormalizedUsage | null;
+  resolveToolName?: ResolveToolName;
 }
 
 export function responseObject(params: ResponseObjectParams): Record<string, unknown> {
   const { requestId, model, createdAt, status, content, toolCalls, finishReason, usage } = params;
+  const resolveToolName = params.resolveToolName ?? plainToolName;
 
   const output: Array<Record<string, unknown>> = [];
 
@@ -42,7 +56,7 @@ export function responseObject(params: ResponseObjectParams): Record<string, unk
       type: 'function_call',
       id: `fc_${call.id}`,
       call_id: call.id,
-      name: call.function.name,
+      ...callName(resolveToolName, call.function.name),
       arguments: call.function.arguments,
       status: 'completed',
     });
@@ -108,13 +122,88 @@ export interface ResponseFrames {
   failed(body: OpenAiErrorBody): string;
 }
 
+/**
+ * Frames for one streamed response, emitted in the order the Responses wire
+ * format requires. Stateful, because the format is item-structured: text
+ * deltas are only valid inside an announced message item, and `output_index`
+ * is an item's position in the order items were announced, which is how
+ * clients (Codex, the OpenAI SDK's stream accumulator) address them. A delta
+ * for an item that was never added is dropped by those clients, so the message
+ * item opens on the first text and closes before the next item or the end.
+ */
 export function createResponseFrames(params: {
   requestId: string;
   model: string;
   createdAt: number;
+  resolveToolName?: ResolveToolName;
 }): ResponseFrames {
   const { requestId, model, createdAt } = params;
+  const resolveToolName = params.resolveToolName ?? plainToolName;
+  const messageId = `msg_${requestId}`;
   let sequenceNumber = 0;
+  let nextOutputIndex = 0;
+  let message: { outputIndex: number; text: string; open: boolean } | null = null;
+  const callIndexes = new Map<string, number>();
+
+  function callOutputIndex(callId: string): number {
+    let index = callIndexes.get(callId);
+    if (index === undefined) {
+      index = nextOutputIndex++;
+      callIndexes.set(callId, index);
+    }
+    return index;
+  }
+
+  function openMessage(): string {
+    message = { outputIndex: nextOutputIndex++, text: '', open: true };
+    return (
+      sseFrame('response.output_item.added', {
+        type: 'response.output_item.added',
+        sequence_number: sequenceNumber++,
+        output_index: message.outputIndex,
+        item: { type: 'message', id: messageId, status: 'in_progress', role: 'assistant', content: [] },
+      }) +
+      sseFrame('response.content_part.added', {
+        type: 'response.content_part.added',
+        sequence_number: sequenceNumber++,
+        item_id: messageId,
+        output_index: message.outputIndex,
+        content_index: 0,
+        part: { type: 'output_text', text: '', annotations: [] },
+      })
+    );
+  }
+
+  /** Completes the message item if one is open. Safe to call when none is. */
+  function closeMessage(): string {
+    if (message === null || !message.open) return '';
+    message.open = false;
+    const part = { type: 'output_text', text: message.text, annotations: [] };
+    return (
+      sseFrame('response.output_text.done', {
+        type: 'response.output_text.done',
+        sequence_number: sequenceNumber++,
+        item_id: messageId,
+        output_index: message.outputIndex,
+        content_index: 0,
+        text: message.text,
+      }) +
+      sseFrame('response.content_part.done', {
+        type: 'response.content_part.done',
+        sequence_number: sequenceNumber++,
+        item_id: messageId,
+        output_index: message.outputIndex,
+        content_index: 0,
+        part,
+      }) +
+      sseFrame('response.output_item.done', {
+        type: 'response.output_item.done',
+        sequence_number: sequenceNumber++,
+        output_index: message.outputIndex,
+        item: { type: 'message', id: messageId, status: 'completed', role: 'assistant', content: [part] },
+      })
+    );
+  }
 
   return {
     created(): string {
@@ -136,55 +225,62 @@ export function createResponseFrames(params: {
     },
 
     textDelta(text: string): string {
+      // Text after the message closed (it follows a tool call) still streams
+      // into the same item, as it always has; only the first text opens it.
+      const prefix = message === null ? openMessage() : '';
+      const target = message!;
+      target.text += text;
       const data = {
         type: 'response.output_text.delta',
         sequence_number: sequenceNumber++,
-        item_id: `msg_${requestId}`,
-        output_index: 0,
+        item_id: messageId,
+        output_index: target.outputIndex,
         content_index: 0,
         delta: text,
       };
-      return sseFrame('response.output_text.delta', data);
+      return prefix + sseFrame('response.output_text.delta', data);
     },
 
-    functionCallAdded(index: number, callId: string, name: string): string {
+    functionCallAdded(_index: number, callId: string, name: string): string {
+      // The message item ends before the next item starts, as OpenAI streams it.
+      const prefix = closeMessage();
       const data = {
         type: 'response.output_item.added',
         sequence_number: sequenceNumber++,
-        output_index: index + 1,
+        output_index: callOutputIndex(callId),
         item: {
           type: 'function_call',
           id: `fc_${callId}`,
           call_id: callId,
-          name,
+          ...callName(resolveToolName, name),
           arguments: '',
           status: 'in_progress',
         },
       };
-      return sseFrame('response.output_item.added', data);
+      return prefix + sseFrame('response.output_item.added', data);
     },
 
-    functionCallArgumentsDelta(index: number, callId: string, delta: string): string {
+    functionCallArgumentsDelta(_index: number, callId: string, delta: string): string {
       const data = {
         type: 'response.function_call_arguments.delta',
         sequence_number: sequenceNumber++,
         item_id: `fc_${callId}`,
-        output_index: index + 1,
+        output_index: callOutputIndex(callId),
         delta,
       };
       return sseFrame('response.function_call_arguments.delta', data);
     },
 
-    functionCallDone(index: number, callId: string, name: string, args: string): string {
+    functionCallDone(_index: number, callId: string, name: string, args: string): string {
       const data = {
         type: 'response.output_item.done',
         sequence_number: sequenceNumber++,
-        output_index: index + 1,
+        output_index: callOutputIndex(callId),
         item: {
           type: 'function_call',
           id: `fc_${callId}`,
           call_id: callId,
-          name,
+          ...callName(resolveToolName, name),
           arguments: args,
           status: 'completed',
         },
@@ -201,6 +297,7 @@ export function createResponseFrames(params: {
       const { content, toolCalls, finishReason, usage } = params;
       const mappedFinishReason = openAiFinishReason(finishReason);
       const status = mappedFinishReason === 'length' ? 'incomplete' : 'completed';
+      const prefix = closeMessage();
 
       const data = {
         type: 'response.completed',
@@ -214,9 +311,10 @@ export function createResponseFrames(params: {
           toolCalls,
           finishReason,
           usage,
+          resolveToolName,
         }),
       };
-      return sseFrame('response.completed', data);
+      return prefix + sseFrame('response.completed', data);
     },
 
     failed(body: OpenAiErrorBody): string {

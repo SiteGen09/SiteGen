@@ -61,6 +61,49 @@ describe('toChatMessages', () => {
     expect(toChatMessages(request)[0]).toEqual({ role: 'system', content: 'be brief' });
   });
 
+  it('accepts the mid-conversation system messages Claude Code sends', () => {
+    const request = parse({
+      ...base,
+      system: [{ type: 'text', text: 'You are Claude Code.' }],
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'context' }, { type: 'text', text: ' and task' }] },
+        { role: 'system', content: [{ type: 'text', text: 'Available agent types: explore' }] },
+      ],
+    });
+    expect(toChatMessages(request)).toEqual([
+      { role: 'system', content: 'You are Claude Code.' },
+      { role: 'user', content: 'context and task' },
+      { role: 'user', content: '<system-reminder>\nAvailable agent types: explore\n</system-reminder>' },
+    ]);
+  });
+
+  it('keeps a system message that precedes every turn as system', () => {
+    const request = parse({
+      ...base,
+      system: 'base',
+      messages: [
+        { role: 'system', content: 'extra rules' },
+        { role: 'user', content: 'hi' },
+      ],
+    });
+    expect(toChatMessages(request)).toEqual([
+      { role: 'system', content: 'base' },
+      { role: 'system', content: 'extra rules' },
+      { role: 'user', content: 'hi' },
+    ]);
+  });
+
+  it('drops an empty mid-conversation system message', () => {
+    const request = parse({
+      ...base,
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'system', content: [] },
+      ],
+    });
+    expect(toChatMessages(request)).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+
   it('drops an empty system prompt rather than sending a blank turn', () => {
     const request = parse({ ...base, system: '', messages: [{ role: 'user', content: 'hi' }] });
     expect(toChatMessages(request)).toEqual([{ role: 'user', content: 'hi' }]);
