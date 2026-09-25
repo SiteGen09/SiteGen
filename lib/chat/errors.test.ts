@@ -43,6 +43,7 @@ describe('describeError', () => {
     expect(describeError({ code: 'invalid_request', message: 'this conversation is full', status: 400 }).message)
       .toBe('This conversation is full.');
     expect(describeError({ code: 'invalid_request', message: 'request body is too large', status: 413 }).kind).toBe('too_large');
+    expect(describeError({ code: 'context_length_exceeded', message: 'prompt is too long', status: 400 }).title).toBe('Conversation too long');
     expect(describeError({ code: 'invalid_request', message: 'Conversation unavailable or already answering.', status: 409 }).kind).toBe('busy');
   });
 

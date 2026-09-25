@@ -65,6 +65,9 @@ describe('shared generation guard', () => {
     expect((await route(request())).status).toBe(400);
     expect(upstream).not.toHaveBeenCalled();
   });
+  it('leaves input length to the model, so long coding sessions are not cut off', async () => {
+    await expect(enforceLocalPolicy('x'.repeat(2_000_000))).resolves.toBeUndefined();
+  });
 });
 describe('request boundaries', () => {
   it('checks actual bytes even when Content-Length lies', async () => {

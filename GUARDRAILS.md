@@ -12,8 +12,13 @@ content moderation. They do not inspect image pixels or guarantee provider accep
 - 4 simultaneous generations per account, including queued/running media jobs.
 - 5 distinct policy violations in 24 hours trigger a 1-hour generation cooldown.
 - Existing manually suspended accounts cannot generate through any supported route.
-- Request bodies are capped at 1 MiB, or 4 MiB for dashboard chat attachments.
-- Combined text input, including tool definitions, is capped at 200,000 characters.
+- Request bodies are capped at 1 MiB, 4 MiB for dashboard chat attachments, and
+  32 MiB for /v1/responses, /v1/messages and /v1/chat/completions.
+- The gateway sets no character limit on API input. Coding clients such as Codex
+  and Claude Code resend the whole session each turn and compact it themselves
+  once the model reports its context window full. An upstream context overflow is
+  returned as `context_length_exceeded` ("prompt is too long…") so they can.
+  Dashboard chat keeps its own 200,000-character conversation limit.
 
 Limits are configured through the GUARD_* variables in .env.example. Existing
 per-key limits still apply. Invalid or missing guard database configuration blocks

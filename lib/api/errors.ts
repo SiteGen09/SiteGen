@@ -11,6 +11,7 @@ export const ERROR_CODES = [
   'model_not_found',
   'not_ready',
   'content_policy_violation',
+  'context_length_exceeded',
   'internal_error',
 ] as const;
 

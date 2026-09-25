@@ -49,6 +49,25 @@ describe('asUpstreamError', () => {
     expect(mapped?.code).toBe('invalid_request');
   });
 
+  /**
+   * Codex and Claude Code only compact their history when told the context
+   * window is full; a generic rejection leaves the session stuck.
+   */
+  it('reports a full context window in the words coding clients act on', () => {
+    for (const [statusCode, message, responseBody] of [
+      [400, "This model's maximum context length is 128000 tokens.", undefined],
+      [400, 'Bad Request', '{"error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model."}}'],
+      [400, 'prompt is too long: 208000 tokens > 200000 maximum', undefined],
+      [413, 'The input token count (1200000) exceeds the maximum number of tokens allowed (1048576).', undefined],
+    ] as const) {
+      const mapped = asUpstreamError(apiCallError({ statusCode, message, responseBody }));
+      expect(mapped?.code).toBe('context_length_exceeded');
+      expect(mapped?.status).toBe(400);
+      expect(mapped?.message).toMatch(/^prompt is too long/);
+    }
+    expect(asUpstreamError(apiCallError({ statusCode: 400, message: 'bad aspect_ratio' }))?.code).toBe('invalid_request');
+  });
+
   it('treats upstream rate limiting as our channel being unavailable', () => {
     expect(asUpstreamError(apiCallError({ statusCode: 429 }))?.code).toBe('channel_unavailable');
   });

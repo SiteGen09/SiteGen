@@ -27,6 +27,10 @@ const ERROR_DETAIL: Record<string, { status: string; meaning: string }> = {
   not_found: { status: '404', meaning: 'No such resource.' },
   model_not_found: { status: '404', meaning: 'Unknown model, or one your plan cannot use.' },
   content_policy_violation: { status: '400', meaning: 'Prompt was flagged by content moderation.' },
+  context_length_exceeded: {
+    status: '400',
+    meaning: "The conversation is longer than the model's context window. Shorten or compact it.",
+  },
   internal_error: { status: '500', meaning: 'Unexpected server fault. Safe to retry.' },
 };
 

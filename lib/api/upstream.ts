@@ -28,6 +28,20 @@ import { ApiError } from '@/lib/api/errors';
  */
 const CALLER_FAULT_STATUS = new Set([400, 404, 413, 422]);
 
+/**
+ * How providers word "the conversation no longer fits the model". Codex and
+ * Claude Code compact their history on `context_length_exceeded` and on
+ * "prompt is too long", so this has to reach them as that and not as a
+ * generic rejection, or the session stays stuck on the same oversized turn.
+ */
+const CONTEXT_OVERFLOW =
+  /context[_ ](?:length|window|limit)|maximum context|prompt is too long|input is too long|too many (?:input )?tokens|exceeds? the maximum number of tokens|input token count/i;
+
+function isContextOverflow(err: APICallError): boolean {
+  return CONTEXT_OVERFLOW.test(err.message) ||
+    (typeof err.responseBody === 'string' && err.responseBody.length < 65536 && CONTEXT_OVERFLOW.test(err.responseBody));
+}
+
 function fromApiCall(err: APICallError): ApiError {
   const status = err.statusCode ?? null;
 
@@ -44,6 +58,9 @@ function fromApiCall(err: APICallError): ApiError {
     return new ApiError('channel_unavailable', 'the upstream provider is rate limiting us', 503);
   }
   if (status !== null && CALLER_FAULT_STATUS.has(status)) {
+    if (isContextOverflow(err)) {
+      return new ApiError('context_length_exceeded', `prompt is too long for the model's context window: ${err.message}`, 400);
+    }
     return new ApiError('invalid_request', `the model rejected this request: ${err.message}`, 400);
   }
   if (status !== null && status >= 500) {

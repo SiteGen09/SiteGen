@@ -84,8 +84,16 @@ export async function observePolicyRejection(error: unknown): Promise<void> {
   if (isPolicyRejection(error)) await recordPolicyViolation('provider/content-policy');
 }
 
+/**
+ * Coding clients (Codex, Claude Code) resend the whole session every turn and
+ * compact it themselves when the model reports its context window full. A
+ * fixed character cap fired far below any real window, so a long session hit
+ * it before compaction could run and every retry failed the same way. The
+ * model's own limit decides now; this ceiling only bounds memory per request.
+ */
+export const GATEWAY_MAX_BODY_BYTES = 32 * 1024 * 1024;
+
 export async function enforceLocalPolicy(text: string): Promise<void> {
-  if (text.length > 200000) throw new ApiError('invalid_request', 'input exceeds the 200,000 character limit', 413);
   const categories = localPolicy(text);
   if (categories.length) {
     await recordPolicyViolation(categories[0]!);

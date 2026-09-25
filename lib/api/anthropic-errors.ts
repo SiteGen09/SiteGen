@@ -30,6 +30,7 @@ const TYPE_BY_CODE: Record<ErrorCode, string> = {
   model_not_found: 'not_found_error',
   not_ready: 'invalid_request_error',
   content_policy_violation: 'invalid_request_error',
+  context_length_exceeded: 'invalid_request_error',
   internal_error: 'api_error',
 };
 

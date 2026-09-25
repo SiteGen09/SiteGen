@@ -1,4 +1,4 @@
-import { guardedRoute, admitGeneration } from '@/lib/guardrails/runtime';
+import { guardedRoute, admitGeneration, GATEWAY_MAX_BODY_BYTES } from '@/lib/guardrails/runtime';
 import { randomUUID } from 'node:crypto';
 
 import { authenticateApiKey, requireScope, type AuthenticatedKey } from '@/lib/api/api-key-auth';
@@ -462,4 +462,4 @@ async function handlePost(req: Request): Promise<Response> {
   }
 }
 
-export const POST = guardedRoute(handlePost, anthropicErrorFrom);
+export const POST = guardedRoute(handlePost, anthropicErrorFrom, GATEWAY_MAX_BODY_BYTES);

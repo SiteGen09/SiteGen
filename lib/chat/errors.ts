@@ -83,6 +83,8 @@ export function describeError(facts: ErrorFacts): Omit<ChatError, 'request_id'> 
       return /provider/i.test(message)
         ? { kind: 'policy', title: 'Declined by the provider', message: "The AI provider declined this request under its content policy. Try rephrasing it." }
         : { kind: 'policy', title: 'Message not allowed', message: "This message can't be sent because it goes against the content policy. Please rephrase it and try again." };
+    case 'context_length_exceeded':
+      return { kind: 'too_large', title: 'Conversation too long', message: 'This conversation is too long for the model to read. Start a new chat to continue.' };
     case 'model_not_found':
       return { kind: 'model', title: 'Model unavailable', message: "The selected model isn't available for your plan or routing settings. Choose another model, or switch to Auto." };
     case 'not_found':
