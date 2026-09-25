@@ -2,7 +2,8 @@
 # sitegen setup for Codex and Claude Code on macOS and Linux.
 #
 #   Install:    curl -fsSL __SITEGEN_BASE_URL__/install.sh | sh
-#   Uninstall:  curl -fsSL __SITEGEN_BASE_URL__/install.sh | sh -s -- --uninstall
+#   Undo:       curl -fsSL __SITEGEN_BASE_URL__/uninstall.sh | sh
+#               (or, offline: sh ~/.sitegen/uninstall.sh)
 #
 # Points Codex (CLI, desktop app, IDE extension) and Claude Code (CLI, IDE
 # extensions) at your sitegen account, each with its own model family: GPT
@@ -16,6 +17,8 @@
 # Needs curl and Python 3 (on macOS, Apple's command line tools provide it).
 #
 # Optional environment variables:
+#   SITEGEN_TOOLS         codex, claude or both (skips the question); undo
+#                         reverts only the named tool when it is set
 #   SITEGEN_API_KEY       use this key instead of asking for it
 #   SITEGEN_CODEX_MODEL   default Codex model (skips the question)
 #   SITEGEN_CLAUDE_MODEL  default Claude Code model (skips the question)
@@ -63,7 +66,7 @@ main() {
   cat >"$program" <<'SITEGEN_PYTHON'
 import datetime, getpass, json, os, re, shlex, shutil, stat, subprocess, sys, tempfile
 
-INSTALLER_VERSION = 1
+INSTALLER_VERSION = 2
 PROVIDER_ID = "sitegen"
 BASE_URL = (os.environ.get("SITEGEN_BASE_URL") or "__SITEGEN_BASE_URL__").rstrip("/")
 
@@ -73,6 +76,12 @@ KEY_FILE = os.path.join(SITEGEN_DIR, "api-key")
 HELPER_FILE = os.path.join(SITEGEN_DIR, "key.sh")
 STATE_FILE = os.path.join(SITEGEN_DIR, "state.json")
 BACKUP_ROOT = os.path.join(SITEGEN_DIR, "backups")
+# A saved copy of this program and a script that runs its undo, so reverting
+# needs neither the network nor a long command.
+LOCAL_COPY = os.path.join(SITEGEN_DIR, "setup.py")
+UNDO_SCRIPT = os.path.join(SITEGEN_DIR, "uninstall.sh")
+# /uninstall.sh serves this same script with "uninstall" written in here.
+DEFAULT_ACTION = "__SITEGEN_DEFAULT_ACTION__"
 CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex")
 CODEX_CONFIG = os.path.join(CODEX_HOME, "config.toml")
 CODEX_CATALOG = os.path.join(CODEX_HOME, "sitegen-models.json")
@@ -591,6 +600,53 @@ def test_route(key, kind, model):
     return "HTTP %s: %s" % (status, error_message(text))
 
 
+def tools_filter():
+    """SITEGEN_TOOLS as a set: codex, claude, or both when unset or 'both'."""
+    raw = (os.environ.get("SITEGEN_TOOLS") or "both").lower()
+    codex = "codex" in raw or "both" in raw or "all" in raw
+    claude = "claude" in raw or "both" in raw or "all" in raw
+    if not codex and not claude:
+        raise SetupError("SITEGEN_TOOLS must be codex, claude or both (it is '%s')." % os.environ.get("SITEGEN_TOOLS"))
+    return {"codex": codex, "claude": claude, "explicit": bool(os.environ.get("SITEGEN_TOOLS"))}
+
+
+def select_tools(can_codex, can_claude):
+    wanted = tools_filter()
+    pick = {"codex": can_codex and wanted["codex"], "claude": can_claude and wanted["claude"]}
+    if wanted["explicit"] or not (can_codex and can_claude) or not interactive():
+        return pick
+    say()
+    say("  What should sitegen set up?")
+    say("     1. Codex and Claude Code  (recommended)")
+    say("     2. Only Codex             (Claude Code stays as it is)")
+    say("     3. Only Claude Code       (Codex stays as it is)")
+    while True:
+        answer = input("  Press Enter for 1, or type a number: ").strip()
+        if answer in ("", "1"):
+            return {"codex": True, "claude": True}
+        if answer == "2":
+            return {"codex": True, "claude": False}
+        if answer == "3":
+            return {"codex": False, "claude": True}
+        warn("Type 1, 2 or 3.")
+
+
+def install_undo_script():
+    """Saves this program next to the key with a one-command undo for it."""
+    try:
+        here = os.path.abspath(__file__)
+        if here != os.path.abspath(LOCAL_COPY):
+            with open(here, encoding="utf-8") as source:
+                write_private(LOCAL_COPY, source.read())
+        write_private(UNDO_SCRIPT,
+                      "#!/bin/sh\n"
+                      "# Puts Codex and Claude Code back to how they were before sitegen setup.\n"
+                      "exec %s %s --uninstall \"$@\"\n" % (shlex.quote(sys.executable), shlex.quote(LOCAL_COPY)), 0o700)
+        return UNDO_SCRIPT
+    except OSError:
+        return None
+
+
 def install():
     say()
     say(paint("1", "sitegen setup for Codex and Claude Code"))
@@ -622,12 +678,12 @@ def install():
     else:
         warn("Claude Code was not found. Its settings will still be written, ready for when you install it "
              "(curl -fsSL https://claude.ai/install.sh | bash).")
-    do_codex = bool(codex) and bool(gpt)
-    do_claude = bool(claude)
     if codex and not gpt:
         warn("Your plan has no GPT models, so Codex was left unchanged.")
     if not claude:
         warn("Your plan has no Claude models, so Claude Code was left unchanged.")
+    tools = select_tools(bool(codex) and bool(gpt), bool(claude))
+    do_codex, do_claude = tools["codex"], tools["claude"]
     if not do_codex and not do_claude:
         raise SetupError("Nothing to set up.")
 
@@ -661,8 +717,12 @@ def install():
     except ValueError:
         state = None
     backup_dir = new_backup_dir()
+    # A tool left out this time keeps what an earlier run recorded, so undo can
+    # still put it back.
     new_state = {"version": INSTALLER_VERSION, "baseUrl": BASE_URL,
-                 "installedAt": datetime.datetime.now().isoformat(), "codex": None, "claude": None}
+                 "installedAt": datetime.datetime.now().isoformat(),
+                 "codex": None if do_codex else (state or {}).get("codex"),
+                 "claude": None if do_claude else (state or {}).get("claude")}
 
     step("4. Setting up the apps")
     if do_codex and install_codex(codex, gpt, codex_model, backup_dir):
@@ -676,16 +736,17 @@ def install():
                % (claude_model, tiers["opus"], tiers["sonnet"], tiers["haiku"]))
     write_private(STATE_FILE, json.dumps(new_state, indent=2) + "\n")
     say("  Backups of your previous settings: " + backup_dir)
+    undo_script = install_undo_script()
 
     if not os.environ.get("SITEGEN_SKIP_TEST"):
-        step("5. Sending one short test message to each")
-        if new_state["codex"]:
+        step("5. Sending one short test message")
+        if do_codex and new_state["codex"]:
             err = test_route(key, "codex", codex_model)
             if err:
                 warn("Codex route test failed: " + err)
             else:
                 ok("Codex route answered (%s)." % codex_model)
-        if new_state["claude"]:
+        if do_claude and new_state["claude"]:
             err = test_route(key, "claude", claude_model)
             if err:
                 warn("Claude Code route test failed: " + err)
@@ -699,36 +760,50 @@ def install():
 
     say()
     say(paint("32", "Done."))
-    if new_state["codex"]:
-        say("  Codex:        restart the Codex app if it is open, or run: codex")
-    if new_state["claude"]:
-        say("  Claude Code:  open a new terminal and run: claude  (IDE extensions pick it up on restart)")
-    say("  Undo:         curl -fsSL %s/install.sh | sh -s -- --uninstall" % BASE_URL)
+    for name, done, label, hint in (
+            ("codex", do_codex, "Codex:       ", "restart the Codex app if it is open, or run: codex"),
+            ("claude", do_claude, "Claude Code: ", "open a new terminal and run: claude  (IDE extensions pick it up on restart)")):
+        if done and new_state[name]:
+            say("  %s %s" % (label, hint))
+        elif new_state[name]:
+            say("  %s not changed this time (still on sitegen from an earlier setup)" % label)
+        else:
+            say("  %s not changed" % label)
+    say()
+    say("  To go back to your previous setup, run:")
+    if undo_script:
+        short = "~" + undo_script[len(HOME):] if undo_script.startswith(HOME + os.sep) else undo_script
+        # A quoted ~ would not expand, so only quote a path that needs it.
+        say("    sh " + (short if re.fullmatch(r"[~\w./-]+", short) else shlex.quote(undo_script)))
+        say("  or")
+    say("    curl -fsSL %s/uninstall.sh | sh" % BASE_URL)
 
 
 # ---------------------------------------------------------------- uninstall
 
 def uninstall():
+    wanted = tools_filter()
+    names = " and ".join(n for n, on in (("Codex", wanted["codex"]), ("Claude Code", wanted["claude"])) if on)
     say()
-    say(paint("1", "Removing sitegen from Codex and Claude Code"))
+    say(paint("1", "Putting %s back to how they were before sitegen setup" % names))
     try:
         state = read_json(STATE_FILE)
     except ValueError:
         state = None
     backup_dir = new_backup_dir()
 
-    if os.path.exists(CODEX_CONFIG):
+    if wanted["codex"] and os.path.exists(CODEX_CONFIG):
         lines, newline = read_toml()
         clean = remove_sitegen_toml(lines, fallback=True)
         if clean != lines:
             backup(CODEX_CONFIG, backup_dir, "codex-config.toml")
             write_toml(clean, newline)
             ok("Codex settings restored.")
-    if os.path.exists(CODEX_CATALOG):
+    if wanted["codex"] and os.path.exists(CODEX_CATALOG):
         os.remove(CODEX_CATALOG)
 
     claude_state = (state or {}).get("claude")
-    if claude_state and os.path.exists(CLAUDE_SETTINGS):
+    if wanted["claude"] and claude_state and os.path.exists(CLAUDE_SETTINGS):
         try:
             settings = read_json(CLAUDE_SETTINGS, {})
             backup(CLAUDE_SETTINGS, backup_dir, "claude-settings.json")
@@ -768,10 +843,18 @@ def uninstall():
         except (ValueError, OSError) as exc:
             warn("Could not restore %s (%s). Your backups are in %s." % (CLAUDE_SETTINGS, exc, BACKUP_ROOT))
 
-    for path in (KEY_FILE, HELPER_FILE, STATE_FILE):
-        if os.path.exists(path):
-            os.remove(path)
-    ok("Saved key removed.")
+    # The key stays while either tool still uses sitegen.
+    keep = {name: (None if wanted[name] else (state or {}).get(name)) for name in ("codex", "claude")}
+    if keep["codex"] or keep["claude"]:
+        remaining = dict(state or {})
+        remaining.update(keep)
+        write_private(STATE_FILE, json.dumps(remaining, indent=2) + "\n")
+        ok("Saved key kept: %s still uses sitegen." % ("Codex" if keep["codex"] else "Claude Code"))
+    else:
+        for path in (KEY_FILE, HELPER_FILE, STATE_FILE, UNDO_SCRIPT, LOCAL_COPY):
+            if os.path.exists(path):
+                os.remove(path)
+        ok("Saved key and the undo script removed.")
     say("  Backups are kept in %s (safe to delete)." % BACKUP_ROOT)
     say(paint("32", "Done. Restart the Codex app or any open Claude Code sessions."))
 
@@ -783,7 +866,8 @@ def main():
         match = re.match(r"(https?)://([^/:]+)", BASE_URL)
         if not match or (match.group(1) != "https" and match.group(2) not in ("localhost", "127.0.0.1")):
             raise SetupError("The sitegen address must use https.")
-        if "--uninstall" in sys.argv[1:] or os.environ.get("SITEGEN_ACTION") == "uninstall":
+        action = os.environ.get("SITEGEN_ACTION") or (DEFAULT_ACTION if not DEFAULT_ACTION.startswith("__") else "install")
+        if "--uninstall" in sys.argv[1:] or action == "uninstall":
             uninstall()
         else:
             install()

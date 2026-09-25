@@ -18,6 +18,8 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     "/install.ps1": ["./installers/**"],
     "/install.sh": ["./installers/**"],
+    "/uninstall.ps1": ["./installers/**"],
+    "/uninstall.sh": ["./installers/**"],
   },
   async headers() {
     return [

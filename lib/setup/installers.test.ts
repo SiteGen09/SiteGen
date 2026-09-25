@@ -7,10 +7,19 @@ afterEach(() => {
 });
 
 describe('installerScript', () => {
-  it.each(['ps1', 'sh'] as const)('writes the site address into every placeholder of install.%s', async (kind) => {
+  it.each(['ps1', 'sh'] as const)('fills every placeholder of install.%s', async (kind) => {
     const script = await installerScript(kind, 'https://gensite.tech');
-    expect(script).not.toContain('__SITEGEN_BASE_URL__');
+    expect(script).not.toMatch(/__SITEGEN_[A-Z_]+__/);
     expect(script).toContain('https://gensite.tech/install.');
+    expect(script).toContain('https://gensite.tech/uninstall.');
+  });
+
+  it.each(['ps1', 'sh'] as const)('makes undo the default action of uninstall.%s', async (kind) => {
+    const install = await installerScript(kind, 'https://gensite.tech');
+    const undo = await installerScript(kind, 'https://gensite.tech', 'uninstall');
+    const marker = kind === 'ps1' ? "$DefaultAction = '" : 'DEFAULT_ACTION = "';
+    expect(install).toContain(`${marker}install`);
+    expect(undo).toContain(`${marker}uninstall`);
   });
 
   it('serves the shell script with LF line endings only', async () => {
@@ -57,5 +66,11 @@ describe('installerResponse', () => {
     expect(response.headers.get('content-type')).toBe('text/plain; charset=utf-8');
     expect(response.headers.get('x-content-type-options')).toBe('nosniff');
     expect(await response.text()).toContain("$BaseUrl = 'https://gensite.tech'");
+  });
+
+  it('names the undo download after what it does', async () => {
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://gensite.tech');
+    const response = await installerResponse('sh', 'uninstall');
+    expect(response.headers.get('content-disposition')).toBe('inline; filename="uninstall.sh"');
   });
 });

@@ -70,6 +70,6 @@ export const config = {
   // (webhooks, cron) must not pay for a cookie round-trip, and the install
   // scripts are fetched by curl and PowerShell, which carry no session.
   matcher: [
-    '/((?!api/|v1/|_next/static|_next/image|favicon.ico|install\\.(?:sh|ps1)$|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
+    '/((?!api/|v1/|_next/static|_next/image|favicon.ico|(?:un)?install\\.(?:sh|ps1)$|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
   ],
 };

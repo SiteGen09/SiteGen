@@ -2,11 +2,14 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 export type InstallerKind = 'ps1' | 'sh';
+export type InstallerAction = 'install' | 'uninstall';
 
 const FILES: Record<InstallerKind, string> = { ps1: 'install.ps1', sh: 'install.sh' };
 
 /** Where each script names the server it configures clients for. */
 const BASE_URL_PLACEHOLDER = '__SITEGEN_BASE_URL__';
+/** What a script does when run without SITEGEN_ACTION or --uninstall. */
+const ACTION_PLACEHOLDER = '__SITEGEN_DEFAULT_ACTION__';
 
 /**
  * The address written into the scripts. It comes from configuration, never
@@ -24,23 +27,29 @@ export function installerBaseUrl(): string {
 
 /**
  * The setup script for one platform with this site's address written in, so a
- * copy fetched from staging configures clients for staging. The shell script
- * is served with LF line endings whatever the checkout used: `sh` cannot run
- * CRLF.
+ * copy fetched from staging configures clients for staging. The undo routes
+ * serve the same script with `uninstall` as its default action, so one short
+ * command reverts everything. The shell script is served with LF line endings
+ * whatever the checkout used: `sh` cannot run CRLF.
  */
-export async function installerScript(kind: InstallerKind, baseUrl: string): Promise<string> {
+export async function installerScript(
+  kind: InstallerKind,
+  baseUrl: string,
+  action: InstallerAction = 'install',
+): Promise<string> {
   const raw = await readFile(path.join(process.cwd(), 'installers', FILES[kind]), 'utf8');
   const text = kind === 'sh' ? raw.replace(/\r\n/g, '\n') : raw;
-  return text.replaceAll(BASE_URL_PLACEHOLDER, baseUrl);
+  return text.replaceAll(BASE_URL_PLACEHOLDER, baseUrl).replaceAll(ACTION_PLACEHOLDER, action);
 }
 
 /** Plain text, so `irm` returns a string and a browser shows the script to read. */
-export async function installerResponse(kind: InstallerKind): Promise<Response> {
-  const body = await installerScript(kind, installerBaseUrl());
+export async function installerResponse(kind: InstallerKind, action: InstallerAction = 'install'): Promise<Response> {
+  const body = await installerScript(kind, installerBaseUrl(), action);
+  const filename = `${action}.${kind}`;
   return new Response(body, {
     headers: {
       'content-type': 'text/plain; charset=utf-8',
-      'content-disposition': `inline; filename="${FILES[kind]}"`,
+      'content-disposition': `inline; filename="${filename}"`,
       // Short, so a fixed script reaches everyone within minutes of a deploy.
       'cache-control': 'public, max-age=300',
       'x-content-type-options': 'nosniff',

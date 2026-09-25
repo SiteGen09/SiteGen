@@ -1,7 +1,8 @@
 # sitegen setup for Codex and Claude Code on Windows (PowerShell 5.1 or 7+).
 #
 #   Install:    irm __SITEGEN_BASE_URL__/install.ps1 | iex
-#   Uninstall:  $env:SITEGEN_ACTION = 'uninstall'; irm __SITEGEN_BASE_URL__/install.ps1 | iex
+#   Undo:       irm __SITEGEN_BASE_URL__/uninstall.ps1 | iex
+#               (or the "Undo sitegen setup" shortcut in the Start menu)
 #
 # Points Codex (CLI, desktop app, IDE extension) and Claude Code (CLI, IDE
 # extensions) at your sitegen account, each with its own model family: GPT
@@ -14,6 +15,8 @@
 # and the uninstall command puts your previous settings back.
 #
 # Optional environment variables:
+#   SITEGEN_TOOLS         codex, claude or both (skips the question); undo
+#                         reverts only the named tool when it is set
 #   SITEGEN_API_KEY       use this key instead of asking for it
 #   SITEGEN_CODEX_MODEL   default Codex model (skips the question)
 #   SITEGEN_CLAUDE_MODEL  default Claude Code model (skips the question)
@@ -22,21 +25,28 @@
 #   SITEGEN_HOME          where the key and state live (default: ~\.sitegen)
 
 & {
+# This script's own text, saved at install time so undo works offline.
+$SelfText = $MyInvocation.MyCommand.ScriptBlock.ToString()
 Set-StrictMode -Version 1
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$InstallerVersion = 1
+$InstallerVersion = 2
 $ProviderId = 'sitegen'
 $BaseUrl = '__SITEGEN_BASE_URL__'
 if ($env:SITEGEN_BASE_URL) { $BaseUrl = $env:SITEGEN_BASE_URL }
 $BaseUrl = $BaseUrl.TrimEnd('/')
+# /uninstall.ps1 serves this same script with 'uninstall' written in here.
+$DefaultAction = '__SITEGEN_DEFAULT_ACTION__'
+$Action = if ($env:SITEGEN_ACTION) { $env:SITEGEN_ACTION } elseif (-not $DefaultAction.StartsWith('__')) { $DefaultAction } else { 'install' }
 
 $SitegenDir = if ($env:SITEGEN_HOME) { $env:SITEGEN_HOME } else { Join-Path $HOME '.sitegen' }
 $KeyFile = Join-Path $SitegenDir 'api-key.dpapi'
 $HelperFile = Join-Path $SitegenDir 'key.ps1'
 $StateFile = Join-Path $SitegenDir 'state.json'
 $BackupRoot = Join-Path $SitegenDir 'backups'
+$LocalCopy = Join-Path $SitegenDir 'sitegen-setup.ps1'
+$UndoShortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Undo sitegen setup.lnk'
 $CodexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
 $CodexConfig = Join-Path $CodexHome 'config.toml'
 $CodexCatalog = Join-Path $CodexHome 'sitegen-models.json'
@@ -561,6 +571,59 @@ function Test-Route([string]$Key, [string]$Kind, [string]$Model) {
   return "HTTP $($r.Status): $(Get-ErrorMessage $r.Text)"
 }
 
+# SITEGEN_TOOLS as a set: codex, claude, or both when unset or 'both'.
+function Get-ToolsFilter {
+  $raw = if ($env:SITEGEN_TOOLS) { $env:SITEGEN_TOOLS.ToLowerInvariant() } else { 'both' }
+  $codex = $raw -match 'codex' -or $raw -match 'both|all'
+  $claude = $raw -match 'claude' -or $raw -match 'both|all'
+  if (-not $codex -and -not $claude) { Fail "SITEGEN_TOOLS must be codex, claude or both (it is '$env:SITEGEN_TOOLS')." }
+  return @{ codex = $codex; claude = $claude; explicit = [bool]$env:SITEGEN_TOOLS }
+}
+
+function Select-Tools([bool]$CanCodex, [bool]$CanClaude) {
+  $filter = Get-ToolsFilter
+  $pick = @{ codex = $CanCodex -and $filter.codex; claude = $CanClaude -and $filter.claude }
+  if ($filter.explicit -or -not ($CanCodex -and $CanClaude) -or -not (Test-Interactive)) { return $pick }
+  Say ''
+  Say '  What should sitegen set up?'
+  Say '     1. Codex and Claude Code  (recommended)'
+  Say '     2. Only Codex             (Claude Code stays as it is)'
+  Say '     3. Only Claude Code       (Codex stays as it is)'
+  while ($true) {
+    $answer = (Read-Host '  Press Enter for 1, or type a number').Trim()
+    if ($answer -eq '' -or $answer -eq '1') { return @{ codex = $true; claude = $true } }
+    if ($answer -eq '2') { return @{ codex = $true; claude = $false } }
+    if ($answer -eq '3') { return @{ codex = $false; claude = $true } }
+    Warn 'Type 1, 2 or 3.'
+  }
+}
+
+# A saved copy of this script and a Start menu shortcut that runs its undo, so
+# reverting needs neither the network nor a command.
+function Install-UndoShortcut {
+  $command = "irm $BaseUrl/uninstall.ps1 | iex"
+  if ($SelfText -and $SelfText.Trim()) {
+    Write-Utf8 $LocalCopy ("# sitegen setup, saved by the installer for the Undo sitegen setup shortcut.`r`n& {`r`n" + $SelfText + "`r`n}`r`n")
+    $command = "`$env:SITEGEN_ACTION = 'uninstall'; & '$($LocalCopy.Replace("'", "''"))'"
+  }
+  if ($env:SITEGEN_NO_SHORTCUT) { return $null }
+  try {
+    $shell = New-Object -ComObject WScript.Shell
+    $link = $shell.CreateShortcut($UndoShortcut)
+    $link.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $link.Arguments = '-NoProfile -ExecutionPolicy Bypass -Command "' + $command + "; Read-Host 'Press Enter to close'" + '"'
+    $link.Description = 'Put Codex and Claude Code back to how they were before sitegen setup'
+    $link.Save()
+    return $UndoShortcut
+  } catch { return $null }
+}
+
+function Remove-UndoShortcut {
+  foreach ($path in @($UndoShortcut, $LocalCopy)) {
+    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+  }
+}
+
 function Invoke-Install {
   Say ''
   Write-Host 'sitegen setup for Codex and Claude Code' -ForegroundColor White
@@ -582,10 +645,13 @@ function Invoke-Install {
   $claudeExe = Find-Claude
   if ($codex) { Ok "Codex found: $codex" } else { Warn 'Codex was not found. Install it first (npm i -g @openai/codex, or the Codex app), then run this again to set it up.' }
   if ($claudeExe) { Ok "Claude Code found: $claudeExe" } else { Warn 'Claude Code was not found. Its settings will still be written, ready for when you install it (irm https://claude.ai/install.ps1 | iex).' }
-  $doCodex = [bool]$codex -and $gpt.Count -gt 0
-  $doClaude = $claude.Count -gt 0
+  $canCodex = [bool]$codex -and $gpt.Count -gt 0
+  $canClaude = $claude.Count -gt 0
   if ($codex -and $gpt.Count -eq 0) { Warn 'Your plan has no GPT models, so Codex was left unchanged.' }
   if ($claude.Count -eq 0) { Warn 'Your plan has no Claude models, so Claude Code was left unchanged.' }
+  $tools = Select-Tools $canCodex $canClaude
+  $doCodex = $tools.codex
+  $doClaude = $tools.claude
   if (-not $doCodex -and -not $doClaude) { Fail 'Nothing to set up.' }
 
   $codexModel = $null; $claudeModel = $null; $tiers = $null
@@ -619,7 +685,13 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR(`$ptr) }
 
   $state = Read-State
   $backupDir = New-BackupDir
-  $newState = [ordered]@{ version = $InstallerVersion; baseUrl = $BaseUrl; installedAt = (Get-Date).ToString('o'); codex = $null; claude = $null }
+  # A tool left out this time keeps what an earlier run recorded, so undo can
+  # still put it back.
+  $newState = [ordered]@{
+    version = $InstallerVersion; baseUrl = $BaseUrl; installedAt = (Get-Date).ToString('o')
+    codex = $(if ($doCodex) { $null } else { Get-Prop $state 'codex' })
+    claude = $(if ($doClaude) { $null } else { Get-Prop $state 'claude' })
+  }
 
   Step '4. Setting up the apps'
   if ($doCodex) {
@@ -639,13 +711,15 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR(`$ptr) }
   Restrict-ToCurrentUser $StateFile
   Say "  Backups of your previous settings: $backupDir"
 
+  $shortcut = Install-UndoShortcut
+
   if (-not $env:SITEGEN_SKIP_TEST) {
-    Step '5. Sending one short test message to each'
-    if ($newState.codex) {
+    Step '5. Sending one short test message'
+    if ($doCodex -and $newState.codex) {
       $err = Test-Route $key 'codex' $codexModel
       if ($err) { Warn "Codex route test failed: $err" } else { Ok "Codex route answered ($codexModel)." }
     }
-    if ($newState.claude) {
+    if ($doClaude -and $newState.claude) {
       $err = Test-Route $key 'claude' $claudeModel
       if ($err) { Warn "Claude Code route test failed: $err" } else { Ok "Claude Code route answered ($claudeModel)." }
     }
@@ -661,20 +735,29 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR(`$ptr) }
 
   Say ''
   Write-Host 'Done.' -ForegroundColor Green
-  if ($newState.codex) { Say '  Codex:        restart the Codex app if it is open, or run: codex' }
-  if ($newState.claude) { Say '  Claude Code:  open a new terminal and run: claude  (IDE extensions pick it up on restart)' }
-  Say ('  Undo:         $env:SITEGEN_ACTION = ''uninstall''; irm ' + $BaseUrl + '/install.ps1 | iex')
+  if ($doCodex -and $newState.codex) { Say '  Codex:        restart the Codex app if it is open, or run: codex' }
+  elseif ($newState.codex) { Say '  Codex:        not changed this time (still on sitegen from an earlier setup)' }
+  else { Say '  Codex:        not changed' }
+  if ($doClaude -and $newState.claude) { Say '  Claude Code:  open a new terminal and run: claude  (IDE extensions pick it up on restart)' }
+  elseif ($newState.claude) { Say '  Claude Code:  not changed this time (still on sitegen from an earlier setup)' }
+  else { Say '  Claude Code:  not changed' }
+  Say ''
+  Say '  To go back to your previous setup:'
+  if ($shortcut) { Say '    press the Windows key, type "Undo sitegen", press Enter; or run' }
+  Say ('    irm ' + $BaseUrl + '/uninstall.ps1 | iex')
 }
 
 # ---------------------------------------------------------------- uninstall
 
 function Invoke-Uninstall {
+  $filter = Get-ToolsFilter
+  $names = @(@(if ($filter.codex) { 'Codex' }) + @(if ($filter.claude) { 'Claude Code' })) -join ' and '
   Say ''
-  Write-Host 'Removing sitegen from Codex and Claude Code' -ForegroundColor White
+  Write-Host "Putting $names back to how they were before sitegen setup" -ForegroundColor White
   $state = Read-State
   $backupDir = New-BackupDir
 
-  if (Test-Path -LiteralPath $CodexConfig) {
+  if ($filter.codex -and (Test-Path -LiteralPath $CodexConfig)) {
     $toml = Read-TomlLines
     $clean = Remove-SitegenToml $toml.Lines -Fallback
     if (($clean -join "`n") -ne ($toml.Lines -join "`n")) {
@@ -683,10 +766,10 @@ function Invoke-Uninstall {
       Ok 'Codex settings restored.'
     }
   }
-  if (Test-Path -LiteralPath $CodexCatalog) { Remove-Item -LiteralPath $CodexCatalog -Force }
+  if ($filter.codex -and (Test-Path -LiteralPath $CodexCatalog)) { Remove-Item -LiteralPath $CodexCatalog -Force }
 
   $claudeState = Get-Prop $state 'claude'
-  if ($null -ne $claudeState -and (Test-Path -LiteralPath $ClaudeSettings)) {
+  if ($filter.claude -and $null -ne $claudeState -and (Test-Path -LiteralPath $ClaudeSettings)) {
     try {
       $settings = Read-JsonFile $ClaudeSettings
       Backup-File $ClaudeSettings $backupDir 'claude-settings.json'
@@ -729,10 +812,20 @@ function Invoke-Uninstall {
     } catch { Warn "Could not restore $ClaudeSettings ($($_.Exception.Message)). Your backups are in $BackupRoot." }
   }
 
-  foreach ($path in @($KeyFile, $HelperFile, $StateFile)) {
-    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+  # The key stays while either tool still uses sitegen.
+  $keepCodex = if ($filter.codex) { $null } else { Get-Prop $state 'codex' }
+  $keepClaude = if ($filter.claude) { $null } else { Get-Prop $state 'claude' }
+  if ($null -ne $keepCodex -or $null -ne $keepClaude) {
+    $remaining = [ordered]@{ version = Get-Prop $state 'version'; baseUrl = Get-Prop $state 'baseUrl'; installedAt = Get-Prop $state 'installedAt'; codex = $keepCodex; claude = $keepClaude }
+    Write-JsonFile $StateFile ([pscustomobject]$remaining)
+    Ok "Saved key kept: $(if ($keepCodex) { 'Codex' } else { 'Claude Code' }) still uses sitegen."
+  } else {
+    foreach ($path in @($KeyFile, $HelperFile, $StateFile)) {
+      if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+    }
+    Remove-UndoShortcut
+    Ok 'Saved key and the Undo shortcut removed.'
   }
-  Ok 'Saved key removed.'
   Say "  Backups are kept in $BackupRoot (safe to delete)."
   Write-Host 'Done. Restart the Codex app or any open Claude Code sessions.' -ForegroundColor Green
 }
@@ -741,7 +834,7 @@ try {
   if ($BaseUrl.StartsWith('__')) { Fail 'Run this from your sitegen setup page, or set SITEGEN_BASE_URL.' }
   $uri = [uri]$BaseUrl
   if ($uri.Scheme -ne 'https' -and $uri.Host -notin @('localhost', '127.0.0.1')) { Fail 'The sitegen address must use https.' }
-  if ($env:SITEGEN_ACTION -eq 'uninstall') { Invoke-Uninstall } else { Invoke-Install }
+  if ($Action -eq 'uninstall') { Invoke-Uninstall } else { Invoke-Install }
 } catch {
   Write-Host ''
   Write-Host "  X   $($_.Exception.Message)" -ForegroundColor Red

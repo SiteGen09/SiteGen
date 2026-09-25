@@ -23,7 +23,7 @@ function platform(os: OsKey, base: string): Platform {
     return {
       terminal: 'Open PowerShell (press the Windows key, type PowerShell, press Enter) and run:',
       install: `irm ${base}/install.ps1 | iex`,
-      uninstall: `$env:SITEGEN_ACTION = 'uninstall'; irm ${base}/install.ps1 | iex`,
+      uninstall: `irm ${base}/uninstall.ps1 | iex`,
       script: `${base}/install.ps1`,
       needs: 'Nothing extra: Windows PowerShell is built in.',
     };
@@ -31,7 +31,7 @@ function platform(os: OsKey, base: string): Platform {
   return {
     terminal: `Open ${os === 'macos' ? 'Terminal' : 'a terminal'} and run:`,
     install: `curl -fsSL ${base}/install.sh | sh`,
-    uninstall: `curl -fsSL ${base}/install.sh | sh -s -- --uninstall`,
+    uninstall: `curl -fsSL ${base}/uninstall.sh | sh`,
     script: `${base}/install.sh`,
     needs:
       os === 'macos'
@@ -107,6 +107,10 @@ export function QuickInstall({ base }: { base: string }) {
 
         <ul className="mt-4 list-disc space-y-1.5 pl-5 text-sm leading-6 text-zinc-600">
           <li>
+            It asks what to set up: Codex and Claude Code, only Codex, or only Claude Code. The one
+            you leave out is not touched.
+          </li>
+          <li>
             It asks for an API key from Dashboard -&gt; API keys and stores it{' '}
             {os === 'windows' ? 'encrypted for your Windows account' : 'in a file only you can read'}.
             The key is never written into the apps&apos; settings.
@@ -127,9 +131,15 @@ export function QuickInstall({ base }: { base: string }) {
         <details className="mt-4">
           <summary className="cursor-pointer text-sm font-medium text-zinc-700">Undo the setup</summary>
           <p className="mt-2 text-sm leading-6 text-zinc-600">
-            Puts your previous Codex and Claude Code settings back and deletes the saved key:
+            {os === 'windows'
+              ? 'Press the Windows key, type "Undo sitegen" and press Enter. Or run this in PowerShell:'
+              : 'Run this in a terminal (or, without internet, sh ~/.sitegen/uninstall.sh):'}
           </p>
           <Command code={current.uninstall} />
+          <p className="mt-2 text-xs leading-5 text-zinc-500">
+            It puts your previous Codex and Claude Code settings back exactly as they were and
+            deletes the saved key.
+          </p>
         </details>
       </div>
 
