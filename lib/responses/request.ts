@@ -2,6 +2,13 @@ import { createHash } from 'node:crypto';
 
 import { z } from 'zod';
 
+import { ApiError } from '@/lib/api/errors';
+import {
+  attachmentFromUrl,
+  checkAttachmentCount,
+  unsupportedFileId,
+  type ChatAttachment,
+} from '@/lib/chat/attachments';
 import type { ChatMessage, ChatTool, ChatToolChoice } from '@/lib/chat/request';
 
 /**
@@ -107,12 +114,60 @@ export type ResponsesToolChoice = z.infer<typeof responsesToolChoiceSchema>;
 
 /**
  * Content part inside a message item. The Responses API supports both
- * input_text/output_text (role-specific) and plain text parts.
+ * input_text/output_text (role-specific) and plain text parts, plus an image
+ * (`input_image`, which Codex sends for a pasted screenshot) and a file
+ * (`input_file`, a PDF or text document).
  */
-const contentPartSchema = z.looseObject({
+const textPartSchema = z.looseObject({
   type: z.enum(['input_text', 'output_text', 'text']),
   text: z.string(),
 });
+
+const imagePartSchema = z.looseObject({
+  type: z.literal('input_image'),
+  image_url: z.string().nullable().optional(),
+  file_id: z.string().nullable().optional(),
+});
+
+const filePartSchema = z.looseObject({
+  type: z.literal('input_file'),
+  file_data: z.string().nullable().optional(),
+  file_url: z.string().nullable().optional(),
+  file_id: z.string().nullable().optional(),
+  filename: z.string().nullable().optional(),
+});
+
+const contentPartSchema = z.union([textPartSchema, imagePartSchema, filePartSchema]);
+
+type ContentPart = z.infer<typeof contentPartSchema>;
+
+/** The attachment an image or file part carries, or null for any other part. */
+function partAttachment(part: unknown): ChatAttachment | null {
+  const parsed = z.union([imagePartSchema, filePartSchema]).safeParse(part);
+  if (!parsed.success) return null;
+  const value = parsed.data;
+  if (value.type === 'input_image') {
+    if (!value.image_url) return unsupportedFileId();
+    return attachmentFromUrl(value.image_url, { kind: 'image' });
+  }
+  const filename = value.filename ?? undefined;
+  if (value.file_data) {
+    // SDKs send either a data: URL or bare base64 here.
+    return value.file_data.startsWith('data:')
+      ? attachmentFromUrl(value.file_data, { filename })
+      : attachmentFromUrl(`data:;base64,${value.file_data}`, { filename });
+  }
+  if (value.file_url) return attachmentFromUrl(value.file_url, { filename });
+  return unsupportedFileId();
+}
+
+function partsAttachments(parts: readonly unknown[]): ChatAttachment[] {
+  return parts.flatMap((part) => partAttachment(part) ?? []);
+}
+
+function partsText(parts: readonly ContentPart[]): string {
+  return parts.map((part) => ('text' in part && typeof part.text === 'string' ? part.text : '')).join('');
+}
 
 /**
  * Input item discriminated union. Messages, function calls, and function call
@@ -136,8 +191,9 @@ const functionCallItemSchema = z.looseObject({
 
 /**
  * A tool's result. Usually a string; a result carrying an image (an MCP
- * screenshot tool, say) arrives as content parts instead. Chat completions
- * takes text only, so text parts are kept and anything else is noted.
+ * screenshot tool, say) arrives as content parts instead. Text parts become
+ * the tool message; images and files ride along as its attachments, and any
+ * other part is noted.
  */
 const functionCallOutputItemSchema = z.looseObject({
   type: z.literal('function_call_output'),
@@ -148,7 +204,11 @@ const functionCallOutputItemSchema = z.looseObject({
 function outputText(output: z.infer<typeof functionCallOutputItemSchema>['output']): string {
   if (typeof output === 'string') return output;
   return output
-    .map((part) => part.text ?? `[${part.type} omitted: this gateway passes tool results as text only]`)
+    .flatMap((part) => {
+      if (part.text !== undefined) return [part.text];
+      if (part.type === 'input_image' || part.type === 'input_file') return [];
+      return [`[${part.type} omitted: this gateway does not accept that kind of tool output]`];
+    })
     .join('\n');
 }
 
@@ -227,23 +287,37 @@ export function toChatMessages(request: ResponsesRequest): ChatMessage[] {
 
     if (item.type === 'function_call_output') {
       flushToolCalls();
-      messages.push({ role: 'tool', tool_call_id: item.call_id, content: outputText(item.output) });
+      const attachments = typeof item.output === 'string' ? [] : partsAttachments(item.output);
+      messages.push({
+        role: 'tool',
+        tool_call_id: item.call_id,
+        content: outputText(item.output),
+        ...(attachments.length > 0 ? { attachments } : {}),
+      });
       continue;
     }
 
     flushToolCalls();
-    messages.push({
-      role: item.role === 'developer' ? 'system' : item.role,
-      content:
-        typeof item.content === 'string'
-          ? item.content
-          : item.content.map((part) => part.text).join(''),
-    });
+    const role = item.role === 'developer' ? 'system' : item.role;
+    if (typeof item.content === 'string') {
+      messages.push({ role, content: item.content });
+      continue;
+    }
+    const attachments = partsAttachments(item.content);
+    if (attachments.length > 0 && role !== 'user') {
+      throw new ApiError(
+        'invalid_request',
+        `images and files are only accepted in user messages and tool outputs, not ${item.role} messages`,
+        400,
+      );
+    }
+    messages.push({ role, content: partsText(item.content), ...(attachments.length > 0 ? { attachments } : {}) });
   }
 
   // Flush any remaining tool calls at the end.
   flushToolCalls();
 
+  checkAttachmentCount(messages.reduce((sum, message) => sum + (message.attachments?.length ?? 0), 0));
   return messages;
 }
 

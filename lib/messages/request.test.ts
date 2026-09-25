@@ -222,6 +222,56 @@ describe('toChatMessages', () => {
     });
     expect(toChatMessages(request)).toEqual([{ role: 'tool', tool_call_id: 'tu_1', content: '' }]);
   });
+
+  it('carries a pasted image and a PDF document on the user turn', () => {
+    const request = parse({
+      ...base,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+          { type: 'document', title: 'spec.pdf', source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' } },
+          { type: 'text', text: 'Review these.' },
+        ],
+      }],
+    });
+    expect(toChatMessages(request)).toEqual([{
+      role: 'user',
+      content: 'Review these.',
+      attachments: [
+        { data: 'data:image/png;base64,AAAA', mediaType: 'image/png' },
+        { data: 'data:application/pdf;base64,JVBERi0=', mediaType: 'application/pdf', filename: 'spec.pdf' },
+      ],
+    }]);
+  });
+
+  it('keeps an image a tool returned, as Claude Code reading a screenshot does', () => {
+    const request = parse({
+      ...base,
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'tu_1',
+          content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'BBBB' } }],
+        }],
+      }],
+    });
+    expect(toChatMessages(request)).toEqual([{
+      role: 'tool',
+      tool_call_id: 'tu_1',
+      content: '',
+      attachments: [{ data: 'data:image/jpeg;base64,BBBB', mediaType: 'image/jpeg' }],
+    }]);
+  });
+
+  it('refuses a Files API reference it cannot resolve', () => {
+    const request = parse({
+      ...base,
+      messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'file', file_id: 'file_1' } }] }],
+    });
+    expect(() => toChatMessages(request)).toThrow(/file_id/);
+  });
 });
 
 describe('toChatTools', () => {

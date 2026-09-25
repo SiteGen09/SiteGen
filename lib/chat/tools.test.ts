@@ -191,6 +191,44 @@ describe('toModelMessages', () => {
       { role: 'assistant', content: 'done' },
     ]);
   });
+
+  it('sends user images as file parts and inlines text documents', () => {
+    const converted = toModelMessages([{
+      role: 'user',
+      content: 'Look',
+      attachments: [
+        { data: 'data:image/png;base64,AAAA', mediaType: 'image/png' },
+        { data: 'data:text/plain;base64,aGk=', mediaType: 'text/plain', filename: 'a.txt' },
+      ],
+    }]);
+    expect(converted).toEqual([{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Look' },
+        { type: 'file', data: { type: 'data', data: 'AAAA' }, mediaType: 'image/png' },
+        { type: 'text', text: '\n\n<file name="a.txt">\nhi\n</file>' },
+      ],
+    }]);
+  });
+
+  it('moves tool-result images into a user turn after the run of results', () => {
+    const converted = toModelMessages([
+      { role: 'assistant', content: null, tool_calls: [
+        { id: 'c1', type: 'function', function: { name: 'shot', arguments: '{}' } },
+        { id: 'c2', type: 'function', function: { name: 'shot', arguments: '{}' } },
+      ] },
+      { role: 'tool', tool_call_id: 'c1', content: 'one', attachments: [{ data: 'data:image/png;base64,AAAA', mediaType: 'image/png' }] },
+      { role: 'tool', tool_call_id: 'c2', content: 'two' },
+    ]);
+    expect(converted.map((message) => message.role)).toEqual(['assistant', 'tool', 'tool', 'user']);
+    expect(converted[3]).toEqual({
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Images and files returned by the tool calls above:' },
+        { type: 'file', data: { type: 'data', data: 'AAAA' }, mediaType: 'image/png' },
+      ],
+    });
+  });
 });
 
 describe('moderationText', () => {

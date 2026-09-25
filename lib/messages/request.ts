@@ -2,6 +2,15 @@ import { createHash } from 'node:crypto';
 
 import { z } from 'zod';
 
+import { ApiError } from '@/lib/api/errors';
+import {
+  attachmentFromBase64,
+  attachmentFromText,
+  attachmentFromUrl,
+  checkAttachmentCount,
+  unsupportedFileId,
+  type ChatAttachment,
+} from '@/lib/chat/attachments';
 import type { ChatMessage, ChatTool, ChatToolCall, ChatToolChoice } from '@/lib/chat/request';
 
 /**
@@ -33,9 +42,66 @@ const toolUseBlockSchema = z.looseObject({
 });
 
 /**
+ * Where an image or document's bytes live: inline base64, a URL, inline text
+ * (plain-text documents only) or an Anthropic Files API id, which this
+ * gateway cannot resolve.
+ */
+const sourceSchema = z.union([
+  z.looseObject({ type: z.literal('base64'), media_type: z.string(), data: z.string() }),
+  z.looseObject({ type: z.literal('url'), url: z.string() }),
+  z.looseObject({ type: z.literal('text'), media_type: z.string().optional(), data: z.string() }),
+  z.looseObject({ type: z.literal('file'), file_id: z.string() }),
+]);
+
+/** A screenshot or picture: Claude Code sends one for a pasted image or an image file it reads. */
+const imageBlockSchema = z.looseObject({
+  type: z.literal('image'),
+  source: sourceSchema,
+});
+
+/** A PDF or plain-text document. */
+const documentBlockSchema = z.looseObject({
+  type: z.literal('document'),
+  source: sourceSchema,
+  title: z.string().nullable().optional(),
+});
+
+type MediaBlock = z.infer<typeof imageBlockSchema> | z.infer<typeof documentBlockSchema>;
+
+function blockAttachment(block: MediaBlock): ChatAttachment {
+  const filename = block.type === 'document' ? block.title ?? undefined : undefined;
+  const source = block.source;
+  switch (source.type) {
+    case 'base64':
+      return attachmentFromBase64(source.data, source.media_type, filename);
+    case 'url':
+      return attachmentFromUrl(source.url, { kind: block.type === 'image' ? 'image' : 'file', filename });
+    case 'text':
+      return attachmentFromText(source.data, filename);
+    default:
+      return unsupportedFileId();
+  }
+}
+
+/** Images and documents in a block array, as attachments. */
+function blockAttachments(blocks: ReadonlyArray<{ type: string }>): ChatAttachment[] {
+  const attachments: ChatAttachment[] = [];
+  for (const block of blocks) {
+    if (block.type !== 'image' && block.type !== 'document') continue;
+    const parsed = z.union([imageBlockSchema, documentBlockSchema]).safeParse(block);
+    if (!parsed.success) {
+      throw new ApiError('invalid_request', `an ${block.type} block has an invalid source`, 400);
+    }
+    attachments.push(blockAttachment(parsed.data));
+  }
+  return attachments;
+}
+
+/**
  * The caller's answer to a `tool_use`. Anthropic allows the result to be a
- * bare string or a block array; chat completions has only a string, so both
- * are flattened to text on the way through.
+ * bare string or a block array. Text blocks become the tool message; images
+ * and documents (Claude Code's Read tool on a screenshot or PDF) ride along
+ * as its attachments.
  */
 const toolResultBlockSchema = z.looseObject({
   type: z.literal('tool_result'),
@@ -44,7 +110,13 @@ const toolResultBlockSchema = z.looseObject({
   is_error: z.boolean().optional(),
 });
 
-const contentBlockSchema = z.union([textBlockSchema, toolUseBlockSchema, toolResultBlockSchema]);
+const contentBlockSchema = z.union([
+  textBlockSchema,
+  toolUseBlockSchema,
+  toolResultBlockSchema,
+  imageBlockSchema,
+  documentBlockSchema,
+]);
 
 export type ContentBlock = z.infer<typeof contentBlockSchema>;
 
@@ -140,12 +212,19 @@ export function toChatMessages(request: MessagesRequest): ChatMessage[] {
     // the *previous* assistant turn, and chat completions orders them that way.
     for (const block of message.content) {
       if (block.type === 'tool_result') {
+        const attachments = Array.isArray(block.content) ? blockAttachments(block.content) : [];
         messages.push({
           role: 'tool',
           tool_call_id: block.tool_use_id,
           content: block.content === undefined ? '' : blockText(block.content),
+          ...(attachments.length > 0 ? { attachments } : {}),
         });
       }
+    }
+
+    const attachments = blockAttachments(message.content);
+    if (attachments.length > 0 && message.role !== 'user') {
+      throw new ApiError('invalid_request', 'images and documents are only accepted in user turns and tool results', 400);
     }
 
     const text = message.content
@@ -174,13 +253,14 @@ export function toChatMessages(request: MessagesRequest): ChatMessage[] {
     }
 
     // A user turn that was nothing but tool results has already been emitted.
-    if (text.length === 0 && message.content.some((block) => block.type === 'tool_result')) {
+    if (text.length === 0 && attachments.length === 0 && message.content.some((block) => block.type === 'tool_result')) {
       continue;
     }
 
-    messages.push({ role: message.role, content: text });
+    messages.push({ role: message.role, content: text, ...(attachments.length > 0 ? { attachments } : {}) });
   }
 
+  checkAttachmentCount(messages.reduce((sum, message) => sum + (message.attachments?.length ?? 0), 0));
   return messages;
 }
 

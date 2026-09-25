@@ -503,11 +503,20 @@ def bundled_catalog(codex):
         return None
 
 
+def input_modalities(model_id):
+    """Codex refuses to attach a pasted image unless the model lists "image".
+    GPT models read images, except these text-only ones."""
+    if re.match(r"(gpt-3|gpt-oss|o1-mini|o1-preview|o3-mini)", model_id):
+        return ["text"]
+    return ["text", "image"]
+
+
 def codex_catalog(bundled, ids):
     """One catalog entry per sitegen GPT model, cloned from the closest
     built-in model so Codex keeps its own instructions, then limited to what
-    sitegen's Responses endpoint serves: plain function tools, text input, no
-    hosted search, no priority tier, no "responses lite" or code-mode tools."""
+    sitegen's Responses endpoint serves: plain function tools, text and image
+    input, no hosted search, no priority tier, no "responses lite" or
+    code-mode tools."""
     models = bundled.get("models") or []
     listed = sorted((m for m in models if m.get("visibility") == "list"), key=lambda m: int(m.get("priority") or 0))
     fallback = listed[0] if listed else models[0]
@@ -528,7 +537,7 @@ def codex_catalog(bundled, ids):
             "apply_patch_tool_type": None,
             "supports_search_tool": False,
             "use_responses_lite": False,
-            "input_modalities": ["text"],
+            "input_modalities": input_modalities(model_id),
             "service_tiers": [],
             "additional_speed_tiers": [],
             "availability_nux": None,

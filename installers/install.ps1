@@ -360,10 +360,17 @@ function Get-BundledCatalog([string]$Codex) {
   finally { Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
+# Codex refuses to attach a pasted image unless the model lists "image". GPT
+# models read images, except these text-only ones.
+function Get-InputModalities([string]$Id) {
+  if ($Id -match '^(gpt-3|gpt-oss|o1-mini|o1-preview|o3-mini)') { return @('text') }
+  return @('text', 'image')
+}
+
 # One catalog entry per sitegen GPT model, cloned from the closest built-in
 # model so Codex keeps its own instructions, then limited to what sitegen's
-# Responses endpoint serves: plain function tools, text input, no hosted
-# search, no priority tier, no "responses lite" or code-mode tool surfaces.
+# Responses endpoint serves: plain function tools, text and image input, no
+# hosted search, no priority tier, no "responses lite" or code-mode tools.
 function New-CodexCatalog($Bundled, [string[]]$Ids) {
   $models = @($Bundled.models)
   $listed = @($models | Where-Object { (Get-Prop $_ 'visibility') -eq 'list' } | Sort-Object { [int](Get-Prop $_ 'priority') })
@@ -386,7 +393,7 @@ function New-CodexCatalog($Bundled, [string[]]$Ids) {
     Set-Prop $e 'apply_patch_tool_type' $null
     Set-Prop $e 'supports_search_tool' $false
     Set-Prop $e 'use_responses_lite' $false
-    Set-Prop $e 'input_modalities' @('text')
+    Set-Prop $e 'input_modalities' (Get-InputModalities $id)
     Set-Prop $e 'service_tiers' @()
     Set-Prop $e 'additional_speed_tiers' @()
     Set-Prop $e 'availability_nux' $null

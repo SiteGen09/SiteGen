@@ -32,6 +32,48 @@ function parseBody(overrides: Record<string, unknown> = {}): ChatCompletionReque
 }
 
 describe('chatMessageSchema', () => {
+  it('turns multimodal content parts into text plus attachments', () => {
+    const parsed = chatMessageSchema.parse({
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Describe ' },
+        { type: 'text', text: 'this.' },
+        { type: 'image_url', image_url: { url: 'data:image/webp;base64,AAAA', detail: 'high' } },
+        { type: 'file', file: { filename: 'notes.txt', file_data: 'data:text/plain;base64,aGk=' } },
+      ],
+    });
+    expect(parsed).toEqual({
+      role: 'user',
+      content: 'Describe this.',
+      attachments: [
+        { data: 'data:image/webp;base64,AAAA', mediaType: 'image/webp' },
+        { data: 'data:text/plain;base64,aGk=', mediaType: 'text/plain', filename: 'notes.txt' },
+      ],
+    });
+  });
+
+  it('never trusts an attachments key a client sent', () => {
+    const parsed = chatMessageSchema.parse({ role: 'user', content: 'hi', attachments: [{ data: 'x' }] });
+    expect(parsed).toEqual({ role: 'user', content: 'hi' });
+  });
+
+  it('rejects an unsupported attachment type with a clear message', () => {
+    const parsed = chatMessageSchema.safeParse({
+      role: 'user',
+      content: [{ type: 'image_url', image_url: 'data:video/mp4;base64,AAAA' }],
+    });
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues[0]?.message).toMatch(/video\/mp4 are not supported/);
+  });
+
+  it('rejects an image in an assistant message', () => {
+    const parsed = chatMessageSchema.safeParse({
+      role: 'assistant',
+      content: [{ type: 'image_url', image_url: 'data:image/png;base64,AAAA' }],
+    });
+    expect(parsed.success).toBe(false);
+  });
+
   it('accepts a tool-role message carrying an id and a body', () => {
     const parsed = chatMessageSchema.safeParse({
       role: 'tool',

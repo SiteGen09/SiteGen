@@ -7,6 +7,7 @@ import {
   type ToolSet,
 } from 'ai';
 
+import { attachmentParts, attachmentText, type ChatAttachment } from '@/lib/chat/attachments';
 import type { ChatMessage, ChatTool, ChatToolChoice } from '@/lib/chat/request';
 
 /** OpenAI wire shape for one tool call. */
@@ -75,11 +76,30 @@ function parseToolArguments(args: string): unknown {
   }
 }
 
+/**
+ * Images and documents are forwarded as model file parts. A user turn carries
+ * them inline. A tool result cannot: OpenAI-compatible upstreams take tool
+ * output as text only (the SDK would stringify the base64 into the prompt),
+ * so a tool's attachments follow the run of tool results as a user turn.
+ */
 export function toModelMessages(messages: readonly ChatMessage[]): ModelMessage[] {
   const converted: ModelMessage[] = [];
+  let toolAttachments: ChatAttachment[] = [];
+
+  const flushToolAttachments = () => {
+    if (toolAttachments.length === 0) return;
+    converted.push({
+      role: 'user',
+      content: [{ type: 'text', text: 'Images and files returned by the tool calls above:' }, ...attachmentParts(toolAttachments)],
+    });
+    toolAttachments = [];
+  };
 
   for (const message of messages) {
+    if (message.role !== 'tool') flushToolAttachments();
+
     if (message.role === 'tool') {
+      toolAttachments.push(...(message.attachments ?? []));
       converted.push({
         role: 'tool',
         content: [
@@ -115,9 +135,21 @@ export function toModelMessages(messages: readonly ChatMessage[]): ModelMessage[
       continue;
     }
 
+    if (message.role === 'user' && message.attachments !== undefined && message.attachments.length > 0) {
+      converted.push({
+        role: 'user',
+        content: [
+          ...(message.content ? [{ type: 'text' as const, text: message.content }] : []),
+          ...attachmentParts(message.attachments),
+        ],
+      });
+      continue;
+    }
+
     converted.push({ role: message.role, content: message.content ?? '' });
   }
 
+  flushToolAttachments();
   return converted;
 }
 
@@ -130,6 +162,10 @@ export function moderationText(messages: readonly ChatMessage[]): string {
   for (const message of messages) {
     if (typeof message.content === 'string') {
       parts.push(message.content);
+    }
+    for (const attachment of message.attachments ?? []) {
+      const text = attachmentText(attachment);
+      if (text !== null) parts.push(text);
     }
     for (const call of message.tool_calls ?? []) {
       parts.push(call.function.name);

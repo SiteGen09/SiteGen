@@ -132,6 +132,30 @@ describe('chat streaming through the real provider SDK', () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 
+  it('sends user and tool-result images upstream as image_url parts, never as tool text', async () => {
+    const fetchMock = mockStream(capturedStream);
+    const handle = await streamChat({
+      start: channel,
+      resolve: async () => null,
+      buildCreds: async () => ({ provider: channel.provider, baseUrl: channel.baseUrl!, apiKey: 'test-key' }),
+      messages: [
+        { role: 'user', content: 'What is this?', attachments: [{ data: 'data:image/png;base64,AAAA', mediaType: 'image/png' }] },
+        { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'shot', arguments: '{}' } }] },
+        { role: 'tool', tool_call_id: 'c1', name: 'shot', content: 'captured', attachments: [{ data: 'data:image/jpeg;base64,BBBB', mediaType: 'image/jpeg' }] },
+      ],
+      maxOutputTokens: 64,
+    });
+    await collect(handle);
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as { messages: Array<{ role: string; content: unknown }> };
+    expect(body.messages.map((message) => message.role)).toEqual(['user', 'assistant', 'tool', 'user']);
+    expect(body.messages[0]?.content).toEqual([
+      { type: 'text', text: 'What is this?' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+    ]);
+    expect(body.messages[2]?.content).toBe('captured');
+    expect(JSON.stringify(body.messages[3]?.content)).toContain('data:image/jpeg;base64,BBBB');
+  });
+
   it('completes the captured Kie stream and retains its billable token counts', async () => {
     const request = mockStream(capturedStream);
     const handle = await start();

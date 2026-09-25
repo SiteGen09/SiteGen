@@ -356,7 +356,7 @@ describe('namespace tool names', () => {
     expect(toChatMessages(request)[0]?.tool_calls?.[0]?.function.name).toBe('clock__curr_time');
   });
 
-  it('keeps the text of a tool result that arrives as content parts', () => {
+  it('keeps the text and image of a tool result that arrives as content parts', () => {
     const request = parseBody({
       input: [
         { type: 'function_call', call_id: 'c1', name: 'shot', arguments: '{}' },
@@ -370,7 +370,8 @@ describe('namespace tool names', () => {
     expect(toChatMessages(request)[1]).toEqual({
       role: 'tool',
       tool_call_id: 'c1',
-      content: 'captured\n[input_image omitted: this gateway passes tool results as text only]',
+      content: 'captured',
+      attachments: [{ data: 'data:image/png;base64,AAAA', mediaType: 'image/png' }],
     });
   });
 
@@ -381,6 +382,41 @@ describe('namespace tool names', () => {
     expect(namespacedToolName('mcp__a_really_long_server_name_for_testing', 'a_tool_with_a_long_name_too')).toBe(long);
     expect(namespacedToolName('mcp__a_really_long_server_name_for_testing', 'a_tool_with_a_long_name_2')).not.toBe(long);
     expect(namespacedToolName('mcp.server', 'x')).toBe('mcp_server__x');
+  });
+});
+
+describe('images and files', () => {
+  it('carries a pasted screenshot and a PDF on the user message', () => {
+    const request = parseBody({
+      input: [{
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'What is on screen?' },
+          { type: 'input_image', image_url: 'data:image/png;base64,AAAA', detail: 'auto' },
+          { type: 'input_file', filename: 'spec.pdf', file_data: 'JVBERi0=' },
+        ],
+      }],
+    });
+    expect(toChatMessages(request)).toEqual([{
+      role: 'user',
+      content: 'What is on screen?',
+      attachments: [
+        { data: 'data:image/png;base64,AAAA', mediaType: 'image/png' },
+        { data: 'data:application/pdf;base64,JVBERi0=', mediaType: 'application/pdf', filename: 'spec.pdf' },
+      ],
+    }]);
+  });
+
+  it('refuses an uploaded file id it cannot resolve', () => {
+    const request = parseBody({ input: [{ role: 'user', content: [{ type: 'input_image', file_id: 'file-1' }] }] });
+    expect(() => toChatMessages(request)).toThrow(/file_id/);
+  });
+
+  it('refuses an image in an assistant message', () => {
+    const request = parseBody({
+      input: [{ role: 'assistant', content: [{ type: 'input_image', image_url: 'data:image/png;base64,AAAA' }] }],
+    });
+    expect(() => toChatMessages(request)).toThrow(/only accepted in user messages/);
   });
 });
 
