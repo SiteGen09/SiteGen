@@ -94,12 +94,30 @@ export function ProfitSummary({ totals }: { totals: UsageTotals }) {
   );
 }
 
+const REASON_LABELS: Record<string, string> = {
+  insufficient_credits: 'Insufficient credits',
+  invalid_request: 'Invalid request',
+  model_not_found: 'Unknown model',
+  forbidden: 'Not allowed for this key',
+  rate_limited: 'Rate limited',
+  content_policy_violation: 'Content policy',
+  context_length_exceeded: 'Prompt too long',
+  unauthorized: 'Unauthorized',
+  internal_error: 'Internal error',
+};
+
+/** Why a request that never reached a channel ended; older rows have no code. */
+export function reasonLabel(code: string | null): string {
+  if (code === null) return 'Reason not recorded';
+  return REASON_LABELS[code] ?? code.replaceAll('_', ' ');
+}
+
 function modelLabel(row: UsageBreakdown): string {
-  return row.model_id ?? 'Unattributed';
+  return row.model_id ?? 'Not routed';
 }
 
 function routeLabel(row: UsageBreakdown): string {
-  return row.channel_label ?? row.channel_id ?? 'No channel recorded';
+  return row.channel_label ?? row.channel_id ?? reasonLabel(row.unrouted_reason);
 }
 
 export function UsageTable({ rows, kind, total, params, basePath = '/admin' }: {
@@ -125,10 +143,13 @@ export function UsageTable({ rows, kind, total, params, basePath = '/admin' }: {
           </tr></thead>
           <tbody className="divide-y divide-zinc-800">
             {visible.length === 0 ? <EmptyRow colSpan={9} label="No recorded usage in this period." /> : visible.map((row) => (
-              <tr key={JSON.stringify([row.model_id, row.channel_id, row.channel_label, row.source_id, row.source_label, row.provider, row.task])}>
+              <tr key={JSON.stringify([row.model_id, row.channel_id, row.channel_label, row.source_id, row.source_label, row.provider, row.task, row.unrouted_reason])}>
                 <Td>
                   <div className="max-w-64 break-words font-medium text-zinc-100">{modelLabel(row)}</div>
-                  {kind === 'routes' && <>
+                  {row.model_id === null && row.channel_id === null ? <>
+                    <div className="mt-1 max-w-64 break-words text-xs text-amber-300">{reasonLabel(row.unrouted_reason)}</div>
+                    <div className="mt-1 max-w-64 break-words text-xs text-zinc-500">Refused before a channel was chosen{row.unrouted_reason && <> · <span className="font-mono">{row.unrouted_reason}</span></>}</div>
+                  </> : kind === 'routes' && <>
                     <div className="mt-1 max-w-64 break-words text-xs text-zinc-300">{routeLabel(row)}</div>
                     <div className="mt-1 max-w-64 break-words font-mono text-xs text-zinc-500">{row.channel_id ?? '—'}</div>
                     <div className="mt-1 text-xs text-zinc-400">{row.source_label ?? row.source_id ?? 'Unknown source'}</div>
@@ -215,7 +236,7 @@ export function UsageMonitor({ data, params }: { data: UsageMonitoring; params: 
       <UsageTable rows={data.models} kind="models" total={data.summary.requests} params={params} />
       <UsageTable rows={data.routes} kind="routes" total={data.summary.requests} params={params} />
       <div className="space-y-2 text-xs leading-relaxed text-zinc-500">
-        <p>Counts use recorded request outcomes, including failures and rejections. Consumers are unique accounts within each row; row counts may overlap. Successful requests are attributed to the serving channel after fallback. Failed requests show the channel recorded by the request handler. p95 uses successful requests only.</p>
+        <p>Counts use recorded request outcomes, including failures and rejections. &ldquo;Not routed&rdquo; rows are requests refused before a channel was chosen (plan or key limits, credits, moderation, malformed input), grouped by reason. Consumers are unique accounts within each row; row counts may overlap. Successful requests are attributed to the serving channel after fallback. Failed requests show the channel recorded by the request handler. p95 uses successful requests only.</p>
         <p>Revenue values consumed credits at $0.0001 each, the top-up price. Provider cost is what serving each request cost at the channel&apos;s provider rates: zero for BYOK, and recovered for media jobs from the upstream&apos;s reported credits or the job&apos;s markup. Gross profit is revenue minus provider cost over requests whose cost is known. It is before payment-processor fees, and credits given away (grants, promo codes) count as revenue when spent. Tokens include input, output and cache reads; media requests may have no token counts.</p>
         {data.summary.legacy_requests > 0 && <p>{number(data.summary.legacy_requests)} older requests use current catalog model and channel labels because historical snapshots are unavailable. Unknown sources are kept unattributed. New usage preserves the model, channel and source labels recorded at settlement.</p>}
       </div>
@@ -302,10 +323,13 @@ export function RecentRequests({ rows, now, title = 'Live activity', showUser = 
                   </Td>
                 )}
                 <Td>
-                  <div className="max-w-56 break-words font-medium text-zinc-100">{row.model_id ?? 'Unattributed'}</div>
+                  <div className="max-w-56 break-words font-medium text-zinc-100">{row.model_id ?? 'Not routed'}</div>
                   <div className="mt-1 max-w-56 break-words text-xs text-zinc-500">{[row.channel_label ?? row.channel_id, row.source_label].filter(Boolean).join(' · ') || 'No channel recorded'}</div>
                 </Td>
-                <Td><span className={STATUS_CLASS[row.status] ?? 'text-zinc-300'}>{row.status}</span></Td>
+                <Td>
+                  <span className={STATUS_CLASS[row.status] ?? 'text-zinc-300'}>{row.status}</span>
+                  {row.error_code && <div className="mt-1 whitespace-nowrap text-xs text-zinc-500">{reasonLabel(row.error_code)}</div>}
+                </Td>
                 <Td>{tokens(row)}</Td>
                 <Td>
                   <div className="whitespace-nowrap">{usd(row.revenue_usd, true)}</div>

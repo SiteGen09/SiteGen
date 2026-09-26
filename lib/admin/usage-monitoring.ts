@@ -71,6 +71,8 @@ const rowSchema = totalsSchema.extend({
   source_label: z.string().nullable(),
   provider: z.string().nullable(),
   task: z.string().nullable(),
+  /** Error code of a request that never reached a channel; null once routed. */
+  unrouted_reason: z.string().nullable(),
 });
 
 export type UsageTotals = z.infer<typeof totalsSchema>;
@@ -117,6 +119,9 @@ function mediaProviderCost(connection: Connection) {
  * recorded cost_usd, zero for BYOK (the caller's key paid), or the media
  * estimate above; it stays null when nothing is known, and such rows are kept
  * out of profit rather than counted as free.
+ *
+ * A request refused before routing has no channel; `unrouted_reason` keeps
+ * its error code so those rows group by why, not into one anonymous bucket.
  */
 function attributedEvents(connection: Connection, filter: { hours?: number; userId?: string }) {
   return connection`
@@ -139,7 +144,8 @@ function attributedEvents(connection: Connection, filter: { hours?: number; user
         CASE WHEN r.request_id IS NOT NULL THEN r.provider ELSE c.provider END AS served_provider,
         CASE WHEN r.request_id IS NOT NULL THEN r.task ELSE c.task END AS served_task,
         r.request_id IS NULL AND u.channel_id IS NOT NULL AS legacy,
-        COALESCE(r.source_label, u.source_label, '') = 'BYOK' AS byok
+        COALESCE(r.source_label, u.source_label, '') = 'BYOK' AS byok,
+        CASE WHEN u.channel_id IS NULL THEN u.error_code END AS unrouted_reason
       FROM usage_events u
       LEFT JOIN usage_route_snapshots r ON r.request_id = u.request_id
       LEFT JOIN channels c ON c.id = u.channel_id
@@ -184,7 +190,7 @@ export async function usageMonitoring(
       GROUPING(served_model, channel_id) AS grouping,
       served_model AS model_id, channel_id, served_channel_label AS channel_label,
       served_source AS source_id, served_source_label AS source_label,
-      served_provider AS provider, served_task AS task,
+      served_provider AS provider, served_task AS task, unrouted_reason,
       count(*) AS requests, count(DISTINCT user_id) AS consumers,
       count(*) FILTER (WHERE status = 'ok') AS successful_requests,
       count(*) FILTER (WHERE status <> 'ok') AS errors,
@@ -200,8 +206,9 @@ export async function usageMonitoring(
       ${economicsColumns(connection)}
     FROM events
     GROUP BY GROUPING SETS (
-      (), (served_model),
-      (served_model, channel_id, served_channel_label, served_source, served_source_label, served_provider, served_task)
+      (), (served_model, unrouted_reason),
+      (served_model, channel_id, served_channel_label, served_source, served_source_label, served_provider, served_task,
+        unrouted_reason)
     )
   `;
 
@@ -211,8 +218,8 @@ export async function usageMonitoring(
   const key = sort === 'cost' ? 'provider_cost_usd' : sort === 'profit' ? 'profit_usd' : sort;
   const ranked = (grouping: number) => parsed.filter((row) => row.grouping === grouping).sort((a, b) =>
     b[key] - a[key] || b.requests - a.requests ||
-    JSON.stringify([a.model_id, a.channel_id, a.source_id, a.source_label]).localeCompare(
-      JSON.stringify([b.model_id, b.channel_id, b.source_id, b.source_label]),
+    JSON.stringify([a.model_id, a.channel_id, a.source_id, a.source_label, a.unrouted_reason]).localeCompare(
+      JSON.stringify([b.model_id, b.channel_id, b.source_id, b.source_label, b.unrouted_reason]),
     ),
   );
   return { summary: totalsSchema.parse(summary), models: ranked(1), routes: ranked(0) };
@@ -269,6 +276,7 @@ const recentRequestSchema = z.object({
   user_id: z.string(),
   email: z.string(),
   status: z.string(),
+  error_code: z.string().nullable(),
   created_at: z.coerce.date(),
   latency_ms: number.nullable(),
   input_tokens: number.nullable(),
@@ -295,7 +303,7 @@ export async function recentRequests(
   connection: Connection = sql,
 ): Promise<RecentRequest[]> {
   const rows = await connection<Record<string, unknown>[]>`
-    SELECT e.request_id, e.user_id, p.email, e.status, e.created_at, e.latency_ms,
+    SELECT e.request_id, e.user_id, p.email, e.status, e.error_code, e.created_at, e.latency_ms,
       e.input_tokens, e.output_tokens, e.cached_tokens, e.credits_charged, e.cost_usd,
       e.revenue_usd, e.provider_cost_usd, e.byok,
       e.cost_usd IS NULL AND NOT e.byok AND e.provider_cost_usd IS NOT NULL AS cost_estimated,

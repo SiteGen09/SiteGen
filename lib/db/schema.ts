@@ -168,6 +168,8 @@ export const usageEvents = pgTable('usage_events', {
   cachedTokens: integer('cached_tokens'),
   latencyMs: integer('latency_ms'),
   status: text('status').notNull(), // ok | failed | rejected
+  // The gateway's ErrorCode for a failed or rejected request; null when ok.
+  errorCode: text('error_code'),
   costUsd: numeric('cost_usd', { precision: 12, scale: 6 }),
   creditsCharged: bigint('credits_charged', { mode: 'number' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

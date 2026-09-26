@@ -119,11 +119,20 @@ describe('failed requests are always logged to usage', () => {
     );
   });
 
+  it('keeps the reason and the already-chosen channel of a credit refusal', async () => {
+    state.hold.mockResolvedValue({ success: false, balance: 3 });
+    await prepareCall(input);
+    expect(state.upsert).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ error_code: 'insufficient_credits', channel_id: 'primary' }), expect.anything(),
+    );
+    expect(input.log.warn).toHaveBeenCalledWith('preflight.refused', { code: 'insufficient_credits', status: 402 });
+  });
+
   it('logs an unknown model as rejected', async () => {
     state.select.mockResolvedValue(null);
     expect(await prepareCall(input)).toMatchObject({ ok: false });
     expect(state.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'rejected' }), expect.anything(),
+      expect.objectContaining({ status: 'rejected', error_code: 'model_not_found', channel_id: null }), expect.anything(),
     );
   });
 
@@ -131,7 +140,7 @@ describe('failed requests are always logged to usage', () => {
     state.select.mockRejectedValue(new Error('db down'));
     await expect(prepareCall(input)).rejects.toThrow('db down');
     expect(state.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'failed', credits_charged: 0 }), expect.anything(),
+      expect.objectContaining({ status: 'failed', credits_charged: 0, error_code: 'internal_error' }), expect.anything(),
     );
   });
 

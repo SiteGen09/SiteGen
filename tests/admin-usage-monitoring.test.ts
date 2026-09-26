@@ -128,6 +128,29 @@ describe.skipIf(!local)('admin usage monitoring database', () => {
     expect(legacy).toMatchObject({ requests: 3, legacy_requests: 3, source_id: null, source_label: null });
   }));
 
+  it('splits requests refused before routing by their reason', async () => transaction(async (tx) => {
+    await isolatedTables(tx);
+    const user = randomUUID();
+    const events = [
+      ['p', 'rejected', 'invalid_request'],
+      ['q', 'rejected', 'invalid_request'],
+      ['r', 'rejected', 'insufficient_credits'],
+      ['s', 'rejected', null],
+    ];
+    for (const event of events) {
+      await tx.unsafe(
+        'INSERT INTO usage_events (request_id,user_id,status,error_code,credits_charged) VALUES ($1,$2,$3,$4,0)',
+        [event[0]!, user, event[1]!, event[2] ?? null],
+      );
+    }
+    const result = await usageMonitoring('24h', 'requests', tx);
+    for (const rows of [result.models, result.routes]) {
+      expect(rows.map((row) => [row.model_id, row.unrouted_reason, row.requests])).toEqual([
+        [null, 'invalid_request', 2], [null, 'insufficient_credits', 1], [null, null, 1],
+      ]);
+    }
+  }));
+
   it('captures history for all usage writers, preserves retries, updates reroutes, and denies consumer reads', async () => transaction(async (tx) => {
     const user = randomUUID();
     const id = 'usage-monitor-' + randomUUID();

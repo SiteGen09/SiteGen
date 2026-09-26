@@ -11,6 +11,7 @@ import { costUsd, creditsForUsage, type TokenRates } from '@/lib/ai/pricing';
 import type { ProviderCreds } from '@/lib/ai/provider';
 import { ApiError, type ErrorCode } from '@/lib/api/errors';
 import { openAiErrorBody } from '@/lib/api/openai-errors';
+import { asUpstreamError } from '@/lib/api/upstream';
 import {
   MAX_IDEMPOTENCY_KEY_LENGTH,
   type IdempotentResponse,
@@ -151,6 +152,8 @@ export interface UsageEventInput {
   apiKeyId: string | null;
   channelId: string | null;
   status: 'ok' | 'failed' | 'rejected';
+  /** Why a failed or rejected request ended; omitted for `ok`. */
+  errorCode?: ErrorCode | null;
   latencyMs: number | null;
   inputTokens: number | null;
   outputTokens: number | null;
@@ -184,6 +187,7 @@ export async function recordUsageEvent(input: UsageEventInput): Promise<void> {
     cached_tokens: input.cachedTokens,
     latency_ms: input.latencyMs,
     status: input.status,
+    error_code: input.errorCode ?? null,
     cost_usd: input.costUsd,
     credits_charged: input.creditsCharged,
     // An explicit label is kept by the snapshot triggers instead of the channel's source.
@@ -213,6 +217,9 @@ export async function recordRequestFailure(input: {
   channelId?: string | null;
 }): Promise<void> {
   const rejected = input.error instanceof ApiError && input.error.status < 500;
+  const errorCode = input.error instanceof ApiError
+    ? input.error.code
+    : asUpstreamError(input.error)?.code ?? 'internal_error';
   try {
     await recordUsageEvent({
       requestId: input.requestId,
@@ -220,6 +227,7 @@ export async function recordRequestFailure(input: {
       apiKeyId: input.auth.apiKeyId,
       channelId: input.channelId ?? null,
       status: rejected ? 'rejected' : 'failed',
+      errorCode,
       latencyMs: null,
       inputTokens: null,
       outputTokens: null,
@@ -255,7 +263,13 @@ export interface PreflightInput {
 }
 
 export type Preflight =
-  | { ok: false; response: IdempotentResponse; error: ApiError }
+  | {
+      ok: false;
+      response: IdempotentResponse;
+      error: ApiError;
+      /** The channel already chosen when the refusal came after routing. */
+      channelId?: string;
+    }
   | {
       ok: true;
       plan: { key: PlanKey };
@@ -265,11 +279,12 @@ export type Preflight =
     };
 
 /** The stored gateway response, plus the structured error dashboard routes reword. */
-function failure(error: ApiError, requestId: string): Preflight {
+function failure(error: ApiError, requestId: string, channelId?: string): Preflight {
   return {
     ok: false,
     response: errorResponse(error.code, error.message, requestId, error.status),
     error,
+    ...(channelId === undefined ? {} : { channelId }),
   };
 }
 
@@ -291,8 +306,13 @@ export async function prepareCall(input: PreflightInput): Promise<Preflight> {
     await recordRequestFailure({ requestId, auth, log, error: err });
     throw err;
   }
-  // Every refusal is logged, so the caller's usage history shows it too.
-  if (!prepared.ok) await recordRequestFailure({ requestId, auth, log, error: prepared.error });
+  // Every refusal is logged, so the caller's usage history shows it too. A
+  // streaming route returns the refusal without throwing, so this warning is
+  // the only place its reason reaches the process log.
+  if (!prepared.ok) {
+    log.warn('preflight.refused', { code: prepared.error.code, status: prepared.error.status });
+    await recordRequestFailure({ requestId, auth, log, error: prepared.error, channelId: prepared.channelId });
+  }
   return prepared;
 }
 
@@ -363,6 +383,7 @@ async function preflight(input: PreflightInput): Promise<Preflight> {
           { required: estimated, balance: hold.balance ?? 0 },
         ),
         requestId,
+        resolved.start.id,
       );
     }
     held = true;
