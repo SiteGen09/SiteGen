@@ -3,3 +3,5 @@
 # and `sh` cannot run those.
 installers/*.sh text eol=lf
 installers/*.ps1 text eol=crlf
+# Windows host scripts run under Windows PowerShell 5.1.
+hosting/windows/*.ps1 text eol=crlf

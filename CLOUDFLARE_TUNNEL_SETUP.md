@@ -98,7 +98,7 @@ Point the Whop webhook to:
 
 - https://gensite.tech/api/webhooks/whop
 
-The Vercel cron entries in vercel.json do not run when the app is only hosted locally. Use Windows Task Scheduler or an external scheduler to call the cron endpoints with the CRON_SECRET authorization header.
+The Vercel cron entries in vercel.json do not run when the app is only hosted locally. On this PC the Task Scheduler tasks registered by [hosting/windows/register-tasks.ps1](./hosting/windows/register-tasks.ps1) call them with the CRON_SECRET authorization header.
 
 ## 6. Cloudflare caching and settings (free plan)
 

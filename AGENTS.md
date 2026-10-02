@@ -10,7 +10,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 # Hosting and deployment
 
-- Production today is a Windows PC behind the Cloudflare Tunnel `gensite`: see [CLOUDFLARE_TUNNEL_SETUP.md](./CLOUDFLARE_TUNNEL_SETUP.md). It runs `next start` on 127.0.0.1:3000; after `pnpm build`, restart it with `E:\sitegen-host\manage.ps1 restart` on that PC.
+- Production today is a Windows PC behind the Cloudflare Tunnel `gensite`: see [CLOUDFLARE_TUNNEL_SETUP.md](./CLOUDFLARE_TUNNEL_SETUP.md). It runs `next start` on 127.0.0.1:3000; after `pnpm build`, restart it with `E:\sitegen\hosting\windows\manage.ps1 restart` on that PC. The host scripts, their logs (`hosting/logs`, git-ignored) and local backups (`hosting/backups`, git-ignored, may hold secrets) all live in this repo folder: see [hosting/windows/README.md](./hosting/windows/README.md). Never run `git clean -x` here.
 - To deploy or update on a Linux VPS, follow [DEPLOY_VPS.md](./DEPLOY_VPS.md) step by step, starting with its "Rules an agent must not break". Build with `BUILD_STANDALONE=1 pnpm build`; never hard-code `output: "standalone"` in `next.config.ts`.
 - Cloudflare caching is set up (CLOUDFLARE_TUNNEL_SETUP.md section 6). Never add a "Cache Everything" rule for HTML: pages carry per-user Supabase cookies.
 

@@ -2,7 +2,7 @@
 
 Production currently runs on a Windows PC: `next start` on 127.0.0.1:3000 behind the
 Cloudflare Tunnel `gensite` ([CLOUDFLARE_TUNNEL_SETUP.md](./CLOUDFLARE_TUNNEL_SETUP.md)),
-supervised by Task Scheduler scripts in `E:\sitegen-host` on that PC. This runbook moves the
+supervised by the Task Scheduler scripts in `hosting/windows` (run from `E:\sitegen`) on that PC. This runbook moves the
 same app to a rented Linux VPS. It is written for humans and AI agents; follow it in order.
 
 ## Rules an agent must not break
@@ -187,7 +187,7 @@ curl -fsS https://vps.gensite.tech/healthz
 1. `https://vps.gensite.tech/healthz` is healthy and `sudo systemctl status sitegen cloudflared` shows both active.
 2. Point the domain at the VPS tunnel:
    `cloudflared tunnel route dns --overwrite-dns gensite-vps gensite.tech`
-3. On the Windows PC: `E:\sitegen-host\manage.ps1 disable` (stops the app, the old tunnel and the crons, and keeps them off).
+3. On the Windows PC: `E:\sitegen\hosting\windows\manage.ps1 disable` (stops the app, the old tunnel and the crons, and keeps them off).
 4. On the VPS: install the crontab from step 5.
 5. Verify from outside:
    - `https://gensite.tech/healthz` returns 200.
@@ -196,7 +196,7 @@ curl -fsS https://vps.gensite.tech/healthz
    - Sign-in works, and `/srv/sitegen/cron.log` fills in.
 
 Rollback: `cloudflared tunnel route dns --overwrite-dns gensite gensite.tech`, then
-`E:\sitegen-host\manage.ps1 enable` on the PC, then remove the VPS crontab.
+`E:\sitegen\hosting\windows\manage.ps1 enable` on the PC, then remove the VPS crontab.
 
 ## Deploying an update
 
