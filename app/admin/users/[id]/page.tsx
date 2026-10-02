@@ -8,6 +8,7 @@ import {
   USAGE_RANGES, parseUsageRange, parseUsageSort, recentRequests, usageMonitoring,
 } from '@/lib/admin/usage-monitoring';
 import { userAccount, userCreditHistory } from '@/lib/admin/user-monitoring';
+import { referralSettings, userReferralPanel } from '@/lib/referrals/admin';
 import { sql } from '@/lib/db';
 
 import { LiveRefresh } from '../../_components/live-refresh';
@@ -15,6 +16,7 @@ import { Badge, Card, EmptyRow, PageTitle, Stat, Td, Th } from '../../_component
 import { ProfitSummary, RecentRequests, UsageFilters, UsageTable } from '../../_components/usage-monitor';
 import { GrantForm } from '../_components/grant-form';
 import { SuspendForm } from '../_components/suspend-form';
+import { ReferralPanel } from '../_components/referral-panel';
 import { formatDuration } from '@/lib/ui/duration';
 
 export const dynamic = 'force-dynamic';
@@ -40,11 +42,13 @@ export default async function AdminUserPage({ params, searchParams }: {
   const basePath = '/admin/users/' + id;
 
   const now = renderTime();
-  const [account, usage, recent, credits] = await Promise.all([
+  const [account, usage, recent, credits, referral, referralConfig] = await Promise.all([
     userAccount(id),
     usageMonitoring(range, sort, sql, { userId: id }),
     recentRequests({ userId: id, limit: 25 }),
     userCreditHistory(id, 25),
+    userReferralPanel(id),
+    referralSettings(),
   ]);
   if (account === null) notFound();
   const { summary } = usage;
@@ -121,6 +125,8 @@ export default async function AdminUserPage({ params, searchParams }: {
             Newest 25 entries. Per-request charges are listed under recent requests. <Link href={'/admin/orders?user=' + account.id} className="underline">Order history</Link>
           </p>
         </Card>
+
+        <ReferralPanel userId={account.id} panel={referral} defaultBps={referralConfig.commission_bps} now={now} />
 
         <Card title="Admin actions">
           <div className="space-y-4 text-sm">

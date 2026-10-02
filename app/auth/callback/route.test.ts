@@ -2,9 +2,10 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { GET } from './route';
 
-const { exchange } = vi.hoisted(() => ({ exchange: vi.fn() }));
+const { exchange, claim } = vi.hoisted(() => ({ exchange: vi.fn(), claim: vi.fn() }));
 vi.mock('@/lib/supabase/server', () => ({ createClient: async () => ({ auth: { exchangeCodeForSession: exchange } }) }));
-beforeEach(() => { exchange.mockReset(); exchange.mockResolvedValue({ error: null }); });
+vi.mock('@/lib/referrals/referrals', () => ({ claimReferral: claim }));
+beforeEach(() => { exchange.mockReset(); exchange.mockResolvedValue({ error: null }); claim.mockReset(); });
 
 it('exchanges an OAuth code and redirects to the requested local page', async () => {
   const result = await GET(new NextRequest('http://localhost/auth/callback?code=valid&next=%2Fdashboard%2Fbilling'));
@@ -46,4 +47,12 @@ it('handles an incomplete callback', async () => {
   const result = await GET(new NextRequest('http://localhost/auth/callback'));
   expect(new URL(result.headers.get('location')!).searchParams.get('error')).toBe('missing_code');
   expect(exchange).not.toHaveBeenCalled();
+});
+
+it('claims a referral cookie for the signed-in user and clears it', async () => {
+  exchange.mockResolvedValueOnce({ data: { user: { id: '00000000-0000-4000-8000-000000000001' } }, error: null });
+  const request = new NextRequest('http://localhost/auth/callback?code=valid', { headers: { cookie: 'sg_ref=ABCD2345' } });
+  const result = await GET(request);
+  expect(claim).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000001', 'ABCD2345');
+  expect(result.headers.get('set-cookie')).toMatch(/sg_ref=;/);
 });

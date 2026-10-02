@@ -33,6 +33,7 @@ const NAV_GROUPS = [
     label: 'Personal',
     items: [
       { href: '/dashboard/billing', label: 'Billing', icon: 'M20 8V5H5a2 2 0 0 0 0 4h16v11H5a2 2 0 0 1-2-2V7 M21 12h-6v5h6 M17 14.5h.01' },
+      { href: '/dashboard/referrals', label: 'Referrals', icon: 'M20 12v9H4v-9 M2 7h20v5H2z M12 21V7 M12 7H7.5a2.5 2.5 0 1 1 0-5C11 2 12 7 12 7z M12 7h4.5a2.5 2.5 0 1 0 0-5C13 2 12 7 12 7z' },
       { href: '/dashboard/credentials', label: 'Credentials', icon: 'M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6z M9 12l2 2 4-4' },
       { href: '/dashboard/routing', label: 'Routing', icon: 'M7 5a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z M21 19a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z M7 5h9a4 4 0 0 1 0 8H8a3 3 0 0 0 0 6h9' },
     ],

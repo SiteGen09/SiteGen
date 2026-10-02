@@ -8,17 +8,19 @@ import {
   CODE_LENGTH, MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH, RESEND_DELAY_SECONDS,
   signupDetailsSchema, sendSignupCode, verifySignupCode, signupErrorMessage, type SignupDetails,
 } from '@/lib/auth/signup';
+import { claimSignupReferral, rememberReferralCode } from '@/lib/actions/referral';
 import { GoogleButton } from '../_components/google-button';
 import { PasswordInput, authInputClass } from '../_components/password-input';
 import { LoadingSpinner } from '../../_components/loading-skeleton';
 
-export function SignupForm({ next }: { next?: string }) {
+export function SignupForm({ next, referralCode }: { next?: string; referralCode?: string }) {
   const router = useRouter();
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [code, setCode] = useState('');
+  const [referral, setReferral] = useState(referralCode ?? '');
   const [sentDetails, setSentDetails] = useState<SignupDetails | null>(null);
   const [cooldown, setCooldown] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -69,6 +71,7 @@ export function SignupForm({ next }: { next?: string }) {
     setError(null);
     try {
       await verifySignupCode(createClient().auth, sentDetails.email, code);
+      await claimSignupReferral(referral).catch(() => undefined);
       router.replace(authRedirectPath(next));
       router.refresh();
     } catch (error) {
@@ -114,6 +117,13 @@ export function SignupForm({ next }: { next?: string }) {
           <input id="email" name="email" type="email" autoComplete="email" required placeholder="name@example.com"
             value={email} onChange={(event) => setEmail(event.target.value)} readOnly={sentDetails !== null}
             disabled={busy} className={authInputClass} />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="referral-code" className="text-sm font-medium text-zinc-900">Referral code <span className="font-normal text-zinc-500">(optional)</span></label>
+          <input id="referral-code" name="referralCode" autoComplete="off" maxLength={16} placeholder="Enter a referral code"
+            value={referral} onChange={(event) => setReferral(event.target.value.replace(/[^A-Za-z0-9]/g, '').toUpperCase())}
+            onBlur={() => { void rememberReferralCode(referral).catch(() => undefined); }}
+            readOnly={sentDetails !== null} disabled={busy} className={authInputClass} />
         </div>
         <div>
           <label htmlFor="verification-code" className="sr-only">Verification code</label>

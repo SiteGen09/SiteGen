@@ -1,6 +1,7 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 import { publicOrigin } from '@/lib/auth/redirect';
+import { REFERRAL_COOKIE, normalizeReferralCode, referralCookieOptions } from '@/lib/referrals/code';
 
 /** Signed-in-only surfaces. Anything else is public. */
 const PROTECTED_PREFIXES = ['/dashboard'] as const;
@@ -14,6 +15,15 @@ const AUTH_PATHS = ['/login', '/signup'] as const;
  * token) and the outgoing response (so the browser keeps it).
  */
 export async function middleware(request: NextRequest) {
+  const response = await route(request);
+  // A shared referral link can land on any page; remember the code until
+  // signup claims it. The newest link wins.
+  const referral = normalizeReferralCode(request.nextUrl.searchParams.get('ref'));
+  if (referral !== null) response.cookies.set(REFERRAL_COOKIE, referral, referralCookieOptions);
+  return response;
+}
+
+async function route(request: NextRequest): Promise<NextResponse> {
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(

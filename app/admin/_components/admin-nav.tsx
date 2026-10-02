@@ -42,6 +42,7 @@ const NAV_GROUPS = [
       { href: '/admin/disputes', label: 'Disputes' },
       { href: '/admin/leaderboard', label: 'Leaderboard' },
       { href: '/admin/redemption-codes', label: 'Codes' },
+      { href: '/admin/referrals', label: 'Referrals' },
     ],
   },
 ] as const;

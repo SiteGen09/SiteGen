@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { authRedirectPath, publicOrigin } from '@/lib/auth/redirect';
+import { REFERRAL_COOKIE } from '@/lib/referrals/code';
+import { claimReferral } from '@/lib/referrals/referrals';
 
 /**
  * Completes the Google OAuth / PKCE flow and preserves the intended destination.
@@ -25,13 +27,23 @@ export async function GET(request: NextRequest) {
     return failed('missing_code');
   }
 
+  let userId: string | undefined;
   try {
     const supabase = await createClient();
-    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
     if (error) return failed('auth_callback_failed');
+    userId = data?.user?.id;
   } catch {
     return failed('auth_callback_failed');
   }
 
-  return NextResponse.redirect(new URL(target, origin));
+  const response = NextResponse.redirect(new URL(target, origin));
+  // A Google signup that started from a referral link. Existing accounts
+  // signing in are refused by the database, so the cookie is spent either way.
+  const referral = request.cookies.get(REFERRAL_COOKIE)?.value;
+  if (referral !== undefined) {
+    if (userId !== undefined) await claimReferral(userId, referral);
+    response.cookies.delete(REFERRAL_COOKIE);
+  }
+  return response;
 }
