@@ -308,6 +308,25 @@ describe('toChatMessages', () => {
     }]);
   });
 
+  it('drops the oldest screenshots rather than refusing a long session', () => {
+    const turns = Array.from({ length: 101 }, (_, i) => [
+      { role: 'assistant', content: [{ type: 'tool_use', id: `tu_${i}`, name: 'Read', input: {} }] },
+      {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: `tu_${i}`,
+          content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: `${i}` } }],
+        }],
+      },
+    ]).flat();
+    const messages = toChatMessages(parse({ ...base, messages: turns }));
+    const tools = messages.filter((message) => message.role === 'tool');
+    expect(tools.filter((message) => message.attachments !== undefined)).toHaveLength(91);
+    expect(tools[0]?.content).toMatch(/removed here/);
+    expect(tools.at(-1)?.attachments).toEqual([{ data: 'data:image/png;base64,100', mediaType: 'image/png' }]);
+  });
+
   it('refuses a Files API reference it cannot resolve', () => {
     const request = parse({
       ...base,

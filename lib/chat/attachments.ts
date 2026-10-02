@@ -16,8 +16,14 @@ export interface ChatAttachment {
 /** Coarse per-attachment allowance for the credit hold, as the dashboard chat uses. */
 export const ATTACHMENT_CHAR_ESTIMATE = 8000;
 
-/** Enough for a long agent session full of screenshots, not enough to abuse. */
-export const MAX_ATTACHMENTS = 40;
+/** Anthropic's own per-request ceiling; older attachments past it are dropped. */
+export const MAX_ATTACHMENTS = 100;
+
+/**
+ * Attachments are dropped in steps of this many, so the trimmed history stays
+ * byte-identical across several turns and upstream prompt caches keep hitting.
+ */
+const DROP_STEP = 10;
 
 const DATA_URL = /^data:([^;,]+)?((?:;[^;,=]+=[^;,]+)*)(;base64)?,(.*)$/s;
 
@@ -142,9 +148,31 @@ export function attachmentParts(attachments: readonly ChatAttachment[]): Array<T
   });
 }
 
-/** Rejects a request carrying more attachments than a single call may. */
-export function checkAttachmentCount(count: number): void {
-  if (count > MAX_ATTACHMENTS) {
-    invalid(`this request carries ${count} images or files; at most ${MAX_ATTACHMENTS} are accepted per request`);
-  }
+/**
+ * Drops the oldest attachments once a conversation carries more than
+ * MAX_ATTACHMENTS, leaving a note where they were. Agent clients resend the
+ * whole history every turn, so refusing would wedge a session for good once
+ * it had read enough screenshots; the newest ones are what the model needs.
+ */
+export function capAttachments<M extends { content?: string | null; attachments?: ChatAttachment[] }>(
+  messages: M[],
+): M[] {
+  const total = messages.reduce((sum, message) => sum + (message.attachments?.length ?? 0), 0);
+  if (total <= MAX_ATTACHMENTS) return messages;
+
+  let excess = Math.ceil((total - MAX_ATTACHMENTS) / DROP_STEP) * DROP_STEP;
+  return messages.map((message) => {
+    const attachments = message.attachments;
+    if (excess === 0 || attachments === undefined || attachments.length === 0) return message;
+    const dropped = Math.min(excess, attachments.length);
+    excess -= dropped;
+    const kept = attachments.slice(dropped);
+    const note = `[${dropped} ${dropped === 1 ? 'image or file was' : 'images or files were'} removed here: a request carries at most ${MAX_ATTACHMENTS}, so the oldest are dropped]`;
+    const { attachments: _dropped, ...rest } = message;
+    return {
+      ...rest,
+      content: message.content ? `${message.content}\n\n${note}` : note,
+      ...(kept.length > 0 ? { attachments: kept } : {}),
+    } as M;
+  });
 }

@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { ApiError } from '@/lib/api/errors';
 import {
   attachmentFromUrl,
-  checkAttachmentCount,
+  capAttachments,
   unsupportedFileId,
   type ChatAttachment,
 } from '@/lib/chat/attachments';
@@ -319,8 +319,7 @@ export function toChatMessages(request: ResponsesRequest): ChatMessage[] {
   // Flush any remaining tool calls at the end.
   flushToolCalls();
 
-  checkAttachmentCount(messages.reduce((sum, message) => sum + (message.attachments?.length ?? 0), 0));
-  return messages;
+  return capAttachments(messages);
 }
 
 function toChatTool(name: string, tool: FunctionTool): ChatTool {

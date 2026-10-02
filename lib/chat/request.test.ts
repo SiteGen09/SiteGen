@@ -164,6 +164,17 @@ describe('chatCompletionRequestSchema', () => {
     const body = parseBody({ seed: 7, presence_penalty: 0.2 });
     expect(body.model).toBe('sitegen-chat');
   });
+
+  it('drops the oldest screenshots rather than refusing a long session', () => {
+    const messages = Array.from({ length: 101 }, (_, i) => ({
+      role: 'user',
+      content: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${i}` } }],
+    }));
+    const body = parseBody({ messages });
+    expect(body.messages.filter((message) => message.attachments !== undefined)).toHaveLength(91);
+    expect(body.messages[0]?.content).toMatch(/removed here/);
+    expect(body.messages.at(-1)?.attachments).toEqual([{ data: 'data:image/png;base64,100', mediaType: 'image/png' }]);
+  });
 });
 
 describe('totalMessageChars', () => {

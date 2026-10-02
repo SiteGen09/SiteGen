@@ -7,7 +7,7 @@ import {
   attachmentFromBase64,
   attachmentFromText,
   attachmentFromUrl,
-  checkAttachmentCount,
+  capAttachments,
   unsupportedFileId,
   type ChatAttachment,
 } from '@/lib/chat/attachments';
@@ -296,8 +296,7 @@ export function toChatMessages(request: MessagesRequest): ChatMessage[] {
     messages.push({ role: message.role, content: text, ...(attachments.length > 0 ? { attachments } : {}) });
   }
 
-  checkAttachmentCount(messages.reduce((sum, message) => sum + (message.attachments?.length ?? 0), 0));
-  return messages;
+  return capAttachments(messages);
 }
 
 function isWebSearchServerTool(tool: { type?: string | undefined }): boolean {

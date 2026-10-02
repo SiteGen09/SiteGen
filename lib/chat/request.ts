@@ -5,6 +5,7 @@ import { z } from 'zod';
 import {
   attachmentChars,
   attachmentFromUrl,
+  capAttachments,
   unsupportedFileId,
   type ChatAttachment,
 } from '@/lib/chat/attachments';
@@ -193,13 +194,15 @@ export type ChatMessage = {
   name?: string;
   tool_calls?: ChatToolCall[];
   tool_call_id?: string;
+  /** Explicit tool failure from the Anthropic adapter; never inferred from prose. */
+  tool_result_error?: boolean;
   attachments?: ChatAttachment[];
   [key: string]: unknown;
 };
 
 export const chatCompletionRequestSchema = z.looseObject({
   model: z.string().min(1, 'model is required'),
-  messages: z.array(chatMessageSchema).min(1, 'at least one message is required'),
+  messages: z.array(chatMessageSchema).min(1, 'at least one message is required').transform(capAttachments),
   max_tokens: z.number().int().positive().optional(),
   temperature: z.number().min(0).max(2).optional(),
   top_p: z.number().min(0).max(1).optional(),

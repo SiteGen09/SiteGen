@@ -407,6 +407,21 @@ describe('images and files', () => {
     }]);
   });
 
+  it('drops the oldest screenshots rather than refusing a long session', () => {
+    const input = Array.from({ length: 101 }, (_, i) => [
+      { type: 'function_call', call_id: `c${i}`, name: 'shot', arguments: '{}' },
+      {
+        type: 'function_call_output',
+        call_id: `c${i}`,
+        output: [{ type: 'input_image', image_url: `data:image/png;base64,${i}` }],
+      },
+    ]).flat();
+    const tools = toChatMessages(parseBody({ input })).filter((message) => message.role === 'tool');
+    expect(tools.filter((message) => message.attachments !== undefined)).toHaveLength(91);
+    expect(tools[0]?.content).toMatch(/removed here/);
+    expect(tools.at(-1)?.attachments).toEqual([{ data: 'data:image/png;base64,100', mediaType: 'image/png' }]);
+  });
+
   it('refuses an uploaded file id it cannot resolve', () => {
     const request = parseBody({ input: [{ role: 'user', content: [{ type: 'input_image', file_id: 'file-1' }] }] });
     expect(() => toChatMessages(request)).toThrow(/file_id/);
