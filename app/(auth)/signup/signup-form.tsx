@@ -9,6 +9,7 @@ import {
   signupDetailsSchema, sendSignupCode, verifySignupCode, signupErrorMessage, type SignupDetails,
 } from '@/lib/auth/signup';
 import { claimSignupReferral, rememberReferralCode } from '@/lib/actions/referral';
+import { usernameAvailable } from '@/lib/actions/username';
 import { GoogleButton } from '../_components/google-button';
 import { PasswordInput, authInputClass } from '../_components/password-input';
 import { LoadingSpinner } from '../../_components/loading-skeleton';
@@ -46,6 +47,9 @@ export function SignupForm({ next, referralCode }: { next?: string; referralCode
     inFlight.current = true;
     setPending('send');
     try {
+      if (sentDetails === null && !(await usernameAvailable(result.data.username))) {
+        throw new Error('That username is taken. Choose another one.');
+      }
       await sendSignupCode(createClient().auth, result.data, sentDetails !== null);
       setSentDetails(result.data);
       setCooldown(RESEND_DELAY_SECONDS);

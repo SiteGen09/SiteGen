@@ -5,13 +5,14 @@ import { useRouter } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { authRedirectPath } from '@/lib/auth/redirect';
+import { usernameLoginEmail } from '@/lib/actions/username';
 import { GoogleButton } from '../_components/google-button';
 import { PasswordInput, authInputClass } from '../_components/password-input';
 import { LoadingSpinner } from '../../_components/loading-skeleton';
 
 export function LoginForm({ next, initialError }: { next: string | undefined; initialError: string | null }) {
   const router = useRouter();
-  const [email, setEmail] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(initialError);
   const [pending, setPending] = useState<'password' | 'google' | null>(null);
@@ -23,7 +24,15 @@ export function LoginForm({ next, initialError }: { next: string | undefined; in
     setPending('password');
     setError(null);
     try {
-      const { error: signInError } = await createClient().auth.signInWithPassword({ email: email.trim(), password });
+      // Anything with an @ is an email; otherwise it is a username, which the
+      // server swaps for its email once the password checks out.
+      let email = identifier.trim();
+      if (!email.includes('@')) {
+        const resolved = await usernameLoginEmail(email, password);
+        if ('error' in resolved) throw new Error(resolved.error);
+        email = resolved.email;
+      }
+      const { error: signInError } = await createClient().auth.signInWithPassword({ email, password });
       if (signInError) throw signInError;
       router.replace(authRedirectPath(next));
       router.refresh();
@@ -39,9 +48,10 @@ export function LoginForm({ next, initialError }: { next: string | undefined; in
         onPending={(value) => setPending(value ? 'google' : null)} onError={setError} />
       <form onSubmit={onSubmit} className="flex flex-col gap-4" aria-busy={busy}>
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="email" className="text-sm font-medium text-zinc-900">Email</label>
-          <input id="email" name="email" type="email" autoComplete="email" required placeholder="name@example.com"
-            value={email} onChange={(event) => setEmail(event.target.value)} disabled={busy} className={authInputClass} />
+          <label htmlFor="identifier" className="text-sm font-medium text-zinc-900">Email or username</label>
+          <input id="identifier" name="username" type="text" autoComplete="username" autoCapitalize="none" spellCheck={false}
+            required placeholder="name@example.com or username"
+            value={identifier} onChange={(event) => setIdentifier(event.target.value)} disabled={busy} className={authInputClass} />
         </div>
         <div className="flex flex-col gap-1.5">
           <label htmlFor="password" className="text-sm font-medium text-zinc-900">Password</label>
