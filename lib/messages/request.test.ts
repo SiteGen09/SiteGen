@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { toModelMessages } from '@/lib/chat/tools';
+import { detectLoop, toolHistory } from '@/lib/gensite/loops';
 
 import {
   messagesRequestHash,
   messagesRequestSchema,
+  nativeWebSearch,
   toChatMessages,
   toChatToolChoice,
   toChatTools,
@@ -37,6 +40,46 @@ describe('messagesRequestSchema', () => {
 });
 
 describe('toChatMessages', () => {
+  it('preserves explicit tool errors through normalization and upstream conversion', () => {
+    const messages = toChatMessages(parse({
+      ...base,
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'failed', name: 'Edit', input: { old_string: 'x' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'failed', content: 'No matching text', is_error: true }] },
+      ],
+    }));
+    expect(messages[1]).toMatchObject({ tool_call_id: 'failed', content: 'No matching text', tool_result_error: true });
+    expect(toolHistory(messages)[0]?.failed).toBe(true);
+    expect(toModelMessages(messages)[1]).toMatchObject({ content: [{ output: { type: 'error-text', value: 'No matching text' } }] });
+  });
+
+  it('recognizes repeated changed writes from real Anthropic error envelopes', () => {
+    const messages = toChatMessages(parse({
+      ...base,
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: 'Bash', input: { command: 'write large file one' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: "bash: unexpected EOF while looking for matching quote", is_error: true }] },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'b', name: 'Read', input: { file_path: 'package.json' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'b', content: '{}' }] },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'c', name: 'Bash', input: { command: 'write large file two' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c', content: "bash: unexpected EOF while looking for matching quote", is_error: true }] },
+      ],
+    }));
+    expect(detectLoop(toolHistory(messages))).toMatchObject({ kind: 'recurring-failure', failure: 'shell-quoting', count: 2 });
+  });
+
+  it('honors explicit successful output even when it contains error examples', () => {
+    const messages = toChatMessages(parse({
+      ...base,
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'ok', name: 'Read', input: { file_path: 'fixture.txt' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'ok', content: 'Error: example', is_error: false }] },
+      ],
+    }));
+    expect(toolHistory(messages)[0]?.failed).toBe(false);
+    expect(toModelMessages(messages)[1]).toMatchObject({ content: [{ output: { type: 'text', value: 'Error: example' } }] });
+  });
+
   it('lifts system out of the top level into a leading message', () => {
     const request = parse({
       ...base,
@@ -346,5 +389,49 @@ describe('messagesRequestHash', () => {
     const one = parse({ ...base, messages: [{ role: 'user', content: 'hi' }] });
     const two = parse({ ...base, system: 'be brief', messages: [{ role: 'user', content: 'hi' }] });
     expect(messagesRequestHash(one)).not.toBe(messagesRequestHash(two));
+  });
+});
+
+describe('the web_search server tool', () => {
+  const searchTool = {
+    type: 'web_search_20250305',
+    name: 'web_search',
+    max_uses: 8,
+    allowed_domains: ['docs.example.com'],
+  };
+
+  it('is read as a gateway search and left out of the upstream tools', () => {
+    const request = parse({
+      ...base,
+      messages: [{ role: 'user', content: 'Perform a web search for the query: sitegen' }],
+      tools: [searchTool, { name: 'Bash', input_schema: { type: 'object' } }],
+    });
+    expect(nativeWebSearch(request)).toEqual({
+      name: 'web_search', maxUses: 8, allowedDomains: ['docs.example.com'], blockedDomains: undefined,
+    });
+    expect(toChatTools(request)?.map((tool) => tool.function.name)).toEqual(['Bash']);
+  });
+
+  it('is absent when the caller declared only its own tools', () => {
+    expect(nativeWebSearch(parse({ ...base, messages: [{ role: 'user', content: 'hi' }], tools: [{ name: 'Bash' }] }))).toBeNull();
+  });
+
+  it('accepts replayed search blocks and keeps the results as text', () => {
+    const messages = toChatMessages(parse({
+      ...base,
+      messages: [
+        { role: 'user', content: 'what is new?' },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'server_tool_use', id: 'srvtoolu_1', name: 'web_search', input: { query: 'news' } },
+            { type: 'web_search_tool_result', tool_use_id: 'srvtoolu_1', content: [{ type: 'web_search_result', title: 'A', url: 'https://a.test', encrypted_content: 'x' }] },
+            { type: 'text', text: 'Here is the news.' },
+          ],
+        },
+        { role: 'user', content: 'thanks' },
+      ],
+    }));
+    expect(messages[1]).toEqual({ role: 'assistant', content: '\n[Web search results]\n- A — https://a.test\nHere is the news.' });
   });
 });

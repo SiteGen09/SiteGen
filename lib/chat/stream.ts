@@ -3,14 +3,17 @@ import { streamText, type ModelMessage, type TextStreamPart, type ToolSet } from
 
 import type { ChannelRow } from '@/lib/ai/fallback';
 import { callWithFallback } from '@/lib/ai/fallback';
+import { recordAttemptFailure } from '@/lib/ai/attempt-failures';
 import type { ProviderCreds } from '@/lib/ai/provider';
 import type { ReasoningEffort } from '@/lib/chat/reasoning';
+import { withInstructions } from '@/lib/gensite/identity';
 import { buildAI } from '@/lib/ai/provider';
-import { assertDelivered } from '@/lib/chat/generate';
+import { assertDelivered, serverToolLoop } from '@/lib/chat/generate';
+import { segmentsText, turnSegments, type ServerToolKit } from '@/lib/chat/server-tools';
 import type { ChatMessage, ChatTool, ChatToolChoice } from '@/lib/chat/request';
-import { toModelMessages, toToolChoice, toToolSet } from '@/lib/chat/tools';
+import { toModelMessages, toToolChoice } from '@/lib/chat/tools';
 import type { NormalizedUsage } from '@/lib/generate/usage';
-import { normalizeUsage } from '@/lib/generate/usage';
+import { normalizeUsage, withReportedCost } from '@/lib/generate/usage';
 
 /**
  * Streaming counterpart to {@link generateChat}.
@@ -42,6 +45,12 @@ export interface ChatStreamParams {
    * sends its usage report; the caller decides what the partial turn costs.
    */
   abortSignal?: AbortSignal | undefined;
+  /** Tools the gateway runs itself inside the turn; see ServerToolKit. */
+  serverTools?: ServerToolKit | undefined;
+  /** A system instruction placed before everything the caller sent (gensite-v1's identity). */
+  instructions?: string | undefined;
+  /** A note placed after everything the caller sent (gensite-v1's stuck-loop warning). */
+  reminder?: string | undefined;
 }
 
 /** Settlement figures, available only once the upstream stream has ended. */
@@ -84,7 +93,11 @@ export type ChatStreamPart =
   | { type: 'text'; text: string }
   | { type: 'tool-call-start'; index: number; id: string; name: string }
   | { type: 'tool-call-delta'; index: number; arguments: string }
-  | { type: 'tool-call'; index: number; id: string; name: string; arguments: string };
+  | { type: 'tool-call'; index: number; id: string; name: string; arguments: string }
+  // A gateway tool the SDK is running, and what it returned. Wire formats
+  // that cannot show these skip them; the caller never has to answer one.
+  | { type: 'server-tool-call'; id: string; name: string; input: unknown }
+  | { type: 'server-tool-result'; id: string; name: string; output: unknown };
 
 export interface ChatStreamHandle {
   /** The channel that actually answered, after any fallback. */
@@ -121,16 +134,32 @@ const LOCAL_LIFECYCLE_PARTS: Record<string, true> = {
  */
 export async function* toChatParts(
   source: AsyncIterable<TextStreamPart<ToolSet>>,
+  /** Gateway tools: their calls surface as `server-tool-*` parts, never as the caller's. */
+  serverToolNames: ReadonlySet<string> = new Set(),
 ): AsyncGenerator<ChatStreamPart> {
   const indexes = new Map<string, number>();
+  let wroteText = false;
+  // Text after a gateway tool run starts a new paragraph, as the buffered path joins steps.
+  let afterServerTool = false;
 
   for await (const part of source) {
     switch (part.type) {
       case 'text-delta':
-        yield { type: 'text', text: part.text };
+        if (part.text === '') break;
+        yield { type: 'text', text: wroteText && afterServerTool ? `\n\n${part.text}` : part.text };
+        wroteText = true;
+        afterServerTool = false;
+        break;
+
+      case 'tool-result':
+        if (serverToolNames.has(part.toolName)) {
+          afterServerTool = true;
+          yield { type: 'server-tool-result', id: part.toolCallId, name: part.toolName, output: part.output };
+        }
         break;
 
       case 'tool-input-start': {
+        if (serverToolNames.has(part.toolName)) break;
         const index = indexes.size;
         indexes.set(part.id, index);
         yield { type: 'tool-call-start', index, id: part.id, name: part.toolName };
@@ -145,6 +174,10 @@ export async function* toChatParts(
       }
 
       case 'tool-call': {
+        if (serverToolNames.has(part.toolName)) {
+          yield { type: 'server-tool-call', id: part.toolCallId, name: part.toolName, input: part.input };
+          break;
+        }
         // Providers that streamed `tool-input-*` fragments have already
         // delivered this call; re-emitting it would duplicate the arguments.
         if (indexes.has(part.toolCallId)) break;
@@ -197,6 +230,8 @@ async function* replay(
 export async function streamChat(params: ChatStreamParams): Promise<ChatStreamHandle> {
   const startedAt = Date.now();
   let servingChannel: ChannelRow = params.start;
+  const kit = params.serverTools;
+  const loop = serverToolLoop(params.tools, params.toolChoice, kit);
 
   const attempt = await callWithFallback(params.start, params.resolve, async (channel) => {
     servingChannel = channel;
@@ -207,7 +242,7 @@ export async function streamChat(params: ChatStreamParams): Promise<ChatStreamHa
     const result = streamText({
       model: ai.languageModel(channel.modelId),
       maxRetries: 0,
-      messages: params.modelMessages ?? toModelMessages(params.messages),
+      messages: withInstructions(params.modelMessages ?? toModelMessages(params.messages), params.instructions, params.reminder),
       // See generateChat: system turns are carried positionally in `messages`.
       allowSystemInMessages: true,
       maxOutputTokens: params.maxOutputTokens,
@@ -219,8 +254,10 @@ export async function streamChat(params: ChatStreamParams): Promise<ChatStreamHa
           : Array.isArray(params.stop)
             ? params.stop
             : [params.stop],
-      tools: toToolSet(params.tools),
+      tools: loop.tools,
       toolChoice: toToolChoice(params.toolChoice),
+      stopWhen: loop.stopWhen,
+      prepareStep: loop.prepareStep,
       // On a native Anthropic channel the SDK turns any level into extended
       // thinking, which changes cost and turn-replay rules; leave those alone.
       reasoning: creds.provider === 'anthropic' || creds.provider === 'anthropic_compatible'
@@ -246,19 +283,22 @@ export async function streamChat(params: ChatStreamParams): Promise<ChatStreamHa
       primed.push(next.value);
       if (LOCAL_LIFECYCLE_PARTS[next.value.type] !== true) break;
     }
-    return { result, iterator, primed, state, firstOutputMs: Date.now() - startedAt };
-  });
+    return { result, iterator, primed, state, ai, firstOutputMs: Date.now() - startedAt };
+  }, recordAttemptFailure, params.abortSignal);
 
-  const { result, iterator, primed, state, firstOutputMs } = attempt.value;
+  const { result, iterator, primed, state, ai, firstOutputMs } = attempt.value;
 
   const completion: Promise<ChatStreamCompletion> = (async () => {
-    const [usage, finishReason, providerMetadata, text, toolCalls] = await Promise.all([
+    const [usage, finishReason, providerMetadata, finalText, allToolCalls, steps] = await Promise.all([
       result.usage,
       result.finishReason,
       result.providerMetadata,
       result.text,
       result.toolCalls,
+      result.steps,
     ]);
+    const toolCalls = kit ? allToolCalls.filter((call) => !kit.names.has(call.toolName)) : allToolCalls;
+    const text = kit ? segmentsText(turnSegments(steps, kit.names)) : finalText;
     // The SDK can resolve usage even after emitting an error part. Billing
     // awaits this promise independently of partStream, so both must fail.
     if (state.failure) {
@@ -271,7 +311,7 @@ export async function streamChat(params: ChatStreamParams): Promise<ChatStreamHa
     assertDelivered(finishReason, text, toolCalls.length);
     return {
       finishReason,
-      usage: normalizeUsage(usage, providerMetadata),
+      usage: withReportedCost(normalizeUsage(usage, providerMetadata), ai.reportedCostUsd?.()),
       latencyMs: Date.now() - startedAt,
       firstOutputMs,
     };
@@ -280,7 +320,7 @@ export async function streamChat(params: ChatStreamParams): Promise<ChatStreamHa
   trackGeneration(completion);
   return {
     channel: servingChannel,
-    partStream: toChatParts(replay(primed, iterator)),
+    partStream: toChatParts(replay(primed, iterator), kit?.names),
     completion,
   };
 }

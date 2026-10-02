@@ -6,6 +6,9 @@ import { MediaSubmissionError } from './fallback';
 const state = vi.hoisted(() => ({ closed: false, channel: null as MediaChannelRow | null, enqueue: vi.fn(), after: undefined as undefined | (() => Promise<void>), updates: [] as Record<string, unknown>[], saved: null as unknown, generate: vi.fn(), hold: vi.fn(), settle: vi.fn(), release: vi.fn(), upload: vi.fn() }));
 vi.mock('next/server', () => ({ after: (fn: () => Promise<void>) => { state.after = fn; } }));
 vi.mock('@/lib/ai/sources', () => ({ loadRoutingPreferences: async () => new Map() }));
+// Billing lifecycle only: the safety gate has its own tests (lib/safety).
+vi.mock('@/lib/media/availability', () => ({ mediaAvailability: () => ({ enabled: true }) }));
+vi.mock('@/lib/safety/media-gate', () => ({ screenMediaRequest: async ({ input }: { input: Record<string, unknown> }) => input, screenMediaOutput: async () => 'allow' }));
 vi.mock('@/lib/ai/channels', () => ({ selectMediaChannel: async () => state.channel ?? ({ id: 'relay-image', provider: 'openai_images', modelId: 'gpt-image-2', baseUrl: 'https://relay.fast/v1', creditMultiplier: '1.5', requestPriceUsd: .01, billingPolicy: { imagePrices: { standard: .01, large: .02 } } }) }));
 vi.mock('@/lib/admin/credentials', () => ({ resolvePlatformCreds: async (provider: string, baseUrl: string) => ({ provider, apiKey: 'test', baseUrl }) }));
 vi.mock('@/lib/media/kie', () => ({ createImageTask: state.enqueue }));

@@ -2,9 +2,12 @@ import { z } from 'zod';
 
 export type ChatMode = 'chat' | 'image' | 'video';
 export type ComposerMode = 'auto' | ChatMode;
-// Stable default, followed by the lowest-priced active Kie Flash models.
-// Keep the server fallback chain in 20260921000500_kie_chat_fallback.sql aligned.
+// gensite-v1 first: it routes each prompt to the best model the plan reaches.
+// Then the stable default and the lowest-priced active Kie Flash models, for
+// deployments where gensite-v1 is not listed. Keep the server fallback chain in
+// 20260921000500_kie_chat_fallback.sql aligned.
 export const DEFAULT_CHAT_MODELS = [
+  'gensite-v1',
   'gemini-3-5-flash-openai',
   'gemini-3-6-flash-openai',
   'gemini-3-7-flash-openai',
@@ -46,6 +49,8 @@ export function detectMode(prompt: string): ChatMode {
 // The catalogue has no input-capability metadata. Use known multimodal model
 // families conservatively; a configured provider may further limit support.
 export function supportsImages(model: string): boolean {
+  // gensite-v1 sends image turns to its vision tier.
+  if (model === 'gensite-v1') return true;
   return /(?:gpt-(?:4o|4\.1|5|6)|claude-(?:3|4|sonnet|opus|haiku)|gemini|\bvision\b)/i.test(model);
 }
 
@@ -60,6 +65,8 @@ export function chooseModel(models: string[], kind: ChatMode, needsImages = fals
     if (defaultModel) return defaultModel;
   }
   if (kind !== 'chat') {
+    // gensite-v1 routes a render to the best model the plan reaches.
+    if (eligible.includes('gensite-v1')) return 'gensite-v1';
     const textModel = eligible.find((name) => name.includes('text-to-' + kind));
     if (textModel) return textModel;
   }

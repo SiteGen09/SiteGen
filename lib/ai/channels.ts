@@ -14,9 +14,20 @@ import type { Family } from '@/lib/ai/source-types';
 import { MAX_CHAIN_DEPTH, type ChannelRow } from '@/lib/ai/fallback';
 import type { TaskAlias } from '@/lib/ai/provider';
 import { routingProviderIdentity } from '@/lib/ai/routing-provider';
-import { loadDefaultRoutingProvider } from '@/lib/ai/routing-provider-names';
+import { loadDefaultRoutingProvider, loadRelayPricingFresh } from '@/lib/ai/routing-provider-names';
 import { planMeetsMinimum } from '@/lib/billing/plans';
 import { createServiceClient } from '@/lib/supabase/service';
+import { GENSITE_MODEL_ID, gensiteListed } from '@/lib/gensite/config';
+
+/**
+ * Task backing the chat dispatchers, which bill per token.
+ *
+ * Not typed as {@link TaskAlias}: that union still lists only the three
+ * original spec tasks, while `channels_task_check` has allowed
+ * `chat.completions`, `image.generate` and `video.generate` since
+ * `20260921000200_media_jobs`. Widening the union is a separate change.
+ */
+const CHAT_TASK = 'chat.completions';
 
 /**
  * Raw channel row as PostgREST returns it. `credit_multiplier` is a
@@ -93,6 +104,17 @@ function toChannelRow(row: ChannelDbRow): ChannelRow {
       cachedPerMTok: row.cached_per_mtok,
     },
   };
+}
+
+/**
+ * Relay chat rates follow the source selected in the Relay account and are kept
+ * current by the source sync (lib/ai/relay-sources.ts). Without a recent sync
+ * they may predate a source switch, so the row is withheld rather than charged
+ * at a price that could be below what Relay bills.
+ */
+function pricedNow(row: ChannelDbRow, relayFresh: boolean): boolean {
+  const sourcePricing = row.billing_policy?.sourcePricing;
+  return !sourcePricing || (relayFresh && sourcePricing.tier !== null);
 }
 
 /**
@@ -202,12 +224,15 @@ function preferredOf(
  */
 export async function selectChannel(task: TaskAlias, planKey: string): Promise<ChannelRow | null> {
   const service = createServiceClient();
-  const { data, error } = await service
-    .from('channels')
-    .select(PLATFORM_COLUMNS)
-    .eq('task', task)
-    .neq('status', 'off')
-    .eq('is_byok', false);
+  const [{ data, error }, relayFresh] = await Promise.all([
+    service
+      .from('channels')
+      .select(PLATFORM_COLUMNS)
+      .eq('task', task)
+      .neq('status', 'off')
+      .eq('is_byok', false),
+    loadRelayPricingFresh(),
+  ]);
 
   if (error !== null) {
     throw new Error(`channel lookup failed: ${error.message}`);
@@ -216,7 +241,7 @@ export async function selectChannel(task: TaskAlias, planKey: string): Promise<C
   const eligible = channelRowSchema
     .array()
     .parse(data ?? [])
-    .filter((row) => eligibleForPlan(row, planKey));
+    .filter((row) => eligibleForPlan(row, planKey) && pricedNow(row, relayFresh));
 
   return bestOf(eligible);
 }
@@ -275,14 +300,27 @@ export async function selectChannelByModel(
   return preferredOf(rows, preferences, 'chat', defaultProvider);
 }
 
+/**
+ * Chat candidates for a public model name.
+ *
+ * The task filter is load-bearing: `public_model_id` is unique per source and
+ * task, not per source, so one model may back a `chat.completions` channel and
+ * a `site.spec` channel at once. Without it a chat request can select a channel
+ * provisioned for another task, which bills the call to that task's channel and
+ * bypasses its dispatcher's pricing assumptions.
+ */
 async function modelChannels(publicModelId: string, planKey: string): Promise<ChannelDbRow[]> {
   const service = createServiceClient();
-  const { data, error } = await service
-    .from('channels')
-    .select(PLATFORM_COLUMNS)
-    .eq('public_model_id', publicModelId)
-    .neq('status', 'off')
-    .eq('is_byok', false);
+  const [{ data, error }, relayFresh] = await Promise.all([
+    service
+      .from('channels')
+      .select(PLATFORM_COLUMNS)
+      .eq('public_model_id', publicModelId)
+      .eq('task', CHAT_TASK)
+      .neq('status', 'off')
+      .eq('is_byok', false),
+    loadRelayPricingFresh(),
+  ]);
 
   if (error !== null) {
     throw new Error(`channel model lookup failed: ${error.message}`);
@@ -291,7 +329,8 @@ async function modelChannels(publicModelId: string, planKey: string): Promise<Ch
   return channelRowSchema
     .array()
     .parse(data ?? [])
-    .filter((row) => !row.is_byok && row.sources?.modality === 'chat' && eligibleForPlan(row, planKey));
+    .filter((row) =>
+      !row.is_byok && row.sources?.modality === 'chat' && eligibleForPlan(row, planKey) && pricedNow(row, relayFresh));
 }
 
 /**
@@ -382,19 +421,65 @@ export async function listPublicModelOptions(
   planKey: string,
   preferences: RoutingPreferences = new Map(),
 ): Promise<ModelOption[]> {
-  const { data, error } = await createServiceClient()
-    .from('channels')
-    .select(PLATFORM_COLUMNS)
-    .not('public_model_id', 'is', null)
-    .neq('status', 'off')
-    .eq('is_byok', false);
+  const [{ data, error }, relayFresh] = await Promise.all([
+    createServiceClient()
+      .from('channels')
+      .select(PLATFORM_COLUMNS)
+      .not('public_model_id', 'is', null)
+      .neq('status', 'off')
+      .eq('is_byok', false),
+    loadRelayPricingFresh(),
+  ]);
   if (error) throw new Error(`public model lookup failed: ${error.message}`);
   const rows = channelRowSchema
     .array()
     .parse(data ?? [])
-    .filter((row) => eligibleForPlan(row, planKey));
+    .filter((row) => eligibleForPlan(row, planKey) && pricedNow(row, relayFresh));
   // Several sources can serve the same public name.
-  return optionsOf(rows, 'chat', preferences, await loadDefaultRoutingProvider());
+  const options = optionsOf(rows, 'chat', preferences, await loadDefaultRoutingProvider());
+  // gensite-v1 has no channel of its own; it is listed, first, whenever a
+  // model it routes to is reachable.
+  return gensiteListed(options.map((option) => option.id))
+    ? [{ id: GENSITE_MODEL_ID, family: 'other' }, ...options]
+    : options;
+}
+
+/**
+ * Public chat models ordered cheapest first, for platform-paid calls such as
+ * the support assistant. Each model is priced by its cheapest active platform
+ * channel on the provider's own USD rates, weighted by the expected call shape
+ * (`inputTokens` of prompt for `outputTokens` of answer). Degraded channels are
+ * left out: a cheap model that is failing is no saving.
+ */
+export async function cheapestChatModels(
+  shape: { inputTokens: number; outputTokens: number },
+  limit = 3,
+): Promise<string[]> {
+  const [{ data, error }, relayFresh] = await Promise.all([
+    createServiceClient()
+      .from('channels')
+      .select(PLATFORM_COLUMNS)
+      .not('public_model_id', 'is', null)
+      .eq('status', 'active')
+      .eq('is_byok', false),
+    loadRelayPricingFresh(),
+  ]);
+  if (error) throw new Error(`cheapest model lookup failed: ${error.message}`);
+
+  const best = new Map<string, number>();
+  for (const row of channelRowSchema.array().parse(data ?? [])) {
+    if (row.public_model_id === null || row.sources?.modality !== 'chat') continue;
+    if (!pricedNow(row, relayFresh)) continue;
+    if (row.effectiveStatus !== 'active' || !eligibleForPlan(row, 'max')) continue;
+    const { rates } = toChannelRow(row);
+    const cost = rates.inputPerMTok * shape.inputTokens + rates.outputPerMTok * shape.outputTokens;
+    const known = best.get(row.public_model_id);
+    if (known === undefined || cost < known) best.set(row.public_model_id, cost);
+  }
+  return [...best.entries()]
+    .sort(([a, costA], [b, costB]) => costA - costB || (a < b ? -1 : a > b ? 1 : 0))
+    .slice(0, limit)
+    .map(([id]) => id);
 }
 
 /**
@@ -403,12 +488,15 @@ export async function listPublicModelOptions(
  */
 export async function resolveChannel(id: string, planKey?: string): Promise<ChannelRow | null> {
   const service = createServiceClient();
-  const { data, error } = await service
-    .from('channels')
-    .select(ALL_COLUMNS)
-    .eq('id', id)
-    .neq('status', 'off')
-    .maybeSingle();
+  const [{ data, error }, relayFresh] = await Promise.all([
+    service
+      .from('channels')
+      .select(ALL_COLUMNS)
+      .eq('id', id)
+      .neq('status', 'off')
+      .maybeSingle(),
+    loadRelayPricingFresh(),
+  ]);
 
   if (error !== null) {
     throw new Error(`channel resolve failed: ${error.message}`);
@@ -416,7 +504,7 @@ export async function resolveChannel(id: string, planKey?: string): Promise<Chan
   if (data === null) return null;
 
   const row = channelRowSchema.parse(data);
-  if (row.pricing_type !== 'token') return null;
+  if (row.pricing_type !== 'token' || !pricedNow(row, relayFresh)) return null;
   if (!row.is_byok && (row.sources === null || row.sources.status === 'off')) return null;
   if (planKey !== undefined && (row.is_byok || row.sources?.modality !== 'chat' || !eligibleForPlan(row, planKey))) return null;
   return toChannelRow(row);

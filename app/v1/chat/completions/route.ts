@@ -12,6 +12,8 @@ import { streamChat, streamTimingFields, type ChatStreamHandle } from '@/lib/cha
 import {
   chatCompletionRequestSchema,
   chatRequestHash,
+  totalMessageChars,
+  totalToolChars,
   type ChatCompletionRequest,
 } from '@/lib/chat/request';
 import { openAiFinishReason } from '@/lib/chat/tools';
@@ -24,6 +26,7 @@ import {
   recordRequestFailure,
   type Preflight,
 } from '@/lib/chat/pipeline';
+import { cancelledTurnUsage } from '@/lib/generate/estimate';
 import { getBalance } from '@/lib/generate/ledger';
 import { consumeRateLimit } from '@/lib/generate/ledger';
 import type { Logger } from '@/lib/log';
@@ -36,6 +39,7 @@ interface ChatContext {
   auth: AuthenticatedKey;
   body: ChatCompletionRequest;
   log: Logger;
+  signal: AbortSignal;
 }
 
 
@@ -69,6 +73,7 @@ async function prepareChat(ctx: ChatContext): Promise<Preflight> {
     messages: ctx.body.messages,
     tools: ctx.body.tools,
     maxOutputTokens: ctx.body.max_tokens,
+    reasoning: parseReasoningEffort(ctx.body.reasoning_effort),
   });
 }
 
@@ -83,7 +88,7 @@ async function runChat(ctx: ChatContext): Promise<IdempotentResponse> {
 
   const prepared = await prepareChat(ctx);
   if (!prepared.ok) return prepared.response;
-  const { resolved, requestedMax, held } = prepared;
+  const { resolved, requestedMax, held, serverTools, gensite } = prepared;
 
   try {
     const generation = await generateChat({
@@ -98,6 +103,9 @@ async function runChat(ctx: ChatContext): Promise<IdempotentResponse> {
       tools: body.tools,
       toolChoice: body.tool_choice,
       reasoning: parseReasoningEffort(body.reasoning_effort),
+      serverTools,
+      instructions: gensite?.instructions,
+      reminder: gensite?.reminder,
     });
 
     const { creditsCharged } = await settleCall({
@@ -111,6 +119,7 @@ async function runChat(ctx: ChatContext): Promise<IdempotentResponse> {
       rates: generation.rates,
       usage: generation.usage,
       latencyMs: generation.latencyMs,
+      serverTools,
     });
 
     // Informational only. The call is already charged, so a failed read must
@@ -119,6 +128,8 @@ async function runChat(ctx: ChatContext): Promise<IdempotentResponse> {
 
     log.info('chat.ok', {
       channel_id: generation.channelId,
+      ...(gensite ? { gensite_model: gensite.modelFor(generation.channelId) } : {}),
+      ...(serverTools ? { web_searches: serverTools.searchCount() } : {}),
       latency_ms: generation.latencyMs,
       credits_charged: creditsCharged,
       balance_after: balanceAfter,
@@ -171,17 +182,23 @@ async function runChat(ctx: ChatContext): Promise<IdempotentResponse> {
  * two things about billing. Every refusal has to happen in `prepareChat`,
  * before the 200 is committed; and settlement can only run once the upstream
  * stream ends, so it is attached to the completion promise rather than to the
- * response body — a client that hangs up mid-turn has still consumed the
- * tokens, and is still charged for them.
+ * response body. A disconnect aborts upstream generation, so no final usage
+ * report arrives; the turn is then billed on an estimate of what the provider
+ * processed and generated before the stop, since it charges for that anyway.
  */
 async function runChatStream(ctx: ChatContext): Promise<Response> {
   const { requestId, auth, body, log } = ctx;
+  const startedAt = Date.now();
 
   const prepared = await prepareChat(ctx);
   if (!prepared.ok) {
     return Response.json(prepared.response.body, { status: prepared.response.status });
   }
-  const { resolved, requestedMax, held } = prepared;
+  const { resolved, requestedMax, held, serverTools, gensite } = prepared;
+  const halt = new AbortController();
+  const stop = () => halt.abort(ctx.signal.reason ?? new DOMException('Client disconnected', 'AbortError'));
+  if (ctx.signal.aborted) stop();
+  else ctx.signal.addEventListener('abort', stop, { once: true });
 
   async function recordFailure(): Promise<void> {
     await recordCallFailure({ requestId, auth, log, channelId: resolved.start.id, held });
@@ -201,15 +218,69 @@ async function runChatStream(ctx: ChatContext): Promise<Response> {
       tools: body.tools,
       toolChoice: body.tool_choice,
       reasoning: parseReasoningEffort(body.reasoning_effort),
+      serverTools,
+      instructions: gensite?.instructions,
+      reminder: gensite?.reminder,
+      abortSignal: halt.signal,
     });
   } catch (err) {
     // Nothing has been written yet, so this can still be a normal JSON error.
-    await recordFailure();
+    try {
+      await recordFailure();
+    } finally {
+      ctx.signal.removeEventListener('abort', stop);
+    }
     throw err;
   }
 
-  // Settlement is deliberately not part of the response body: if the client
-  // disconnects, this still runs to completion.
+  // Output the upstream produced, counted as it arrives. A cancelled turn is
+  // billed on it once the part stream has drained.
+  let outputChars = 0;
+  let markDrained!: () => void;
+  const drained = new Promise<void>((resolve) => { markDrained = resolve; });
+
+  /** Settles a cancelled turn on its estimated usage; false if that failed. */
+  async function settleCancelled(): Promise<boolean> {
+    await drained;
+    const usage = cancelledTurnUsage({
+      promptChars: totalMessageChars(body.messages) + totalToolChars(body.tools) +
+        (gensite?.instructions?.length ?? 0) + (gensite?.reminder?.length ?? 0),
+      outputChars,
+      maxOutputTokens: requestedMax,
+    });
+    try {
+      const { creditsCharged } = await settleCall({
+        requestId,
+        auth,
+        log,
+        channelId: handle.channel.id,
+        held,
+        multiplier: Number(handle.channel.creditMultiplier),
+        byok: handle.channel.isByok,
+        rates: handle.channel.rates,
+        usage,
+        latencyMs: Date.now() - startedAt,
+        serverTools,
+      });
+      log.info('chat.stream_cancelled', {
+        channel_id: handle.channel.id,
+        ...(gensite ? { gensite_tier: gensite.tier, gensite_model: gensite.modelFor(handle.channel.id) } : {}),
+        latency_ms: Date.now() - startedAt,
+        estimated_input_tokens: usage.inputTokens,
+        estimated_output_tokens: usage.outputTokens,
+        credits_charged: creditsCharged,
+      });
+      return true;
+    } catch (err) {
+      log.error('chat.stream_cancel_settle_failed', {
+        channel_id: handle.channel.id,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+  }
+
+  // Settlement is independent of response consumption, including cancellation.
   const billing = (async () => {
     try {
       const done = await handle.completion;
@@ -224,24 +295,32 @@ async function runChatStream(ctx: ChatContext): Promise<Response> {
         rates: handle.channel.rates,
         usage: done.usage,
         latencyMs: done.latencyMs,
+        serverTools,
       });
       log.info('chat.stream_ok', {
         channel_id: handle.channel.id,
+        ...(gensite ? { gensite_tier: gensite.tier, gensite_model: gensite.modelFor(handle.channel.id) } : {}),
+        ...(serverTools ? { web_searches: serverTools.searchCount() } : {}),
         latency_ms: done.latencyMs,
         ...streamTimingFields(done),
         credits_charged: creditsCharged,
       });
     } catch (err) {
+      if (halt.signal.aborted && (await settleCancelled())) return;
       log.error('chat.stream_failed', {
+        channel_id: handle.channel.id,
+        ...(gensite ? { gensite_tier: gensite.tier, gensite_model: gensite.modelFor(handle.channel.id) } : {}),
+        latency_ms: Date.now() - startedAt,
         detail: err instanceof Error ? err.message : String(err),
       });
       await recordFailure().catch(() => undefined);
     }
-  })();
+  })().finally(() => ctx.signal.removeEventListener('abort', stop));
 
   const encoder = new TextEncoder();
   const created = Math.floor(Date.now() / 1000);
   const includeUsage = body.stream_options?.include_usage === true;
+  let cancelled = false;
 
   /** One `chat.completion.chunk`. The PUBLIC model name is echoed, never the upstream id. */
   function envelope(choice: Record<string, unknown>, extra?: Record<string, unknown>): string {
@@ -257,7 +336,9 @@ async function runChatStream(ctx: ChatContext): Promise<Response> {
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const send = (text: string): void => controller.enqueue(encoder.encode(text));
+      const send = (text: string): void => {
+        if (!cancelled && !halt.signal.aborted) controller.enqueue(encoder.encode(text));
+      };
       try {
         send(envelope({ delta: { role: 'assistant' }, finish_reason: null }));
         // OpenAI's streaming tool-call shape: the first fragment for an index
@@ -266,9 +347,11 @@ async function runChatStream(ctx: ChatContext): Promise<Response> {
         for await (const part of handle.partStream) {
           switch (part.type) {
             case 'text':
+              outputChars += part.text.length;
               send(envelope({ delta: { content: part.text }, finish_reason: null }));
               break;
             case 'tool-call-start':
+              outputChars += part.name.length;
               send(
                 envelope({
                   delta: {
@@ -286,6 +369,7 @@ async function runChatStream(ctx: ChatContext): Promise<Response> {
               );
               break;
             case 'tool-call-delta':
+              outputChars += part.arguments.length;
               send(
                 envelope({
                   delta: {
@@ -296,6 +380,7 @@ async function runChatStream(ctx: ChatContext): Promise<Response> {
               );
               break;
             case 'tool-call':
+              outputChars += part.name.length + part.arguments.length;
               send(
                 envelope({
                   delta: {
@@ -336,20 +421,28 @@ async function runChatStream(ctx: ChatContext): Promise<Response> {
       } catch (err) {
         // The 200 is long gone, so the only way to report this is in-band —
         // the shape OpenAI clients look for when a stream dies mid-flight.
-        log.warn('chat.stream_interrupted', {
-          detail: err instanceof Error ? err.message : String(err),
-        });
+        // A cancelled turn is logged by billing, and nobody is left to tell.
+        if (!halt.signal.aborted) {
+          log.warn('chat.stream_interrupted', {
+            detail: err instanceof Error ? err.message : String(err),
+          });
+        }
         send(
           `data: ${JSON.stringify(
             openAiErrorBody('internal_error', 'the upstream stream ended early', requestId),
           )}\n\n`,
         );
       } finally {
+        markDrained();
         send('data: [DONE]\n\n');
-        controller.close();
+        if (!cancelled) controller.close();
         // Keeps the serverless invocation alive until the ledger is settled.
         await billing;
       }
+    },
+    cancel() {
+      cancelled = true;
+      stop();
     },
   });
 
@@ -392,7 +485,7 @@ async function handlePost(req: Request): Promise<Response> {
     // part in idempotent replay. No OpenAI SDK sends an Idempotency-Key on a
     // streaming call, so nothing is lost in practice.
     if (body.stream === true) {
-      const response = await runChatStream({ requestId, auth, body, log });
+      const response = await runChatStream({ requestId, auth, body, log, signal: req.signal });
       log.info('chat.end', { status: response.status, streaming: true });
       return response;
     }
@@ -401,7 +494,7 @@ async function handlePost(req: Request): Promise<Response> {
     const hash = chatRequestHash(body);
 
     const outcome = await withIdempotency(auth.ownerId, idempotencyKey, hash, () =>
-      runChat({ requestId, auth, body, log }),
+      runChat({ requestId, auth, body, log, signal: req.signal }),
     );
 
     log.info('chat.end', {

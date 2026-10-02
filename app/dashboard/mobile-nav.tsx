@@ -13,8 +13,12 @@ import { SitegenLogo } from '../_components/sitegen-logo';
  */
 export function MobileNav({
   children,
+  showAdmin = false,
+  unreadNotifications = 0,
 }: {
   children: ReactNode;
+  showAdmin?: boolean;
+  unreadNotifications?: number;
 }) {
   const pathname = usePathname();
   // Storing the route the panel was opened on, rather than a bare boolean,
@@ -40,6 +44,11 @@ export function MobileNav({
           className="-mr-1 inline-flex min-h-11 items-center gap-1.5 rounded-md px-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100"
         >
           Menu
+          {unreadNotifications > 0 && (
+            <span className="h-2 w-2 rounded-full bg-emerald-600">
+              <span className="sr-only">, {unreadNotifications} unread notifications</span>
+            </span>
+          )}
           <svg
             aria-hidden="true"
             viewBox="0 0 20 20"
@@ -56,7 +65,7 @@ export function MobileNav({
       </div>
 
       <div id="dashboard-mobile-nav" hidden={!open} className="border-t border-zinc-200 px-2 py-4">
-        <DashboardNav onNavigate={() => setOpenedOn(null)} />
+        <DashboardNav showAdmin={showAdmin} unreadNotifications={unreadNotifications} onNavigate={() => setOpenedOn(null)} />
         <div className="mt-2 border-t border-zinc-200 px-3 pt-3">{children}</div>
       </div>
     </div>

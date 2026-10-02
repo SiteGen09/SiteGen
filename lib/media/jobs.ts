@@ -18,6 +18,12 @@ import { createImageTask, fetchImageTask, type UpstreamRecord } from '@/lib/medi
 import { MediaSubmissionError, submitWithFallback } from '@/lib/media/fallback';
 import type { Logger } from '@/lib/log';
 import { createServiceClient } from '@/lib/supabase/service';
+import { selectGensiteMediaChannel } from '@/lib/gensite/media';
+import { isGensiteModel } from '@/lib/gensite/config';
+import { mediaAvailability } from '@/lib/media/availability';
+import { screenMediaOutput, screenMediaRequest } from '@/lib/safety/media-gate';
+import { SafetyUnavailableError } from '@/lib/safety/media-classifier';
+import { MEDIA_OUTPUT_REFUSAL } from '@/lib/safety/media-policy-text';
 
 export { mediaMarker, parseMediaMarker } from '@/lib/media/marker';
 
@@ -66,6 +72,8 @@ export interface MediaJob {
   creditsCharged: number | null;
   createdAt: string;
   completedAt: string | null;
+  /** Set once retention deleted the file; the job can no longer be viewed. */
+  expiredAt: string | null;
 }
 
 const jobRowSchema = z.object({
@@ -86,10 +94,11 @@ const jobRowSchema = z.object({
   credits_charged: z.coerce.number().nullable(),
   created_at: z.string(),
   completed_at: z.string().nullable(),
+  expired_at: z.string().nullish().transform((value) => value ?? null),
 });
 
 const JOB_COLUMNS =
-  'id, user_id, request_id, channel_id, public_model_id, kind, conversation_id, upstream_task_id, status, storage_path, error_code, error_message, credit_multiplier, credits_held, credits_charged, created_at, completed_at';
+  'id, user_id, request_id, channel_id, public_model_id, kind, conversation_id, upstream_task_id, status, storage_path, error_code, error_message, credit_multiplier, credits_held, credits_charged, created_at, completed_at, expired_at';
 
 function toJob(row: z.infer<typeof jobRowSchema>): MediaJob {
   return {
@@ -110,6 +119,7 @@ function toJob(row: z.infer<typeof jobRowSchema>): MediaJob {
     creditsCharged: row.credits_charged,
     createdAt: row.created_at,
     completedAt: row.completed_at,
+    expiredAt: row.expired_at,
   };
 }
 
@@ -156,14 +166,16 @@ export interface CreateJobInput {
  * hold is released and the job marked failed in the same pass.
  */
 export async function createMediaJob(input: CreateJobInput): Promise<MediaJob> {
+  const availability = mediaAvailability(input.kind);
+  if (!availability.enabled) {
+    throw new ApiError('channel_unavailable', availability.reason ?? `${input.kind} generation is unavailable`, 503);
+  }
   await enforceLocalPolicy(policyText(input.input));
+  const gensite = isGensiteModel(input.publicModelId);
   const preferences = applyKeyRouting(await loadRoutingPreferences(input.userId), input.keyPolicy);
-  const channel = await selectMediaChannel(
-    input.publicModelId,
-    input.planKey,
-    input.kind,
-    preferences,
-  );
+  const channel = gensite
+    ? await selectGensiteMediaChannel(input.kind, input.planKey, preferences)
+    : await selectMediaChannel(input.publicModelId, input.planKey, input.kind, preferences);
   if (channel === null) {
     throw new ApiError(
       'model_not_found',
@@ -171,6 +183,14 @@ export async function createMediaJob(input: CreateJobInput): Promise<MediaJob> {
       404,
     );
   }
+
+  // The safety gate runs before any credit is held or provider called. What
+  // goes upstream is its output: references replaced by their checked copies.
+  const requestId = generationRequestId() ?? randomUUID();
+  const screened = await screenMediaRequest({
+    userId: input.userId, requestId, kind: input.kind, input: input.input, promptOnly: gensite, log: input.log,
+  });
+  input = { ...input, input: gensite ? { prompt: String(screened.prompt) } : screened };
 
   const candidates = [channel, ...(channel.fallbackChannels ?? [])].flatMap((candidate, index) => {
     try {
@@ -184,7 +204,6 @@ export async function createMediaJob(input: CreateJobInput): Promise<MediaJob> {
   });
   const credits = candidates[0]!.credits;
   const reserved = Math.max(...candidates.map((candidate) => candidate.credits));
-  const requestId = generationRequestId() ?? randomUUID();
   const hold = await holdCredits(input.userId, requestId, reserved, channel.id);
   if (!hold.success) {
     throw new ApiError(
@@ -354,6 +373,9 @@ export async function succeedJob(
     log.warn('media_job.download_failed', { job_id: job.id, reason: errorText(err) });
     return;
   }
+
+  // Nothing is stored or shown until the output itself passes the safety check.
+  if (!(await outputPasses(job, Buffer.from(bytes), log))) return;
 
   const extension = extensionFor(job.kind, contentType, record.imageUrl);
   const path = `${job.userId}/${job.id}.${extension}`;
@@ -547,7 +569,7 @@ export async function callbackTokenMatches(jobId: string, presented: string): Pr
 
 /** A signed, expiring URL for a finished job's file. */
 export async function signedUrlFor(job: MediaJob, download = false): Promise<string | null> {
-  if (job.storagePath === null) return null;
+  if (job.storagePath === null || job.expiredAt !== null) return null;
   const { data, error } = await createServiceClient()
     .storage.from(BUCKET)
     .createSignedUrl(job.storagePath, SIGNED_URL_TTL_SECONDS, {
@@ -635,9 +657,47 @@ export async function sweepOpenJobs(
   return { checked: jobs.length, closed };
 }
 
+/** How long a finished render may wait for the safety check before it is dropped. */
+const OUTPUT_SCREEN_DEADLINE_MS = 30 * 60_000;
+
+/**
+ * Screens a finished render. True means store it. False means the job is
+ * already closed (blocked, unreadable or past its deadline) or must wait for
+ * the next sweep because the safety check is down; the bytes are never kept.
+ */
+async function outputPasses(job: MediaJob, bytes: Buffer, log: Logger): Promise<boolean> {
+  let verdict;
+  try {
+    verdict = await screenMediaOutput(job, bytes, log);
+  } catch (err) {
+    if (!(err instanceof SafetyUnavailableError)) throw err;
+    if (Date.now() - Date.parse(job.createdAt) < OUTPUT_SCREEN_DEADLINE_MS) {
+      log.warn('media_job.output_screen_deferred', { job_id: job.id });
+      return false;
+    }
+    await discardResult(job.id);
+    await failJob(job.id, job.requestId, 'safety_check_unavailable', 'The safety check was unavailable, so the result was not kept.', log);
+    return false;
+  }
+  if (verdict === 'allow') return true;
+  await discardResult(job.id);
+  if (verdict === 'block') {
+    await failJob(job.id, job.requestId, 'content_policy_violation', MEDIA_OUTPUT_REFUSAL, log);
+  } else {
+    await failJob(job.id, job.requestId, 'malformed_result', `the provider returned an unreadable ${job.kind}`, log);
+  }
+  return false;
+}
+
+/** Drops a stored provider result (relay images keep their bytes on the row). */
+async function discardResult(jobId: string): Promise<void> {
+  await createServiceClient().from('media_jobs').update({ provider_result: null, updated_at: new Date().toISOString() }).eq('id', jobId);
+}
+
 /** Relay-only settlement; Kie continues using its existing lifecycle. */
 async function finishRelayImage(job: MediaJob, result: RelayImageResult, log: Logger): Promise<void> {
   const bytes = Buffer.from(result.data[0]!.b64_json, 'base64');
+  if (!(await outputPasses(job, bytes, log))) return;
   if (bytes.length < 8 || bytes.length > 30 * 1024 * 1024) throw new Error('Invalid image size');
   const png = bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]));
   const jpeg = bytes[0] === 255 && bytes[1] === 216;

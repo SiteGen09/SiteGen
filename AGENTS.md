@@ -13,3 +13,9 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - Production today is a Windows PC behind the Cloudflare Tunnel `gensite`: see [CLOUDFLARE_TUNNEL_SETUP.md](./CLOUDFLARE_TUNNEL_SETUP.md). It runs `next start` on 127.0.0.1:3000; after `pnpm build`, restart it with `E:\sitegen-host\manage.ps1 restart` on that PC.
 - To deploy or update on a Linux VPS, follow [DEPLOY_VPS.md](./DEPLOY_VPS.md) step by step, starting with its "Rules an agent must not break". Build with `BUILD_STANDALONE=1 pnpm build`; never hard-code `output: "standalone"` in `next.config.ts`.
 - Cloudflare caching is set up (CLOUDFLARE_TUNNEL_SETUP.md section 6). Never add a "Cache Everything" rule for HTML: pages carry per-user Supabase cookies.
+
+# Docker and local Supabase
+
+- Docker Desktop is off by default on this PC. The live site does not need it: `next start`, `cloudflared` and the cron jobs run natively, and `.env.local` points to hosted Supabase.
+- Docker only runs the local Supabase stack (ports 54321–54327), which DB tests, migration checks and local Studio/Mailpit use. Start it only when a task needs it: `docker desktop start`, then `npx supabase start`.
+- When the task is done, shut it down again: `npx supabase stop` (keeps local data), then `docker desktop stop`. Never use `npx supabase stop --no-backup`; it deletes the local data.

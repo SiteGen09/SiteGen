@@ -110,13 +110,45 @@ const toolResultBlockSchema = z.looseObject({
   is_error: z.boolean().optional(),
 });
 
+/**
+ * A web search the server ran, and its results, replayed from an earlier turn.
+ * The gateway emits both when a caller uses the `web_search` server tool, so
+ * it has to accept them back. Upstreams know nothing of them: the call is
+ * dropped and the results ride along as text, so the model keeps what it read.
+ */
+const serverToolUseBlockSchema = z.looseObject({
+  type: z.literal('server_tool_use'),
+  id: z.string(),
+  name: z.string(),
+  input: z.unknown(),
+});
+
+const webSearchToolResultBlockSchema = z.looseObject({
+  type: z.literal('web_search_tool_result'),
+  tool_use_id: z.string(),
+  content: z.unknown(),
+});
+
 const contentBlockSchema = z.union([
   textBlockSchema,
   toolUseBlockSchema,
   toolResultBlockSchema,
   imageBlockSchema,
   documentBlockSchema,
+  serverToolUseBlockSchema,
+  webSearchToolResultBlockSchema,
 ]);
+
+/** Replayed search results as a short text the model can read. */
+function webSearchResultText(content: unknown): string {
+  if (!Array.isArray(content)) return '';
+  const lines = content.flatMap((item) => {
+    if (typeof item !== 'object' || item === null) return [];
+    const { title, url } = item as { title?: unknown; url?: unknown };
+    return typeof url === 'string' ? [`- ${typeof title === 'string' && title !== '' ? `${title} — ` : ''}${url}`] : [];
+  });
+  return lines.length > 0 ? `\n[Web search results]\n${lines.join('\n')}\n` : '';
+}
 
 export type ContentBlock = z.infer<typeof contentBlockSchema>;
 
@@ -131,6 +163,8 @@ const messageSchema = z.looseObject({
 });
 
 export const messagesToolSchema = z.looseObject({
+  /** Absent for a caller's own tool; set for Anthropic's server tools (`web_search_20250305`). */
+  type: z.string().optional(),
   name: z.string().min(1, 'tool name is required'),
   description: z.string().optional(),
   input_schema: z.record(z.string(), z.unknown()).optional(),
@@ -217,6 +251,7 @@ export function toChatMessages(request: MessagesRequest): ChatMessage[] {
           role: 'tool',
           tool_call_id: block.tool_use_id,
           content: block.content === undefined ? '' : blockText(block.content),
+          ...(block.is_error === undefined ? {} : { tool_result_error: block.is_error }),
           ...(attachments.length > 0 ? { attachments } : {}),
         });
       }
@@ -228,8 +263,9 @@ export function toChatMessages(request: MessagesRequest): ChatMessage[] {
     }
 
     const text = message.content
-      .filter((block): block is z.infer<typeof textBlockSchema> => block.type === 'text')
-      .map((block) => block.text)
+      .map((block) => block.type === 'text'
+        ? block.text
+        : block.type === 'web_search_tool_result' ? webSearchResultText(block.content) : '')
       .join('');
 
     const toolCalls: ChatToolCall[] = message.content
@@ -264,11 +300,42 @@ export function toChatMessages(request: MessagesRequest): ChatMessage[] {
   return messages;
 }
 
-/** Anthropic's flat tool shape lifted into the nested chat completions one. */
+function isWebSearchServerTool(tool: { type?: string | undefined }): boolean {
+  return tool.type !== undefined && tool.type.startsWith('web_search_');
+}
+
+/** What the caller's `web_search` server tool asked for, if it declared one. */
+export interface NativeWebSearch {
+  name: string;
+  maxUses: number | undefined;
+  allowedDomains: string[] | undefined;
+  blockedDomains: string[] | undefined;
+}
+
+const domainList = z.array(z.string()).optional().catch(undefined);
+
+export function nativeWebSearch(request: MessagesRequest): NativeWebSearch | null {
+  const tool = request.tools?.find(isWebSearchServerTool);
+  if (tool === undefined) return null;
+  const maxUses = z.number().int().positive().optional().catch(undefined).parse(tool['max_uses']);
+  return {
+    name: tool.name,
+    maxUses,
+    allowedDomains: domainList.parse(tool['allowed_domains']),
+    blockedDomains: domainList.parse(tool['blocked_domains']),
+  };
+}
+
+/**
+ * Anthropic's flat tool shape lifted into the nested chat completions one.
+ * The `web_search` server tool is not a function the model calls on the
+ * caller's behalf; the gateway runs it (see nativeWebSearch), so it is left
+ * out here.
+ */
 export function toChatTools(request: MessagesRequest): ChatTool[] | undefined {
   if (request.tools === undefined) return undefined;
 
-  return request.tools.map((tool) => {
+  return request.tools.filter((tool) => !isWebSearchServerTool(tool)).map((tool) => {
     const fn: { name: string; description?: string; parameters?: Record<string, unknown> } = {
       name: tool.name,
     };

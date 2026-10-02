@@ -11,12 +11,18 @@ const NAV_GROUPS = [
     items: [
       { href: '/admin', label: 'Overview' },
       { href: '/admin/audit', label: 'Audit Log' },
+      { href: '/admin/notifications', label: 'Notifications' },
     ],
   },
   {
     id: 'users',
     label: 'Users',
     items: [{ href: '/admin/users', label: 'Users' }],
+  },
+  {
+    id: 'support',
+    label: 'Support',
+    items: [{ href: '/admin/support', label: 'Support' }],
   },
   {
     id: 'providers',

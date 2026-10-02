@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MEDIA_POLICY_REQUIRED, MEDIA_REFUSAL, MEDIA_SAFETY_UNAVAILABLE, MEDIA_SUSPENDED } from '@/lib/safety/media-policy-text';
 
 /**
  * Person-facing wording for dashboard chat and media failures.
@@ -66,6 +67,13 @@ function creditMessage({ required, balance }: ErrorFacts): string {
 
 export function describeError(facts: ErrorFacts): Omit<ChatError, 'request_id'> {
   const { code, message, status } = facts;
+  // The image and video safety gate words its own refusals for people.
+  if (message === MEDIA_REFUSAL) return { kind: 'policy', title: 'Can’t generate that', message };
+  if (message === MEDIA_POLICY_REQUIRED) {
+    return { kind: 'policy', title: 'Agreement needed', message: 'Tick “I agree to the Acceptable Use Policy” above the Generate button to continue.' };
+  }
+  if (message === MEDIA_SUSPENDED) return { kind: 'account', title: 'Generation suspended', message };
+  if (message === MEDIA_SAFETY_UNAVAILABLE) return { kind: 'provider', title: 'Safety check unavailable', message };
   switch (code) {
     case 'insufficient_credits':
       return { kind: 'credits', title: 'Not enough credits', message: creditMessage(facts) };

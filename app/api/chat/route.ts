@@ -252,6 +252,9 @@ async function handlePost(req: Request): Promise<Response> {
       modelMessages,
       maxOutputTokens: prepared.requestedMax,
       abortSignal: halt.signal,
+      serverTools: prepared.serverTools,
+      instructions: prepared.gensite?.instructions,
+      reminder: prepared.gensite?.reminder,
     });
     channelId = handle.channel.id;
     // Observe rejection immediately; iteration will report it in-band too.
@@ -267,6 +270,7 @@ async function handlePost(req: Request): Promise<Response> {
       rates: handle.channel.rates,
       usage: done.usage,
       latencyMs: done.latencyMs,
+      serverTools: prepared.serverTools,
     });
     if (req.signal.aborted) {
       // Left while the upstream was starting to answer: nothing is saved, but

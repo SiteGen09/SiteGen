@@ -70,6 +70,7 @@ async function handlePost(request: Request): Promise<Response> {
 
     const service = createServiceClient();
     let conversationId = parsed.data.conversationId ?? null;
+    const startedConversation = conversationId === null;
 
     if (conversationId === null) {
       const { data, error } = await service
@@ -99,16 +100,24 @@ async function handlePost(request: Request): Promise<Response> {
     }
 
     const plan = await loadPlan(userId);
-    const job = await createMediaJob({
-      userId,
-      apiKeyId: null,
-      publicModelId: parsed.data.model,
-      kind: parsed.data.kind,
-      conversationId,
-      input: { prompt: parsed.data.prompt },
-      planKey: plan.key,
-      log,
-    });
+    let job;
+    try {
+      job = await createMediaJob({
+        userId,
+        apiKeyId: null,
+        publicModelId: parsed.data.model,
+        kind: parsed.data.kind,
+        conversationId,
+        input: { prompt: parsed.data.prompt },
+        planKey: plan.key,
+        log,
+      });
+    } catch (err) {
+      // A conversation started for this prompt is titled with it; a refused
+      // or failed prompt must not stay behind in the sidebar.
+      if (startedConversation) await service.from('chat_conversations').delete().eq('id', conversationId).eq('user_id', userId);
+      throw err;
+    }
 
     // The prompt is the user's turn; the marker is the assistant's.
     await service.from('chat_messages').insert([

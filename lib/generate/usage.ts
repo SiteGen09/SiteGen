@@ -9,6 +9,13 @@ export interface NormalizedUsage {
   outputTokens: number;
   cachedTokens: number;
   cacheWriteTokens?: number;
+  /**
+   * Every token the upstream counted, including any its breakdown leaves out
+   * (kie.ai's hidden reasoning). Bounds a reported cost; never priced itself.
+   */
+  totalTokens?: number;
+  /** What the upstream itself said the call cost, where it says so. See billedCostUsd. */
+  reportedCostUsd?: number;
 }
 
 function finite(value: number | undefined): number {
@@ -49,10 +56,21 @@ export function normalizeUsage(
     finite(typeof rawWrite === 'number' ? rawWrite : undefined) ||
     finite(typeof raw?.cache_creation_input_tokens === 'number' ? raw.cache_creation_input_tokens : undefined);
 
+  // The SDK recomputes its total from the visible counts; the provider's own
+  // total (kie.ai's includes hidden reasoning) is the one that bounds a cost.
+  const rawTotal = raw?.total_tokens;
+  const total = Math.max(finite(usage.totalTokens), finite(typeof rawTotal === 'number' ? rawTotal : undefined));
   return {
     inputTokens: Math.max(0, totalInput - cachedTokens),
     outputTokens: finite(usage.outputTokens),
     cachedTokens,
     ...(writes > 0 ? { cacheWriteTokens: writes } : {}),
+    // Only worth carrying when the upstream counted tokens its breakdown hides.
+    ...(total > totalInput + finite(usage.outputTokens) ? { totalTokens: total } : {}),
   };
+}
+
+/** Adds the upstream's own cost report, when the provider instance captured one. */
+export function withReportedCost(usage: NormalizedUsage, reportedCostUsd: number | undefined): NormalizedUsage {
+  return reportedCostUsd === undefined ? usage : { ...usage, reportedCostUsd };
 }

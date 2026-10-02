@@ -1,3 +1,4 @@
+import type { ServerToolRun, TurnSegment, WebSearchOutput } from '@/lib/chat/server-tools';
 import type { OpenAiToolCall } from '@/lib/chat/tools';
 import { openAiFinishReason } from '@/lib/chat/tools';
 import type { OpenAiErrorBody } from '@/lib/api/openai-errors';
@@ -31,21 +32,62 @@ export function anthropicStopReason(finishReason: string | null): string | null 
  * Anthropic reports only uncached input in `input_tokens` and breaks cache
  * reads out separately, where chat completions folds them together.
  */
-function usageBody(usage: NormalizedUsage): Record<string, number> {
+function usageBody(usage: NormalizedUsage, webSearches = 0): Record<string, unknown> {
   return {
     input_tokens: usage.inputTokens,
     output_tokens: usage.outputTokens,
     cache_read_input_tokens: usage.cachedTokens,
     cache_creation_input_tokens: 0,
+    ...(webSearches > 0 ? { server_tool_use: { web_search_requests: webSearches } } : {}),
   };
+}
+
+/** Anthropic prefixes server tool ids `srvtoolu_`; the result block points back at the same id. */
+export function serverToolUseId(callId: string): string {
+  return callId.startsWith('srvtoolu_') ? callId : `srvtoolu_${callId}`;
+}
+
+/**
+ * A gateway search's output in Anthropic's `web_search_tool_result` shape.
+ * `encrypted_content` is opaque to clients, which only read titles and URLs,
+ * so it carries the page extract the model saw.
+ */
+export function webSearchResultContent(output: unknown): unknown {
+  const parsed = output as WebSearchOutput | undefined;
+  if (parsed === undefined || !('results' in parsed)) {
+    return { type: 'web_search_tool_result_error', error_code: 'unavailable' };
+  }
+  return parsed.results.map((result) => ({
+    type: 'web_search_result',
+    url: result.url,
+    title: result.title,
+    encrypted_content: result.content,
+    page_age: result.published ?? null,
+  }));
+}
+
+function serverToolBlocks(run: ServerToolRun): Array<Record<string, unknown>> {
+  const id = serverToolUseId(run.id);
+  return [
+    { type: 'server_tool_use', id, name: run.name, input: run.input ?? {} },
+    { type: 'web_search_tool_result', tool_use_id: id, content: webSearchResultContent(run.output) },
+  ];
 }
 
 function contentBlocks(
   content: string,
   toolCalls: readonly OpenAiToolCall[],
+  segments?: readonly TurnSegment[],
 ): Array<Record<string, unknown>> {
   const blocks: Array<Record<string, unknown>> = [];
-  if (content !== '') blocks.push({ type: 'text', text: content });
+  if (segments !== undefined) {
+    for (const segment of segments) {
+      if (segment.type === 'text') blocks.push({ type: 'text', text: segment.text });
+      else blocks.push(...serverToolBlocks(segment.run));
+    }
+  } else if (content !== '') {
+    blocks.push({ type: 'text', text: content });
+  }
 
   for (const call of toolCalls) {
     let input: unknown = {};
@@ -70,19 +112,26 @@ export interface MessageObjectParams {
   toolCalls: readonly OpenAiToolCall[];
   finishReason: string | null;
   usage: NormalizedUsage | null;
+  /**
+   * The turn in order with the gateway's searches shown as Anthropic server
+   * tool blocks. Passed only when the caller declared the `web_search` server
+   * tool; otherwise searches stay invisible and `content` is the whole text.
+   */
+  segments?: readonly TurnSegment[] | undefined;
 }
 
 export function messageObject(params: MessageObjectParams): Record<string, unknown> {
-  const { requestId, model, content, toolCalls, finishReason, usage } = params;
+  const { requestId, model, content, toolCalls, finishReason, usage, segments } = params;
+  const searches = segments?.filter((segment) => segment.type === 'server-tool').length ?? 0;
   return {
     id: `msg_${requestId}`,
     type: 'message',
     role: 'assistant',
     model,
-    content: contentBlocks(content, toolCalls),
+    content: contentBlocks(content, toolCalls, segments),
     stop_reason: anthropicStopReason(finishReason),
     stop_sequence: null,
-    usage: usage === null ? null : usageBody(usage),
+    usage: usage === null ? null : usageBody(usage, searches),
   };
 }
 
@@ -97,9 +146,13 @@ export interface MessageFrames {
   textDelta(text: string): string;
   toolCallStart(callId: string, name: string): string;
   toolCallArgumentsDelta(delta: string): string;
+  /** A search the gateway is running: a complete `server_tool_use` block. */
+  serverToolUse(callId: string, name: string, input: unknown): string;
+  /** That search's results: a complete `web_search_tool_result` block. */
+  webSearchResult(callId: string, output: unknown): string;
   /** Closes whichever block is open. Safe to call when none is. */
   closeBlock(): string;
-  delta(params: { finishReason: string; usage: NormalizedUsage }): string;
+  delta(params: { finishReason: string; usage: NormalizedUsage; webSearches?: number }): string;
   stop(): string;
   error(body: OpenAiErrorBody): string;
 }
@@ -171,20 +224,45 @@ export function createMessageFrames(params: {
       });
     },
 
+    serverToolUse(callId: string, name: string, input: unknown): string {
+      // Streamed the way Anthropic does: an empty input, then the query as a
+      // single partial-JSON delta, then the stop.
+      const prefix = open ? this.closeBlock() : '';
+      return (
+        prefix +
+        openBlock({ type: 'server_tool_use', id: serverToolUseId(callId), name, input: {} }) +
+        this.toolCallArgumentsDelta(JSON.stringify(input ?? {})) +
+        this.closeBlock()
+      );
+    },
+
+    webSearchResult(callId: string, output: unknown): string {
+      const prefix = open ? this.closeBlock() : '';
+      return (
+        prefix +
+        openBlock({
+          type: 'web_search_tool_result',
+          tool_use_id: serverToolUseId(callId),
+          content: webSearchResultContent(output),
+        }) +
+        this.closeBlock()
+      );
+    },
+
     closeBlock(): string {
       if (!open) return '';
       open = false;
       return sseFrame('content_block_stop', { type: 'content_block_stop', index });
     },
 
-    delta(deltaParams: { finishReason: string; usage: NormalizedUsage }): string {
+    delta(deltaParams: { finishReason: string; usage: NormalizedUsage; webSearches?: number }): string {
       return sseFrame('message_delta', {
         type: 'message_delta',
         delta: {
           stop_reason: anthropicStopReason(deltaParams.finishReason),
           stop_sequence: null,
         },
-        usage: usageBody(deltaParams.usage),
+        usage: usageBody(deltaParams.usage, deltaParams.webSearches),
       });
     },
 

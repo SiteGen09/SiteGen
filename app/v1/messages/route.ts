@@ -28,8 +28,11 @@ import {
   toChatMessages,
   toChatTools,
   toChatToolChoice,
+  nativeWebSearch,
   type MessagesRequest,
 } from '@/lib/messages/request';
+import { GENSITE_MAX_SEARCHES } from '@/lib/gensite/config';
+import { createGatewaySearchKit } from '@/lib/gensite/tools';
 import { createMessageFrames, messageObject } from '@/lib/messages/response';
 import { consumeRateLimit, getBalance } from '@/lib/generate/ledger';
 import type { Logger } from '@/lib/log';
@@ -100,11 +103,32 @@ interface PreparedMessage {
   preflight: Preflight;
   messages: ChatMessage[];
   tools: ChatTool[] | undefined;
+  /**
+   * The caller declared Anthropic's `web_search` server tool, so the gateway's
+   * searches are shown as `server_tool_use`/`web_search_tool_result` blocks.
+   * A gensite-v1 search the caller did not ask for stays invisible.
+   */
+  showSearches: boolean;
 }
+
+/** One search request may not buy more than this, whatever `max_uses` says. */
+const MAX_NATIVE_SEARCHES = 10;
 
 async function prepareMessage(ctx: MessageContext): Promise<PreparedMessage> {
   const messages = toChatMessages(ctx.body);
   const tools = toChatTools(ctx.body);
+  const native = nativeWebSearch(ctx.body);
+  // Claude Code's WebSearch sends exactly this: a request whose only tool is
+  // `web_search_20250305`. Anthropic runs it on its servers; here the gateway
+  // does, for whichever model serves the request.
+  const searchKit = native === null ? null : createGatewaySearchKit({
+    clientToolNames: (tools ?? []).map((entry) => entry.function.name),
+    name: native.name,
+    maxSearches: Math.min(native.maxUses ?? GENSITE_MAX_SEARCHES, MAX_NATIVE_SEARCHES),
+    allowedDomains: native.allowedDomains,
+    blockedDomains: native.blockedDomains,
+  });
+  if (native !== null && searchKit === null) ctx.log.warn('messages.web_search_unconfigured');
 
   const preflight = await prepareCall({
     requestId: ctx.requestId,
@@ -114,9 +138,10 @@ async function prepareMessage(ctx: MessageContext): Promise<PreparedMessage> {
     messages,
     tools,
     maxOutputTokens: ctx.body.max_tokens,
+    serverTools: searchKit,
   });
 
-  return { preflight, messages, tools };
+  return { preflight, messages, tools, showSearches: searchKit !== null };
 }
 
 /**
@@ -156,9 +181,9 @@ function toAnthropicRefusal(response: IdempotentResponse, requestId: string): Id
 async function runMessage(ctx: MessageContext): Promise<IdempotentResponse> {
   const { requestId, auth, body, log } = ctx;
 
-  const { preflight, messages, tools } = await prepareMessage(ctx);
+  const { preflight, messages, tools, showSearches } = await prepareMessage(ctx);
   if (!preflight.ok) return toAnthropicRefusal(preflight.response, requestId);
-  const { resolved, requestedMax, held } = preflight;
+  const { resolved, requestedMax, held, serverTools, gensite } = preflight;
 
   try {
     const generation = await generateChat({
@@ -171,6 +196,9 @@ async function runMessage(ctx: MessageContext): Promise<IdempotentResponse> {
       topP: body.top_p,
       tools,
       toolChoice: toChatToolChoice(body),
+      serverTools,
+      instructions: gensite?.instructions,
+      reminder: gensite?.reminder,
     });
 
     const settled = await settleCall({
@@ -184,6 +212,7 @@ async function runMessage(ctx: MessageContext): Promise<IdempotentResponse> {
       rates: generation.rates,
       usage: generation.usage,
       latencyMs: generation.latencyMs,
+      serverTools,
     });
 
     // Informational only. The call is already charged, so a failed read must
@@ -192,6 +221,8 @@ async function runMessage(ctx: MessageContext): Promise<IdempotentResponse> {
 
     log.info('messages.ok', {
       channel_id: generation.channelId,
+      ...(gensite ? { gensite_model: gensite.modelFor(generation.channelId) } : {}),
+      ...(serverTools ? { web_searches: serverTools.searchCount() } : {}),
       latency_ms: generation.latencyMs,
       credits_charged: settled.creditsCharged,
       balance_after: balanceAfter,
@@ -207,6 +238,7 @@ async function runMessage(ctx: MessageContext): Promise<IdempotentResponse> {
         toolCalls: generation.toolCalls,
         finishReason: generation.finishReason,
         usage: generation.usage,
+        segments: showSearches ? generation.segments : undefined,
       }),
     };
   } catch (err) {
@@ -235,12 +267,12 @@ interface StreamingToolCall {
 async function runMessageStream(ctx: MessageContext): Promise<Response> {
   const { requestId, auth, body, log } = ctx;
 
-  const { preflight, messages, tools } = await prepareMessage(ctx);
+  const { preflight, messages, tools, showSearches } = await prepareMessage(ctx);
   if (!preflight.ok) {
     const refusal = toAnthropicRefusal(preflight.response, requestId);
     return Response.json(refusal.body, { status: refusal.status });
   }
-  const { resolved, requestedMax, held } = preflight;
+  const { resolved, requestedMax, held, serverTools, gensite } = preflight;
 
   let handle: ChatStreamHandle;
   try {
@@ -254,6 +286,9 @@ async function runMessageStream(ctx: MessageContext): Promise<Response> {
       topP: body.top_p,
       tools,
       toolChoice: toChatToolChoice(body),
+      serverTools,
+      instructions: gensite?.instructions,
+      reminder: gensite?.reminder,
     });
   } catch (err) {
     // Nothing has been written yet, so this can still be a normal JSON error.
@@ -277,9 +312,12 @@ async function runMessageStream(ctx: MessageContext): Promise<Response> {
         rates: handle.channel.rates,
         usage: done.usage,
         latencyMs: done.latencyMs,
+        serverTools,
       });
       log.info('messages.stream_ok', {
         channel_id: handle.channel.id,
+        ...(gensite ? { gensite_model: gensite.modelFor(handle.channel.id) } : {}),
+        ...(serverTools ? { web_searches: serverTools.searchCount() } : {}),
         latency_ms: done.latencyMs,
         ...streamTimingFields(done),
         credits_charged: settled.creditsCharged,
@@ -341,6 +379,12 @@ async function runMessageStream(ctx: MessageContext): Promise<Response> {
               send(frames.toolCallStart(part.id, part.name));
               if (part.arguments !== '') send(frames.toolCallArgumentsDelta(part.arguments));
               break;
+            case 'server-tool-call':
+              if (showSearches) send(frames.serverToolUse(part.id, part.name, part.input));
+              break;
+            case 'server-tool-result':
+              if (showSearches) send(frames.webSearchResult(part.id, part.output));
+              break;
           }
         }
 
@@ -348,7 +392,11 @@ async function runMessageStream(ctx: MessageContext): Promise<Response> {
 
         // Anthropic requires every opened block to close before message_delta.
         send(frames.closeBlock());
-        send(frames.delta({ finishReason: done.finishReason, usage: done.usage }));
+        send(frames.delta({
+          finishReason: done.finishReason,
+          usage: done.usage,
+          webSearches: showSearches ? serverTools?.searchCount() : undefined,
+        }));
         send(frames.stop());
       } catch (err) {
         // The 200 is long gone, so the only way to report this is in-band, as

@@ -23,6 +23,8 @@ const jobSchema = z.object({
   status: z.enum(['queued', 'running', 'succeeded', 'failed']),
   created_at: z.string().optional(),
   url: z.string().optional(),
+  file_expires_at: z.string().optional(),
+  expired: z.boolean().optional(),
   error: z.object({ code: z.string(), message: z.string().nullable() }).optional(),
 });
 
@@ -30,6 +32,9 @@ type Job = z.infer<typeof jobSchema>;
 
 /** Slow enough not to hammer the route, fast enough to feel live. */
 const POLL_MS = 4000;
+
+/** Mirrors MEDIA_RETENTION_DAYS' default; only used in wording. */
+const RETENTION_DAYS = 7;
 
 /** Roughly ten minutes. Past this the sweep has almost certainly closed the job. */
 const MAX_POLLS = 150;
@@ -88,6 +93,16 @@ export function MediaBubble({ jobId, startedAt }: { jobId: string; startedAt: st
     );
   }
 
+  if (job.status === 'failed' && job.error?.code === 'content_policy_violation' && job.error.message?.startsWith('I can’t')) {
+    // Our own safety check removed the result; its message is written for people.
+    return (
+      <div role="alert" className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+        <p className="font-medium text-red-900">Removed by the safety check</p>
+        <p className="mt-1 leading-6">{job.error.message}</p>
+      </div>
+    );
+  }
+
   if (job.status === 'failed') {
     // Provider text is often an internal status line; the stored code is for support.
     const declined = isPolicyRejection(job.error);
@@ -105,10 +120,14 @@ export function MediaBubble({ jobId, startedAt }: { jobId: string; startedAt: st
   }
 
   if (job.url === undefined) {
-    return <p className="text-sm text-zinc-500">This render is no longer available.</p>;
+    return (
+      <p className="text-sm text-zinc-500">
+        {job.expired ? `This ${job.kind} was deleted automatically. Generated files are kept for ${RETENTION_DAYS} days.` : 'This render is no longer available.'}
+      </p>
+    );
   }
 
-  return job.kind === 'video' ? (
+  const media = job.kind === 'video' ? (
     <video
       controls
       preload="metadata"
@@ -117,5 +136,15 @@ export function MediaBubble({ jobId, startedAt }: { jobId: string; startedAt: st
     />
   ) : (
     <GeneratedImage jobId={jobId} url={job.url} />
+  );
+  return (
+    <div className="space-y-1.5">
+      {media}
+      {job.file_expires_at && (
+        <p className="text-[11px] text-zinc-500">
+          Kept until {new Date(job.file_expires_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}. Download it to keep a copy.
+        </p>
+      )}
+    </div>
   );
 }

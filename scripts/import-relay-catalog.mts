@@ -2,6 +2,7 @@
 import { config } from 'dotenv';
 import postgres from 'postgres';
 import { createHash } from 'node:crypto';
+import { billingPolicySchema, scaleTiers } from '../lib/ai/billing-policy';
 import { relayChannels, RELAY_BASE_URL } from '../lib/ai/relay-catalog';
 import { encryptSecret } from '../lib/crypto/aes';
 config({ path: '.env.local', quiet: true });
@@ -47,9 +48,18 @@ try {
     const priorityRows = await tx`SELECT COALESCE(MIN(priority),0)-1 AS priority FROM channels WHERE id NOT LIKE 'relay-%'`;
     const priority = priorityRows[0]!.priority;
     for (const c of channels) {
-      const { family: _family, modality: _modality, ...row } = c;
-      const existing = await tx`SELECT base_url, source_id FROM channels WHERE id = ${row.id}`;
-      if (existing.length && (existing[0]!.base_url !== RELAY_BASE_URL || existing[0]!.source_id !== row.source_id)) throw new Error(`Channel collision: ${row.id}`);
+      const { family: _family, modality: _modality, ...imported } = c;
+      const existing = await tx`SELECT base_url, source_id, billing_policy FROM channels WHERE id = ${imported.id}`;
+      if (existing.length && (existing[0]!.base_url !== RELAY_BASE_URL || existing[0]!.source_id !== imported.source_id)) throw new Error(`Channel collision: ${imported.id}`);
+      // Keep the Relay source the last sync priced this row at (lib/ai/relay-sources.ts);
+      // resetting to the catalog default would undercharge until the next sync.
+      const synced = billingPolicySchema.safeParse(existing[0]?.billing_policy).data?.sourcePricing;
+      const row = synced?.tier && imported.billing_policy.sourcePricing ? (() => {
+        const sourcePricing = { ...imported.billing_policy.sourcePricing!, scale: synced.scale, tier: synced.tier, label: synced.label };
+        const tiers = scaleTiers(sourcePricing.baseTiers, sourcePricing.scale);
+        return { ...imported, billing_policy: { ...imported.billing_policy, tiers, sourcePricing },
+          input_per_mtok: tiers[0]!.rates.inputPerMTok, output_per_mtok: tiers[0]!.rates.outputPerMTok, cached_per_mtok: tiers[0]!.rates.cachedPerMTok };
+      })() : imported;
       await tx`INSERT INTO channels ${tx({ ...row, billing_policy: tx.json(row.billing_policy), priority })}
         ON CONFLICT (id) DO UPDATE SET
           input_per_mtok = EXCLUDED.input_per_mtok, output_per_mtok = EXCLUDED.output_per_mtok,

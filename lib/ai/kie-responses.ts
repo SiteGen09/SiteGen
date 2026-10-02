@@ -4,6 +4,8 @@
  * one JSON response, while its streaming operation expects SSE. Keep the
  * protocol translation at the transport boundary so both operations work.
  */
+import { kieCreditsIn, type CostMeter } from '@/lib/ai/upstream-cost';
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -82,8 +84,23 @@ function responseError(message: string, status: number, headers: Headers): Respo
   return Response.json({ error: { message, type: 'upstream_error' } }, { status, headers: clean });
 }
 
+/** kie.ai's reported cost in one SSE frame, if it carries one. */
+function creditsInFrame(frame: string): number | undefined {
+  const data = frame
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).replace(/^ /, ''))
+    .join('\n');
+  if (!data.includes('credits_consumed')) return undefined;
+  try {
+    return kieCreditsIn(JSON.parse(data));
+  } catch {
+    return undefined;
+  }
+}
+
 /** Turn a Responses SSE stream into the terminal JSON object expected by doGenerate. */
-export async function kieResponsesJson(response: Response): Promise<Response> {
+export async function kieResponsesJson(response: Response, meter?: CostMeter): Promise<Response> {
   const events = parseEvents(await response.text());
   let failure: string | undefined;
   for (const event of events) {
@@ -96,6 +113,8 @@ export async function kieResponsesJson(response: Response): Promise<Response> {
     if (value === undefined) continue;
     const type = typeof value.type === 'string' ? value.type : event.event;
     if (type === 'response.completed') {
+      const credits = kieCreditsIn(value);
+      if (credits !== undefined) meter?.addCredits(credits);
       const result = asRecord(value.response);
       if (result !== undefined) {
         const headers = new Headers(response.headers);
@@ -120,57 +139,69 @@ export async function kieResponsesJson(response: Response): Promise<Response> {
   return responseError(failure ?? 'kie.ai Responses stream ended without a completed response', 502, response.headers);
 }
 
-/** Normalize Kie's valid-but-unusual `event:x` / `data:y` spacing for SSE parsers. */
-export const kieResponsesFetch: typeof fetch = async (input, init) => {
-  let requestBody: Record<string, unknown> | undefined;
-  try {
-    const body = typeof init?.body === 'string'
-      ? init.body
-      : input instanceof Request
-        ? await input.clone().text()
-        : undefined;
-    requestBody = body === undefined ? undefined : asRecord(JSON.parse(body));
-  } catch {
-    // The upstream request still owns validation of malformed or streaming
-    // bodies; only a readable JSON body is needed to detect SDK stream mode.
-  }
+/**
+ * Normalize Kie's valid-but-unusual `event:x` / `data:y` spacing for SSE
+ * parsers. With a `meter`, the `credits_consumed` on the completed event is
+ * recorded there for settlement (see lib/ai/upstream-cost.ts).
+ */
+export function createKieResponsesFetch(meter?: CostMeter): typeof fetch {
+  return async (input, init) => {
+    let requestBody: Record<string, unknown> | undefined;
+    try {
+      const body = typeof init?.body === 'string'
+        ? init.body
+        : input instanceof Request
+          ? await input.clone().text()
+          : undefined;
+      requestBody = body === undefined ? undefined : asRecord(JSON.parse(body));
+    } catch {
+      // The upstream request still owns validation of malformed or streaming
+      // bodies; only a readable JSON body is needed to detect SDK stream mode.
+    }
 
-  const response = await fetch(input, init);
-  const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
-  if (
-    url.hostname !== 'api.kie.ai' ||
-    !url.pathname.endsWith('/responses') ||
-    !response.headers.get('content-type')?.toLowerCase().startsWith('text/event-stream') ||
-    response.body === null
-  ) {
-    return response;
-  }
+    const response = await fetch(input, init);
+    const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+    if (
+      url.hostname !== 'api.kie.ai' ||
+      !url.pathname.endsWith('/responses') ||
+      !response.headers.get('content-type')?.toLowerCase().startsWith('text/event-stream') ||
+      response.body === null
+    ) {
+      return response;
+    }
 
-  // A non-stream request must be buffered and converted to the terminal
-  // Responses object. Streaming stays live and is only normalized line-wise.
-  if (requestBody?.stream !== true) return kieResponsesJson(response);
+    // A non-stream request must be buffered and converted to the terminal
+    // Responses object. Streaming stays live and is only normalized line-wise.
+    if (requestBody?.stream !== true) return kieResponsesJson(response, meter);
 
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-  let pending = '';
-  const body = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-    transform(bytes, controller) {
-      pending += decoder.decode(bytes, { stream: true });
-      let boundary: RegExpExecArray | null;
-      while ((boundary = /\r?\n\r?\n/.exec(pending)) !== null) {
-        const frame = pending.slice(0, boundary.index);
-        pending = pending.slice(boundary.index + boundary[0].length);
-        const normalized = normalizeSseFrame(frame);
-        controller.enqueue(encoder.encode(normalized + boundary[0]));
-      }
-    },
-    flush(controller) {
-      pending += decoder.decode();
-      if (pending) controller.enqueue(encoder.encode(pending));
-    },
-  }));
-  const headers = new Headers(response.headers);
-  headers.delete('content-length');
-  headers.delete('content-encoding');
-  return new Response(body, { status: response.status, statusText: response.statusText, headers });
-};
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+    let pending = '';
+    let credits: number | undefined;
+    const body = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      transform(bytes, controller) {
+        pending += decoder.decode(bytes, { stream: true });
+        let boundary: RegExpExecArray | null;
+        while ((boundary = /\r?\n\r?\n/.exec(pending)) !== null) {
+          const frame = pending.slice(0, boundary.index);
+          pending = pending.slice(boundary.index + boundary[0].length);
+          credits = creditsInFrame(frame) ?? credits;
+          const normalized = normalizeSseFrame(frame);
+          controller.enqueue(encoder.encode(normalized + boundary[0]));
+        }
+      },
+      flush(controller) {
+        pending += decoder.decode();
+        if (pending) controller.enqueue(encoder.encode(pending));
+        // Once per response, before the SDK sees the stream end and resolves usage.
+        if (credits !== undefined) meter?.addCredits(credits);
+      },
+    }));
+    const headers = new Headers(response.headers);
+    headers.delete('content-length');
+    headers.delete('content-encoding');
+    return new Response(body, { status: response.status, statusText: response.statusText, headers });
+  };
+}
+
+export const kieResponsesFetch: typeof fetch = createKieResponsesFetch();

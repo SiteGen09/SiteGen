@@ -1,6 +1,7 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 
 import { sweepOpenJobs } from '@/lib/media/jobs';
+import { expireOldMedia } from '@/lib/media/retention';
 import { logger } from '@/lib/log';
 
 /**
@@ -48,7 +49,12 @@ export async function GET(request: Request): Promise<Response> {
   try {
     const result = await sweepOpenJobs(SWEEP_LIMIT, log);
     log.info('media_sweep.done', result);
-    return Response.json({ ok: true, ...result });
+    // Retention rides on the same schedule; it throttles itself to every ten minutes.
+    const retention = await expireOldMedia(log).catch((err: unknown) => {
+      log.error('media_retention.failed', { reason: err instanceof Error ? err.message : 'unknown error' });
+      return null;
+    });
+    return Response.json({ ok: true, ...result, retention });
   } catch (err) {
     log.error('media_sweep.failed', {
       reason: err instanceof Error ? err.message : 'unknown error',

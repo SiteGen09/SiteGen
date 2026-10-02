@@ -10,8 +10,9 @@ The public Prices page includes a Source filter and expandable pricing details.
 
 - Import the live catalog from https://relay.fast/api/pricing and verify its
   model names against the supplied key's https://relay.fast/v1/models response.
-- Store actual Relay rates after its group ratio and model billing multiplier.
-  Apply the existing platform markup of 1.5 once, through the source.
+- Store actual Relay rates after its group ratio and model billing multiplier,
+  rescaled to the account's selected source (see Source pricing). Apply the
+  platform markup once, through the source.
 - One platform credit is $0.0001. Completed requests round up to whole credits.
 - Token billing includes uncached input, output, cache reads, and cache writes
   where reported by the upstream. Models without the new policy keep their
@@ -24,6 +25,38 @@ The public Prices page includes a Source filter and expandable pricing details.
   dimensions above 1792 px. Other current image models use a flat request price.
 - Cached tokens and time tiers use exact catalog values rather than rounded UI
   labels. Billing expressions are parsed as a restricted grammar, never evaluated.
+
+## Source pricing
+
+Relay bills each family at the source selected in the Relay account's Routing
+page (GPT Team/Plus, Plus/Pro, Pro/Enterprise; Claude Kiro, Max, ...), times
+the model's billing multiplier. The public catalog only publishes the default
+source, which is not even the cheapest one for every family (Grok's default is
+Grok Heavy). Switching source in the Relay dashboard therefore changes our cost
+without any catalog change.
+
+- The importer stores each chat model's catalog rates as `sourcePricing.baseTiers`
+  with the ratio they were built at (`factor`). `tiers` are the base times `scale`.
+- `lib/ai/relay-sources.ts` runs every minute inside the server (started from
+  `instrumentation.ts`). It reads the selection from `GET /api/routing/profile`
+  and what Relay actually billed from `GET /api/log/self`, and rewrites the rates
+  of every Relay chat channel whose price moved. Price history records each change.
+- The price is the higher of the listed source price and the ratio Relay last
+  billed that model on the same source. Relay's listing and its billing have
+  disagreed (a price change listed as effective days before billing followed),
+  so this never charges less than Relay bills.
+- Claude Max applies only to the request paths its profile lists; other paths
+  stay on Kiro, as Relay does.
+- The last sync is recorded on `routing_providers` (`relay.fast`):
+  `upstream_synced_at`, `upstream_state`, `upstream_error`. If it is older than
+  ten minutes, routing withholds every source-priced Relay chat channel and Auto
+  falls back to other providers. A newly imported model is withheld until its
+  first sync.
+- Needs `RELAY_ACCESS_TOKEN` (a Relay system access token, not the `sk-` key)
+  and `RELAY_USER_ID` (the Relay account id, sent as `New-Api-User`).
+- Preview: `pnpm exec tsx scripts/sync-relay-sources.mts`; apply once:
+  `--apply`. Check billing against Relay: `pnpm exec tsx scripts/reconcile-relay-costs.mts`.
+- Image models are in Relay's fixed-price image family and are not rescaled.
 
 ## Installation and refreshing
 
@@ -39,8 +72,8 @@ existing AES-GCM mechanism. Repeated imports update Relay prices and metadata,
 preserving administrator status/default/markup choices. Import is transactional
 and checks that non-Relay configuration is unchanged. Unknown vendors, billing
 expressions, and inaccessible models fail the import instead of guessing rates.
-Prices are a versioned snapshot; rerun the importer to refresh them. No recurring
-job is installed. Removed models are not silently deleted or disabled.
+Prices are a versioned snapshot; rerun the importer to refresh them. A re-import
+keeps each row's current source scale. Only the source sync runs on a schedule. Removed models are not silently deleted or disabled.
 
 ## Images
 

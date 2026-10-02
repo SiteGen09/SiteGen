@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ChannelRow } from '@/lib/ai/fallback';
 import { buildAI } from '@/lib/ai/provider';
-import { costUsd, creditsForUsage } from '@/lib/ai/pricing';
+import { billedCostUsd, creditsForUsage } from '@/lib/ai/pricing';
 import { streamChat, type ChatStreamHandle, type ChatStreamPart } from '@/lib/chat/stream';
 
 const channel: ChannelRow = {
@@ -162,8 +162,10 @@ describe('chat streaming through the real provider SDK', () => {
     expect(await collect(handle)).toEqual([{ type: 'text', text: 'OK' }]);
     const completed = await handle.completion;
     expect(completed.finishReason).toBe('stop');
-    expect(completed.usage).toEqual({ inputTokens: 84, outputTokens: 1, cachedTokens: 0 });
-    expect(creditsForUsage(costUsd(channel.rates, completed.usage), 1)).toBe(1);
+    expect(completed.usage).toMatchObject({ inputTokens: 84, outputTokens: 1, cachedTokens: 0 });
+    // kie.ai's own figure (0.01 credits) is what settlement charges.
+    expect(completed.usage.reportedCostUsd).toBe(0.00005);
+    expect(creditsForUsage(billedCostUsd(channel.rates, completed.usage).costUsd, 1)).toBe(1);
     expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toMatchObject({
       stream: true,
       stream_options: { include_usage: true },

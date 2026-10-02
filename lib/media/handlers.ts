@@ -18,6 +18,7 @@ import { mediaRequestSchema } from '@/lib/media/request';
 import { enforceKeyModel, enforceKeyQuota } from '@/lib/keys/key-policy';
 import { logger } from '@/lib/log';
 import { mediaAvailability } from './availability';
+import { expiresAt } from './retention';
 
 /**
  * Shared handlers behind `/v1/images` and `/v1/videos`.
@@ -44,6 +45,9 @@ async function jobBody(job: MediaJob, requestId: string): Promise<Record<string,
     created_at: job.createdAt,
     completed_at: job.completedAt,
     credits_charged: job.creditsCharged,
+    // Files are deleted after the retention period; download anything worth keeping.
+    file_expires_at: expiresAt(job.createdAt),
+    ...(job.expiredAt === null ? {} : { expired: true }),
     ...(url === null ? {} : { url, url_expires_in: SIGNED_URL_TTL_SECONDS }),
     ...(job.errorCode === null
       ? {}

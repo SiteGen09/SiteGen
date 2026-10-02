@@ -167,3 +167,47 @@ describe('createMessageFrames', () => {
     expect(frame?.data['error']).toEqual({ type: 'api_error', message: 'boom' });
   });
 });
+
+describe('gateway web searches', () => {
+  const run = { id: 'call_9', name: 'web_search', input: { query: 'q' }, output: { results: [{ title: 'T', url: 'https://t.test', content: 'body' }] } };
+
+  it('shows them in order as server_tool_use and web_search_tool_result blocks', () => {
+    const message = messageObject({
+      requestId: 'r', model: 'gensite-v1', content: 'ignored', toolCalls: [], finishReason: 'stop', usage,
+      segments: [{ type: 'text', text: 'Checking.' }, { type: 'server-tool', run }, { type: 'text', text: 'Done.' }],
+    });
+    expect(message.content).toEqual([
+      { type: 'text', text: 'Checking.' },
+      { type: 'server_tool_use', id: 'srvtoolu_call_9', name: 'web_search', input: { query: 'q' } },
+      {
+        type: 'web_search_tool_result',
+        tool_use_id: 'srvtoolu_call_9',
+        content: [{ type: 'web_search_result', url: 'https://t.test', title: 'T', encrypted_content: 'body', page_age: null }],
+      },
+      { type: 'text', text: 'Done.' },
+    ]);
+    expect(message.usage).toMatchObject({ server_tool_use: { web_search_requests: 1 } });
+  });
+
+  it('reports a failed search as a result error', () => {
+    const message = messageObject({
+      requestId: 'r', model: 'm', content: '', toolCalls: [], finishReason: 'stop', usage,
+      segments: [{ type: 'server-tool', run: { ...run, output: { error: 'down' } } }, { type: 'text', text: 'Sorry.' }],
+    });
+    expect((message.content as Array<Record<string, unknown>>)[1]!.content)
+      .toEqual({ type: 'web_search_tool_result_error', error_code: 'unavailable' });
+  });
+
+  it('streams them as complete, contiguously indexed blocks', () => {
+    const stream = createMessageFrames({ requestId: 'r', model: 'm' });
+    const raw = stream.start() + stream.textDelta('Checking.') + stream.serverToolUse('call_9', 'web_search', { query: 'q' }) +
+      stream.webSearchResult('call_9', run.output) + stream.textDelta('Done.') + stream.closeBlock();
+    const parsed = frames(raw).filter((frame) => frame.event === 'content_block_start');
+    expect(parsed.map((frame) => [frame.data.index, (frame.data.content_block as { type: string }).type])).toEqual([
+      [0, 'text'], [1, 'server_tool_use'], [2, 'web_search_tool_result'], [3, 'text'],
+    ]);
+    const starts = frames(raw).filter((frame) => frame.event === 'content_block_start').length;
+    const stops = frames(raw).filter((frame) => frame.event === 'content_block_stop').length;
+    expect(stops).toBe(starts);
+  });
+});

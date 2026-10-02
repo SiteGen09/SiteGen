@@ -119,3 +119,30 @@ describe('toChatParts', () => {
     expect(result).toEqual([{ type: 'text', text: 'only this' }]);
   });
 });
+
+describe('toChatParts with gateway tools', () => {
+  it('surfaces gateway runs as server parts, keeps the caller\'s calls, and paragraphs the text after a run', async () => {
+    const result = await collect(
+      toChatParts(
+        parts([
+          textDelta('Let me look.'),
+          { type: 'tool-input-start', id: 's1', toolName: 'web_search' },
+          { type: 'tool-input-delta', id: 's1', delta: '{"query":"x"}' },
+          toolCall('s1', 'web_search', { query: 'x' }),
+          { type: 'tool-result', toolCallId: 's1', toolName: 'web_search', input: { query: 'x' }, output: { results: [] } } as TextStreamPart<ToolSet>,
+          textDelta('Found it.'),
+          toolCall('c1', 'bash', { cmd: 'ls' }),
+        ]),
+        new Set(['web_search']),
+      ),
+    );
+
+    expect(result).toEqual([
+      { type: 'text', text: 'Let me look.' },
+      { type: 'server-tool-call', id: 's1', name: 'web_search', input: { query: 'x' } },
+      { type: 'server-tool-result', id: 's1', name: 'web_search', output: { results: [] } },
+      { type: 'text', text: '\n\nFound it.' },
+      { type: 'tool-call', index: 0, id: 'c1', name: 'bash', arguments: '{"cmd":"ls"}' },
+    ]);
+  });
+});

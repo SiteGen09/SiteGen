@@ -6,14 +6,15 @@ import type { TokenRates } from '@/lib/ai/pricing';
 
 import type { ChannelRow } from '@/lib/ai/fallback';
 import { callWithFallback } from '@/lib/ai/fallback';
-import type { ProviderCreds } from '@/lib/ai/provider';
+import { recordAttemptFailure } from '@/lib/ai/attempt-failures';
+import type { AI, ProviderCreds } from '@/lib/ai/provider';
 import { buildAI } from '@/lib/ai/provider';
 import { ApiError } from '@/lib/api/errors';
 import { SPEC_SYSTEM_PROMPT, withValidationFeedback } from '@/lib/generate/prompt';
 import type { NormalizedUsage } from '@/lib/generate/usage';
-import { normalizeUsage } from '@/lib/generate/usage';
+import { normalizeUsage, withReportedCost } from '@/lib/generate/usage';
+import { siteSpecGenerationSchema } from '@/lib/spec/json-schema';
 import type { SiteSpec } from '@/lib/spec/schema';
-import { siteSpecSchema } from '@/lib/spec/schema';
 
 /** Total tries: the first attempt plus one validation-feedback retry. */
 const MAX_ROUNDS = 2;
@@ -67,20 +68,22 @@ export async function generateSpec(params: GenerateSpecParams): Promise<SpecGene
 
   for (let round = 0; round < MAX_ROUNDS; round += 1) {
     let servingChannel: ChannelRow = params.start;
+    let servingAi: AI | undefined;
     try {
       const result = await callWithFallback(params.start, params.resolve, async (channel) => {
         servingChannel = channel;
         const creds = await params.buildCreds(channel);
         const ai = buildAI(creds);
+        servingAi = ai;
         return await generateObject({
           model: ai.languageModel(channel.modelId),
           maxRetries: 0,
-          schema: siteSpecSchema,
+          schema: siteSpecGenerationSchema,
           system: SPEC_SYSTEM_PROMPT,
           prompt,
           maxOutputTokens: params.maxOutputTokens,
         });
-      });
+      }, recordAttemptFailure);
 
       return {
         spec: result.value.object,
@@ -88,7 +91,10 @@ export async function generateSpec(params: GenerateSpecParams): Promise<SpecGene
         multiplier: Number(servingChannel.creditMultiplier),
         modelId: servingChannel.modelId,
         rates: servingChannel.rates,
-        usage: normalizeUsage(result.value.usage, result.value.providerMetadata),
+        usage: withReportedCost(
+          normalizeUsage(result.value.usage, result.value.providerMetadata),
+          servingAi?.reportedCostUsd?.(),
+        ),
         latencyMs: Date.now() - startedAt,
       };
     } catch (err) {

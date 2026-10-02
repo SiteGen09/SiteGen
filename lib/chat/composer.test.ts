@@ -5,6 +5,9 @@ describe('composer intent and models', () => {
   it('uses the explicit default and cheap replacements when it is unavailable', () => {
     const models = ['expensive-pro', 'gemini-3-8-flash-openai', 'gemini-3-6-flash-openai', 'gemini-3-5-flash-openai'];
     expect(chooseModel(models, 'chat')).toBe('gemini-3-5-flash-openai');
+    expect(chooseModel(['gensite-v1', ...models], 'chat')).toBe('gensite-v1');
+    expect(chooseModel(['gensite-v1', ...models], 'chat', true)).toBe('gensite-v1');
+    expect(chooseModel(['gensite-v1', 'qwen/text-to-image'], 'image')).toBe('gensite-v1');
     expect(chooseModel(models.slice(0, 3), 'chat')).toBe('gemini-3-6-flash-openai');
     expect(chooseModel(models, 'chat', true)).toBe('gemini-3-5-flash-openai');
   });

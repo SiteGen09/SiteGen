@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { apiError } from '@/lib/api/errors';
 import { loadJob, refreshMediaJob, signedUrlFor, SIGNED_URL_TTL_SECONDS } from '@/lib/media/jobs';
 import { logger } from '@/lib/log';
+import { expiresAt } from '@/lib/media/retention';
 import { createClient } from '@/lib/supabase/server';
 
 /**
@@ -59,6 +60,8 @@ export async function GET(
       created_at: job.createdAt,
       model: job.publicModelId,
       credits_charged: job.creditsCharged,
+      file_expires_at: expiresAt(job.createdAt),
+      ...(job.expiredAt === null ? {} : { expired: true }),
       ...(url === null ? {} : { url, url_expires_in: SIGNED_URL_TTL_SECONDS }),
       ...(job.errorCode === null
         ? {}

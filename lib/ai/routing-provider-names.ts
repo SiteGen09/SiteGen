@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import { createServiceClient } from '@/lib/supabase/service';
 
+import { RELAY_PRICING_MAX_AGE_MS } from './relay-sources';
 import type { RoutingProviderNames } from './routing-provider';
 
 const nameRowSchema = z.object({ id: z.string(), label: z.string() });
@@ -22,6 +23,24 @@ export const loadRoutingProviderNames = cache(async (): Promise<RoutingProviderN
   if (error && ['42P01', 'PGRST205'].includes(error.code)) return new Map();
   if (error) throw new Error(`failed to load routing provider names: ${error.message}`);
   return new Map(z.array(nameRowSchema).parse(data).map((row) => [row.id, row.label]));
+});
+
+/**
+ * Whether the Relay source sync (lib/ai/relay-sources.ts) ran recently enough
+ * for its prices to be charged. Before the migration that adds the column there
+ * has never been a sync, and nothing carries source pricing to withhold.
+ */
+export const loadRelayPricingFresh = cache(async (): Promise<boolean> => {
+  const { data, error } = await createServiceClient()
+    .from('routing_providers')
+    .select('upstream_synced_at')
+    .eq('id', 'relay.fast')
+    .maybeSingle();
+  if (error && ['42P01', '42703', 'PGRST205', 'PGRST204'].includes(error.code)) return false;
+  if (error) throw new Error(`failed to load the relay pricing sync: ${error.message}`);
+  const syncedAt = z.object({ upstream_synced_at: z.string().nullable() }).nullable().parse(data)?.upstream_synced_at;
+  const age = syncedAt ? Date.now() - Date.parse(syncedAt) : Number.POSITIVE_INFINITY;
+  return age <= RELAY_PRICING_MAX_AGE_MS;
 });
 
 /**

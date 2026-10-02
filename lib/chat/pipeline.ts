@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { loadRoutingPreferences } from '@/lib/ai/sources';
 import { selectChatRoute } from '@/lib/ai/channels';
 import type { ChannelRow } from '@/lib/ai/fallback';
-import { costUsd, creditsForUsage, type TokenRates } from '@/lib/ai/pricing';
+import { billedCostUsd, creditsForUsage, type TokenRates } from '@/lib/ai/pricing';
 import type { ProviderCreds } from '@/lib/ai/provider';
 import { ApiError, type ErrorCode } from '@/lib/api/errors';
 import { openAiErrorBody } from '@/lib/api/openai-errors';
@@ -19,6 +19,13 @@ import {
 import { resolvePlatformCreds } from '@/lib/admin/credentials';
 import { isPlanKey, type PlanKey } from '@/lib/billing/plans';
 import type { ChatMessage, ChatTool } from '@/lib/chat/request';
+import type { ReasoningEffort } from '@/lib/chat/reasoning';
+import type { ServerToolKit } from '@/lib/chat/server-tools';
+import { GENSITE_MAX_SEARCHES, isGensiteModel, type GensiteTier } from '@/lib/gensite/config';
+import { routeGensite } from '@/lib/gensite/decide';
+import { createGatewaySearchKit } from '@/lib/gensite/tools';
+import { gensiteInstructions } from '@/lib/gensite/identity';
+import { detectLoop, loopReminder, toolHistory } from '@/lib/gensite/loops';
 import { totalMessageChars, totalToolChars } from '@/lib/chat/request';
 import { moderationText } from '@/lib/chat/tools';
 import { getUserCredential } from '@/lib/generate/credentials';
@@ -260,6 +267,38 @@ export interface PreflightInput {
   messages: ChatMessage[];
   tools?: readonly ChatTool[] | undefined;
   maxOutputTokens?: number | undefined;
+  /** The client's reasoning effort; gensite-v1 routes on it. */
+  reasoning?: ReasoningEffort | undefined;
+  /**
+   * Gateway tools the caller asked for explicitly (Anthropic's `web_search`
+   * server tool). gensite-v1 builds its own when none is given.
+   */
+  serverTools?: ServerToolKit | null | undefined;
+}
+
+/**
+ * Platform credentials for a gensite-v1 channel. A channel whose credential is
+ * missing is reported as unauthorized rather than as a plain error, so the
+ * fallback walk skips to the next model instead of failing the request: the
+ * caller asked for gensite-v1, not for that provider.
+ */
+export async function gensiteCreds(channel: ChannelRow): Promise<ProviderCreds> {
+  try {
+    return await resolvePlatformCreds(channel.provider, channel.baseUrl);
+  } catch (err) {
+    throw Object.assign(new Error(`no usable platform credential for channel ${channel.id}`), { status: 401, cause: err });
+  }
+}
+
+/** How a gensite-v1 request was routed. */
+export interface GensiteRouting {
+  tier: GensiteTier;
+  /** The public model a serving channel stands for. */
+  modelFor: (channelId: string) => string | undefined;
+  /** Its identity instruction, sent ahead of the caller's messages. */
+  instructions: string;
+  /** Set when the caller's agent looks stuck in a loop; sent after its messages. */
+  reminder?: string;
 }
 
 export type Preflight =
@@ -276,6 +315,9 @@ export type Preflight =
       resolved: ResolvedChannel;
       requestedMax: number;
       held: boolean;
+      /** Gateway tools to run inside the turn; their cost is settled with the call. */
+      serverTools?: ServerToolKit;
+      gensite?: GensiteRouting;
     };
 
 /** The stored gateway response, plus the structured error dashboard routes reword. */
@@ -353,8 +395,42 @@ async function preflight(input: PreflightInput): Promise<Preflight> {
     ), requestId);
   }
 
-  // Resolve the channel by public model name.
-  const resolved = await resolveChannelAndCreds(model, auth.ownerId, plan.key, auth.policy, preferences);
+  // Resolve the channel by public model name; gensite-v1 by what the request needs.
+  let resolved: ResolvedChannel | null;
+  let gensite: GensiteRouting | undefined;
+  let serverTools = input.serverTools ?? undefined;
+  if (isGensiteModel(model)) {
+    const { route, tier, classification } = await routeGensite({
+      messages, tools, reasoning: input.reasoning, planKey: plan.key,
+      preferences: applyKeyRouting(preferences, auth.policy),
+    });
+    // gensite-v1 is a platform product: it always runs on platform channels,
+    // never on a caller's own provider key, so its tools are always billable.
+    resolved = route === null ? null : {
+      start: route.start,
+      holdChannels: route.holdChannels,
+      resolve: route.resolve,
+      buildCreds: gensiteCreds,
+    };
+    if (route !== null) {
+      const loop = detectLoop(toolHistory(messages));
+      gensite = {
+        tier: route.tier, modelFor: route.modelFor, instructions: gensiteInstructions(),
+        ...(loop ? { reminder: loopReminder(loop) } : {}),
+      };
+      if (loop) log.warn('gensite.loop_detected', { kind: loop.kind, tool: loop.tool, count: loop.count });
+      log.info('gensite.routed', {
+        tier, served_tier: route.tier, model: route.modelFor(route.start.id),
+        ...(classification ? { classified: classification.difficulty ?? 'none', classify_ms: classification.latencyMs, ...(classification.failure ? { classify_failure: classification.failure } : {}) } : {}),
+      });
+      serverTools ??= createGatewaySearchKit({
+        clientToolNames: (tools ?? []).map((entry) => entry.function.name),
+        maxSearches: GENSITE_MAX_SEARCHES,
+      }) ?? undefined;
+    }
+  } else {
+    resolved = await resolveChannelAndCreds(model, auth.ownerId, plan.key, auth.policy, preferences);
+  }
   if (resolved === null) {
     return failure(
       new ApiError('model_not_found', `the model '${model}' does not exist`, 404),
@@ -365,11 +441,16 @@ async function preflight(input: PreflightInput): Promise<Preflight> {
   // Dynamic hold sized from the messages, the client's tool schemas and the
   // effective output ceiling. Tool definitions are prompt input the caller is
   // billed for, so the hold has to cover them too.
+  // Gateway tools are held for too, at their most expensive: every search used.
   const estimated = Math.max(...(resolved.holdChannels ?? [resolved.start]).map((channel) => estimateChatHoldCredits(
     channel,
     totalMessageChars(messages) + totalToolChars(tools),
     requestedMax,
-  )));
+  ) + (serverTools ? creditsForUsage(serverTools.reserveUsd, Number(channel.creditMultiplier)) : 0)));
+  // A call on the caller's own key is not billed, so it cannot pay for searches either.
+  if (serverTools && resolved.start.isByok) {
+    serverTools.disable('web search is not available when the request runs on your own provider key');
+  }
   let held = false;
   if (estimated > 0) {
     const hold = await holdCredits(auth.ownerId, requestId, estimated, resolved.start.id);
@@ -389,7 +470,11 @@ async function preflight(input: PreflightInput): Promise<Preflight> {
     held = true;
   }
 
-  return { ok: true, plan, resolved, requestedMax, held };
+  return {
+    ok: true, plan, resolved, requestedMax, held,
+    ...(serverTools ? { serverTools } : {}),
+    ...(gensite ? { gensite } : {}),
+  };
 }
 
 /** Settles the hold and writes the `ok` usage event. Returns what was charged. */
@@ -405,10 +490,20 @@ export interface SettleInput {
   rates: TokenRates;
   usage: NormalizedUsage;
   latencyMs: number;
+  /** Gateway tools the turn ran, billed on top of the tokens at the same markup. */
+  serverTools?: ServerToolKit | undefined;
 }
 
 export async function settleCall(input: SettleInput): Promise<{ creditsCharged: number; costUsd: number }> {
-  const cost = costUsd(input.rates, input.usage);
+  const billed = billedCostUsd(input.rates, input.usage);
+  const { source } = billed;
+  const toolCostUsd = input.serverTools?.costUsd() ?? 0;
+  const cost = billed.costUsd + toolCostUsd;
+  if (source === 'reported_implausible') {
+    input.log.warn('billing.reported_cost_refused', {
+      channel_id: input.channelId, reported_usd: input.usage.reportedCostUsd, estimate_usd: billed.costUsd,
+    });
+  }
   let creditsCharged = 0;
   if (input.held) {
     creditsCharged = creditsForUsage(cost, input.multiplier);
@@ -417,6 +512,10 @@ export async function settleCall(input: SettleInput): Promise<{ creditsCharged: 
       output_tokens: input.usage.outputTokens,
       cached_tokens: input.usage.cachedTokens,
       ...(input.usage.cacheWriteTokens ? { cache_write_tokens: input.usage.cacheWriteTokens } : {}),
+      // Which figure set the price: the upstream's own report, or the token estimate.
+      cost_source: source,
+      ...(input.usage.reportedCostUsd !== undefined ? { upstream_cost_usd: input.usage.reportedCostUsd } : {}),
+      ...(toolCostUsd > 0 ? { tool_cost_usd: roundCost(toolCostUsd), web_searches: input.serverTools!.searchCount() } : {}),
     });
   }
 

@@ -68,7 +68,7 @@ main() {
   program=$(mktemp "${TMPDIR:-/tmp}/sitegen-setup.XXXXXX")
   trap 'rm -f "$program"' EXIT INT TERM
   cat >"$program" <<'SITEGEN_PYTHON'
-import datetime, getpass, json, os, re, shlex, shutil, stat, subprocess, sys, tempfile
+import datetime, getpass, json, os, re, shlex, shutil, stat, subprocess, sys, tempfile, threading, time
 
 INSTALLER_VERSION = 2
 PROVIDER_ID = "sitegen"
@@ -107,7 +107,7 @@ DISABLED_FEATURES = ["multi_agent", "view_image"]
 # Claude Code settings the installer owns while installed.
 CLAUDE_ENV_KEYS = ["ANTHROPIC_BASE_URL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
                    "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "ANTHROPIC_AUTH_TOKEN",
-                   "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL"]
+                   "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL", "CLAUDE_CODE_AUTO_MODE_SERVER"]
 
 COLOR = sys.stdout.isatty()
 
@@ -121,6 +121,7 @@ def paint(code, text):
 
 
 def say(text=""):
+    stop_spinner()
     print(text, flush=True)
 
 
@@ -135,6 +136,58 @@ def ok(text):
 
 def warn(text):
     say(paint("33", "  !   " + text))
+
+
+# Braille frames need a UTF-8 terminal; anything else gets plain ASCII.
+SPINNER_FRAMES = ("\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
+                  if re.sub(r"[-_]", "", (sys.stdout.encoding or "").lower()) == "utf8" else "|/-\\")
+_spinner = []
+
+
+class working(object):
+    """Shows a spinner and the seconds elapsed while a slow step runs.
+
+    Anything printed meanwhile (a warning, say) ends the spinner first, so its
+    line never mixes with real output. Without a terminal it prints one line."""
+
+    def __init__(self, text):
+        self.text = text
+        self.done = threading.Event()
+        self.thread = threading.Thread(target=self.spin)
+        self.thread.daemon = True
+
+    def __enter__(self):
+        if not COLOR:
+            say("  ..  " + self.text)
+            return self
+        stop_spinner()
+        _spinner.append(self)
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        stop_spinner()
+
+    def spin(self):
+        started = time.time()
+        frame = 0
+        while True:
+            seconds = int(time.time() - started)
+            sys.stdout.write("\r\033[K  %s   %s%s" % (paint("36", SPINNER_FRAMES[frame % len(SPINNER_FRAMES)]), self.text,
+                                                       paint("2", " (%ds)" % seconds) if seconds >= 3 else ""))
+            sys.stdout.flush()
+            frame += 1
+            if self.done.wait(0.1):
+                break
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
+
+
+def stop_spinner():
+    while _spinner:
+        spinner = _spinner.pop()
+        spinner.done.set()
+        spinner.thread.join()
 
 
 def write_private(path, text, mode=0o600):
@@ -737,6 +790,12 @@ def install_claude(model, tiers, state, backup_dir):
             "hadEnv": "env" in settings,
             "fileExisted": os.path.exists(CLAUDE_SETTINGS),
         }
+    else:
+        # Keys added to CLAUDE_ENV_KEYS since the first install record their value now.
+        previous_env = previous.setdefault("env", {})
+        for name in CLAUDE_ENV_KEYS:
+            if name not in previous_env:
+                previous_env[name] = env.get(name)
 
     helper = "/bin/sh " + shlex.quote(HELPER_FILE)
     applied_env = {
@@ -745,6 +804,9 @@ def install_claude(model, tiers, state, backup_dir):
         "ANTHROPIC_DEFAULT_SONNET_MODEL": tiers["sonnet"],
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": tiers["haiku"],
         "ANTHROPIC_SMALL_FAST_MODEL": tiers["haiku"],
+        # sitegen cannot run auto mode's server-side classifier checks, so
+        # Claude Code makes its own and skips the "isn't eligible" notice.
+        "CLAUDE_CODE_AUTO_MODE_SERVER": "0",
     }
     env.update(applied_env)
     # A token or pinned model left in the settings would override the helper.
@@ -837,7 +899,8 @@ def install():
 
     step("1. Your sitegen API key")
     key = read_api_key()
-    status, text = request("GET", "/v1/models", key)
+    with working("Checking your key"):
+        status, text = request("GET", "/v1/models", key)
     if status == 401:
         raise SetupError("sitegen did not accept that key. Check that you copied all of it, or create a new one.")
     if status == 403:
@@ -929,17 +992,22 @@ def install():
                  "opencode": None if do_opencode else (state or {}).get("opencode")}
 
     step("4. Setting up the apps")
-    if do_codex and install_codex(codex, gpt, codex_model, backup_dir):
-        new_state["codex"] = {"home": CODEX_HOME, "config": CODEX_CONFIG, "catalog": CODEX_CATALOG, "model": codex_model}
-        ok("Codex now uses sitegen (%s by default, %d models in its picker)." % (codex_model, len(gpt)))
+    if do_codex:
+        with working("Setting up Codex (checking that Codex accepts the new settings)"):
+            codex_done = install_codex(codex, gpt, codex_model, backup_dir)
+        if codex_done:
+            new_state["codex"] = {"home": CODEX_HOME, "config": CODEX_CONFIG, "catalog": CODEX_CATALOG, "model": codex_model}
+            ok("Codex now uses sitegen (%s by default, %d models in its picker)." % (codex_model, len(gpt)))
     if do_claude:
-        result = install_claude(claude_model, tiers, state, backup_dir)
+        with working("Setting up Claude Code"):
+            result = install_claude(claude_model, tiers, state, backup_dir)
         if result is not None:
             new_state["claude"] = result
             ok("Claude Code now uses sitegen (%s by default; opus=%s, sonnet=%s, haiku=%s)."
                % (claude_model, tiers["opus"], tiers["sonnet"], tiers["haiku"]))
     if do_opencode:
-        result = install_opencode(everything, opencode_model, opencode_small, state, backup_dir)
+        with working("Setting up OpenCode"):
+            result = install_opencode(everything, opencode_model, opencode_small, state, backup_dir)
         if result is not None:
             new_state["opencode"] = result
             ok("OpenCode now uses sitegen (%s by default, %d models under the sitegen provider)."
@@ -951,19 +1019,22 @@ def install():
     if not os.environ.get("SITEGEN_SKIP_TEST"):
         step("5. Sending one short test message")
         if do_codex and new_state["codex"]:
-            err = test_route(key, "codex", codex_model)
+            with working("Waiting for Codex to answer (%s)" % codex_model):
+                err = test_route(key, "codex", codex_model)
             if err:
                 warn("Codex route test failed: " + err)
             else:
                 ok("Codex route answered (%s)." % codex_model)
         if do_claude and new_state["claude"]:
-            err = test_route(key, "claude", claude_model)
+            with working("Waiting for Claude Code to answer (%s)" % claude_model):
+                err = test_route(key, "claude", claude_model)
             if err:
                 warn("Claude Code route test failed: " + err)
             else:
                 ok("Claude Code route answered (%s)." % claude_model)
         if do_opencode and new_state["opencode"]:
-            err = test_route(key, "opencode", opencode_model)
+            with working("Waiting for OpenCode to answer (%s)" % opencode_model):
+                err = test_route(key, "opencode", opencode_model)
             if err:
                 warn("OpenCode route test failed: " + err)
             else:

@@ -8,6 +8,9 @@ import { openAiErrorFrom, openAiError, openAiErrorBody } from '@/lib/api/openai-
 import { withIdempotency, type IdempotentResponse } from '@/lib/api/idempotency';
 import { generateChat } from '@/lib/chat/generate';
 import { parseReasoningEffort } from '@/lib/chat/reasoning';
+import { GENSITE_MAX_SEARCHES } from '@/lib/gensite/config';
+import { createGatewaySearchKit } from '@/lib/gensite/tools';
+import { tavilyApiKey } from '@/lib/search/tavily';
 import { streamChat, streamTimingFields, type ChatStreamHandle } from '@/lib/chat/stream';
 import type { ChatMessage, ChatTool } from '@/lib/chat/request';
 import type { OpenAiToolCall } from '@/lib/chat/tools';
@@ -149,11 +152,19 @@ function outputShape(content: string, toolCalls: readonly OpenAiToolCall[], fini
   };
 }
 
+function searchConfigured(): boolean {
+  return tavilyApiKey() !== null;
+}
+
 async function prepareResponse(ctx: ResponseContext): Promise<PreparedResponse> {
   const messages = toChatMessages(ctx.body);
   const tools = toChatTools(ctx.body);
   const hosted = hostedToolTypes(ctx.body);
-  if (hosted.length > 0) ctx.log.info('responses.hosted_tools_skipped', { types: hosted });
+  // OpenAI's hosted web search runs on the gateway's own search instead, for
+  // any model. The model sees an ordinary tool; the client just gets an answer.
+  const wantsSearch = hosted.some((type) => type.startsWith('web_search'));
+  const skipped = hosted.filter((type) => !type.startsWith('web_search') || !searchConfigured());
+  if (skipped.length > 0) ctx.log.info('responses.hosted_tools_skipped', { types: skipped });
   ctx.log.info('responses.request_shape', requestShape(ctx.body));
 
   const preflight = await prepareCall({
@@ -164,6 +175,13 @@ async function prepareResponse(ctx: ResponseContext): Promise<PreparedResponse> 
     messages,
     tools,
     maxOutputTokens: ctx.body.max_output_tokens,
+    reasoning: parseReasoningEffort(ctx.body.reasoning?.effort),
+    serverTools: wantsSearch
+      ? createGatewaySearchKit({
+        clientToolNames: (tools ?? []).map((entry) => entry.function.name),
+        maxSearches: GENSITE_MAX_SEARCHES,
+      })
+      : undefined,
   });
 
   return { preflight, messages, tools };
@@ -180,7 +198,7 @@ async function runResponse(ctx: ResponseContext): Promise<IdempotentResponse> {
 
   const { preflight, messages, tools } = await prepareResponse(ctx);
   if (!preflight.ok) return preflight.response;
-  const { resolved, requestedMax, held } = preflight;
+  const { resolved, requestedMax, held, serverTools, gensite } = preflight;
 
   try {
     const generation = await generateChat({
@@ -194,6 +212,9 @@ async function runResponse(ctx: ResponseContext): Promise<IdempotentResponse> {
       tools,
       toolChoice: toChatToolChoice(body),
       reasoning: parseReasoningEffort(body.reasoning?.effort),
+      serverTools,
+      instructions: gensite?.instructions,
+      reminder: gensite?.reminder,
     });
 
     const settled = await settleCall({
@@ -207,6 +228,7 @@ async function runResponse(ctx: ResponseContext): Promise<IdempotentResponse> {
       rates: generation.rates,
       usage: generation.usage,
       latencyMs: generation.latencyMs,
+      serverTools,
     });
 
     // Informational only. The call is already charged, so a failed read must
@@ -215,6 +237,8 @@ async function runResponse(ctx: ResponseContext): Promise<IdempotentResponse> {
 
     log.info('responses.ok', {
       channel_id: generation.channelId,
+      ...(gensite ? { gensite_model: gensite.modelFor(generation.channelId) } : {}),
+      ...(serverTools ? { web_searches: serverTools.searchCount() } : {}),
       latency_ms: generation.latencyMs,
       credits_charged: settled.creditsCharged,
       balance_after: balanceAfter,
@@ -273,7 +297,7 @@ async function runResponseStream(ctx: ResponseContext): Promise<Response> {
   if (!preflight.ok) {
     return Response.json(preflight.response.body, { status: preflight.response.status });
   }
-  const { resolved, requestedMax, held } = preflight;
+  const { resolved, requestedMax, held, serverTools, gensite } = preflight;
 
   let handle: ChatStreamHandle;
   try {
@@ -288,6 +312,9 @@ async function runResponseStream(ctx: ResponseContext): Promise<Response> {
       tools,
       toolChoice: toChatToolChoice(body),
       reasoning: parseReasoningEffort(body.reasoning?.effort),
+      serverTools,
+      instructions: gensite?.instructions,
+      reminder: gensite?.reminder,
     });
   } catch (err) {
     // Nothing has been written yet, so this can still be a normal JSON error.
@@ -311,9 +338,12 @@ async function runResponseStream(ctx: ResponseContext): Promise<Response> {
         rates: handle.channel.rates,
         usage: done.usage,
         latencyMs: done.latencyMs,
+        serverTools,
       });
       log.info('responses.stream_ok', {
         channel_id: handle.channel.id,
+        ...(gensite ? { gensite_model: gensite.modelFor(handle.channel.id) } : {}),
+        ...(serverTools ? { web_searches: serverTools.searchCount() } : {}),
         latency_ms: done.latencyMs,
         ...streamTimingFields(done),
         credits_charged: settled.creditsCharged,

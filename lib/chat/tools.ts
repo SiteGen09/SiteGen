@@ -107,7 +107,7 @@ export function toModelMessages(messages: readonly ChatMessage[]): ModelMessage[
             type: 'tool-result',
             toolCallId: message.tool_call_id ?? '',
             toolName: message.name ?? '',
-            output: { type: 'text', value: message.content ?? '' },
+            output: { type: message.tool_result_error === true ? 'error-text' : 'text', value: message.content ?? '' },
           },
         ],
       });

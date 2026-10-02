@@ -22,6 +22,7 @@ export default function AuthLayout({ children }: { children: ReactNode }) {
             <Link className="underline underline-offset-2" href="/terms">Terms</Link>
             <Link className="underline underline-offset-2" href="/privacy">Privacy</Link>
             <Link className="underline underline-offset-2" href="/refund-policy">Refund policy</Link>
+            <Link className="underline underline-offset-2" href="/acceptable-use">Acceptable use</Link>
             <Link className="underline underline-offset-2" href="/eula">EULA</Link>
           </nav>
           <ThemeToggle />

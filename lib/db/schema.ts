@@ -243,6 +243,10 @@ export const routingProviders = pgTable('routing_providers', {
   creditMultiplier: numeric('credit_multiplier', { precision: 10, scale: 2 }),
   isDefault: boolean('is_default').notNull().default(false),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  // Written by the Relay source sync (lib/ai/relay-sources.ts).
+  upstreamState: jsonb('upstream_state'),
+  upstreamSyncedAt: timestamp('upstream_synced_at', { withTimezone: true }),
+  upstreamError: text('upstream_error'),
 });
 
 // Relations

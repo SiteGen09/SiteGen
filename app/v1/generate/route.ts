@@ -5,7 +5,7 @@ import { z } from 'zod';
 
 import { selectByokChannel, selectChannel, resolveChannel } from '@/lib/ai/channels';
 import type { ChannelRow } from '@/lib/ai/fallback';
-import { costUsd, creditsForUsage } from '@/lib/ai/pricing';
+import { billedCostUsd, creditsForUsage } from '@/lib/ai/pricing';
 import type { ProviderCreds } from '@/lib/ai/provider';
 import { authenticateApiKey, requireScope, type AuthenticatedKey } from '@/lib/api/api-key-auth';
 import { asUpstreamError } from '@/lib/api/upstream';
@@ -196,7 +196,7 @@ async function runGeneration(ctx: GenerationContext): Promise<IdempotentResponse
     });
     // Rates come from the serving channel, so an unpriced model is a channel
     // misconfiguration rather than a code lookup that can silently miss.
-    const cost = costUsd(generation.rates, generation.usage);
+    const cost = billedCostUsd(generation.rates, generation.usage).costUsd;
 
     let creditsCharged = 0;
     if (held) {

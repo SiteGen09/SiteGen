@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ChannelRow } from '@/lib/ai/fallback';
 import { costUsd, creditsForUsage } from '@/lib/ai/pricing';
-import { estimateChatHoldCredits } from '@/lib/generate/estimate';
+import { cancelledTurnUsage, estimateChatHoldCredits } from '@/lib/generate/estimate';
 
 const RATES = { inputPerMTok: 0.5, outputPerMTok: 2, cachedPerMTok: 0.05 };
 
@@ -66,5 +66,16 @@ describe('estimateChatHoldCredits', () => {
       1,
     );
     expect(estimateChatHoldCredits(channel(), -100, 500)).toBe(zeroInput);
+  });
+});
+
+describe('cancelledTurnUsage', () => {
+  it('bills the prompt and the output received at ~4 characters a token, with no cache discount', () => {
+    expect(cancelledTurnUsage({ promptChars: 4_001, outputChars: 800, maxOutputTokens: 8_000 }))
+      .toEqual({ inputTokens: 1_001, outputTokens: 200, cachedTokens: 0 });
+  });
+
+  it('never bills more output than the turn was allowed', () => {
+    expect(cancelledTurnUsage({ promptChars: 0, outputChars: 100_000, maxOutputTokens: 1_000 }).outputTokens).toBe(1_000);
   });
 });

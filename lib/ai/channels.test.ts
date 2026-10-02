@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  cheapestChatModels,
   listPublicModels,
   resolveChannel,
   selectChannel,
@@ -19,11 +20,14 @@ interface QueryResult {
 const state = vi.hoisted(() => ({
   result: { data: [] as unknown, error: null } as QueryResult,
   defaultProvider: null as string | null,
+  relayFresh: true,
+  /** Equality filters the code under test applied, as `[column, value]`. */
+  filters: [] as [string, unknown][],
 }));
 
 interface FakeQuery extends PromiseLike<QueryResult> {
   select(): FakeQuery;
-  eq(): FakeQuery;
+  eq(column?: string, value?: unknown): FakeQuery;
   neq(): FakeQuery;
   gt(): FakeQuery;
   is(): FakeQuery;
@@ -35,7 +39,10 @@ interface FakeQuery extends PromiseLike<QueryResult> {
 function fakeQuery(): FakeQuery {
   const query: FakeQuery = {
     select: () => query,
-    eq: () => query,
+    eq: (column?: string, value?: unknown) => {
+      if (column !== undefined) state.filters.push([column, value]);
+      return query;
+    },
     neq: () => query,
     gt: () => query,
     is: () => query,
@@ -53,10 +60,12 @@ vi.mock('@/lib/supabase/service', () => ({
 
 vi.mock('@/lib/ai/routing-provider-names', () => ({
   loadDefaultRoutingProvider: async () => state.defaultProvider,
+  loadRelayPricingFresh: async () => state.relayFresh,
 }));
 
 beforeEach(() => {
   state.defaultProvider = null;
+  state.relayFresh = true;
 });
 
 interface Row {
@@ -273,6 +282,29 @@ describe('selectChannelByModel', () => {
   it('throws when the model lookup errors', async () => {
     state.result = { data: null, error: { message: 'boom' } };
     await expect(selectChannelByModel('m', 'free')).rejects.toThrow(/channel model lookup failed/);
+  });
+
+  it('scopes the lookup to chat channels', async () => {
+    // `public_model_id` is unique per (source, task), so the same model can
+    // also back a site.spec channel. Without the task filter that channel is a
+    // candidate for chat and the call bills against another task's channel.
+    state.filters = [];
+    state.result = {
+      data: [row({ id: 'chat-stub', public_model_id: 'stub-chat', task: 'chat.completions' })],
+      error: null,
+    };
+    await selectChannelByModel('stub-chat', 'free');
+    expect(state.filters).toContainEqual(['task', 'chat.completions']);
+  });
+
+  it('scopes the Auto chat route to chat channels too', async () => {
+    state.filters = [];
+    state.result = {
+      data: [row({ id: 'chat-stub', public_model_id: 'stub-chat', task: 'chat.completions' })],
+      error: null,
+    };
+    await selectChatRoute('stub-chat', 'free');
+    expect(state.filters).toContainEqual(['task', 'chat.completions']);
   });
 });
 
@@ -532,5 +564,70 @@ describe('modality isolation', () => {
   it('never serves a request-priced channel to the chat selector', async () => {
     state.result = { data: [imageRow()], error: null };
     expect(await selectChannelByModel('m', 'free', new Map())).toBeNull();
+  });
+});
+
+describe('cheapestChatModels', () => {
+  const shape = { inputTokens: 3500, outputTokens: 350 };
+
+  it('orders public chat models by their cheapest live channel for the call shape', async () => {
+    state.result = {
+      data: [
+        row({ id: 'a', public_model_id: 'big', input_per_mtok: '3', output_per_mtok: '15' }),
+        row({ id: 'b', public_model_id: 'mini', input_per_mtok: '0.15', output_per_mtok: '0.6' }),
+        // A second, pricier provider of the same model does not raise its price.
+        row({ id: 'c', public_model_id: 'mini', input_per_mtok: '1', output_per_mtok: '4' }),
+        // Cheap output but expensive input loses on a prompt-heavy call.
+        row({ id: 'd', public_model_id: 'chatty', input_per_mtok: '2', output_per_mtok: '0.1' }),
+      ],
+      error: null,
+    };
+    expect(await cheapestChatModels(shape, 3)).toEqual(['mini', 'chatty', 'big']);
+  });
+
+  it('skips degraded, non-chat and unnamed channels, and honours the limit', async () => {
+    state.result = {
+      data: [
+        row({ id: 'a', public_model_id: 'degraded', input_per_mtok: '0', output_per_mtok: '0', sources: source({ status: 'degraded' }) }),
+        row({ id: 'b', public_model_id: 'image', input_per_mtok: '0', output_per_mtok: '0', sources: source({ modality: 'image' }) }),
+        row({ id: 'c', public_model_id: null, input_per_mtok: '0', output_per_mtok: '0' }),
+        row({ id: 'd', public_model_id: 'x', input_per_mtok: '1', output_per_mtok: '1' }),
+        row({ id: 'e', public_model_id: 'y', input_per_mtok: '2', output_per_mtok: '2' }),
+      ],
+      error: null,
+    };
+    expect(await cheapestChatModels(shape, 1)).toEqual(['x']);
+  });
+});
+
+describe('relay source pricing', () => {
+  const tiers = [{ name: 'standard', rates: { inputPerMTok: .068, outputPerMTok: .34, cachedPerMTok: .0068 } }];
+  const sourcePricing = (tier: string | null) => ({
+    relayFamily: 'gpt', factor: .02, billingMultiplier: 1, scale: tier ? 1.7 : 1, tier, label: tier ? 'GPT Plus/Pro' : null,
+    baseTiers: [{ name: 'standard', rates: { inputPerMTok: .04, outputPerMTok: .2, cachedPerMTok: .004 } }],
+  });
+  const relay = (tier: string | null) => ({
+    ...row({ id: 'relay-gpt', base_url: 'https://relay.fast/v1', provider: 'openai_compatible', source_id: 'relay-gpt-chat', sources: source({ id: 'relay-gpt-chat', family: 'gpt', credit_multiplier: '1.5' }), public_model_id: 'gpt-x' }),
+    billing_policy: { origin: 'relay.fast', version: 'v', syncedAt: '2026-09-27', tiers, sourcePricing: sourcePricing(tier) },
+  });
+  const kie = row({ id: 'kie-gpt', source_id: 'kie-gpt-chat', sources: source({ id: 'kie-gpt-chat', family: 'gpt' }), public_model_id: 'gpt-x', priority: -5 });
+
+  it('charges the synced source rate', async () => {
+    state.result = { data: [relay('gpt-plus-pro')], error: null };
+    expect(await selectChannelByModel('gpt-x', 'free')).toMatchObject({ id: 'relay-gpt', rates: { inputPerMTok: .068 } });
+  });
+
+  it('withholds relay rows while the sync is stale and routes to another provider', async () => {
+    state.relayFresh = false;
+    state.result = { data: [relay('gpt-plus-pro'), kie], error: null };
+    expect(await selectChannelByModel('gpt-x', 'free')).toMatchObject({ id: 'kie-gpt' });
+    expect(await listPublicModels('free')).toEqual(['gpt-x']);
+    state.result = { data: relay('gpt-plus-pro'), error: null };
+    expect(await resolveChannel('relay-gpt', 'free')).toBeNull();
+  });
+
+  it('withholds a relay row that no sync has priced yet', async () => {
+    state.result = { data: [relay(null)], error: null };
+    expect(await selectChannelByModel('gpt-x', 'free')).toBeNull();
   });
 });

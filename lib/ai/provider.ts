@@ -4,8 +4,9 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { LanguageModel } from 'ai';
 
 import type { Provider } from '@/lib/ai/providers';
-import { kieChatFetch } from '@/lib/ai/kie-chat';
-import { kieResponsesFetch } from '@/lib/ai/kie-responses';
+import { createKieChatFetch } from '@/lib/ai/kie-chat';
+import { createKieResponsesFetch } from '@/lib/ai/kie-responses';
+import { createKieCostMeter } from '@/lib/ai/upstream-cost';
 import { withToolArgsGuard } from '@/lib/ai/tool-args-guard';
 
 /** Logical unit of work a channel is asked to perform. */
@@ -20,6 +21,12 @@ export interface ProviderCreds {
 /** Provider-agnostic model factory returned by {@link buildAI}. */
 export interface AI {
   languageModel(modelId: string): LanguageModel;
+  /**
+   * What the upstream reported the calls made through this instance cost, in
+   * USD, when it reports one (kie.ai does). Settlement prefers it to a token
+   * estimate; see billedCostUsd.
+   */
+  reportedCostUsd?(): number | undefined;
 }
 
 /** Anthropic's fixed endpoint: the first-party client is built without a `baseURL`. */
@@ -73,22 +80,27 @@ export function buildAI(creds: ProviderCreds): AI {
   // knows the latter, so this kind goes through the full OpenAI provider,
   // which is also what carries `reasoning.effort` and the built-in web-search
   // tool through as provider options.
+  // One meter per built instance, and an instance per channel attempt.
+  const meter = new URL(baseURL).hostname === 'api.kie.ai' ? createKieCostMeter() : undefined;
+  const reportedCostUsd = meter ? () => meter.usd() : undefined;
+
   if (creds.provider === 'openai_responses') {
     const provider = createOpenAI({
       apiKey: creds.apiKey,
       baseURL,
-      fetch: new URL(baseURL).hostname === 'api.kie.ai' ? kieResponsesFetch : undefined,
+      fetch: meter ? createKieResponsesFetch(meter) : undefined,
     });
-    return { languageModel: (modelId) => provider.responses(modelId) };
+    return { languageModel: (modelId) => provider.responses(modelId), reportedCostUsd };
   }
 
-  return createOpenAICompatible<string, string, string, string>({
+  const provider = createOpenAICompatible<string, string, string, string>({
     name: 'custom',
     apiKey: creds.apiKey,
     baseURL,
     includeUsage: true,
-    fetch: withToolArgsGuard(new URL(baseURL).hostname === 'api.kie.ai' ? kieChatFetch : undefined),
+    fetch: withToolArgsGuard(meter ? createKieChatFetch(meter) : undefined),
   });
+  return { languageModel: (modelId) => provider.languageModel(modelId), reportedCostUsd };
 }
 
 /**

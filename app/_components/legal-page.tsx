@@ -51,6 +51,7 @@ export function LegalPage({
             <Link className="underline" href="/terms">Terms</Link>
             <Link className="underline" href="/privacy">Privacy</Link>
             <Link className="underline" href="/refund-policy">Refund policy</Link>
+            <Link className="underline" href="/acceptable-use">Acceptable use</Link>
             <Link className="underline" href="/eula">EULA</Link>
             <Link className="underline" href="/billing-terms">Billing terms</Link>
           </nav>

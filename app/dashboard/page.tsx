@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { getPlans } from '@/lib/billing/plans';
 import { getBalance, getEntitlement, listLedger } from '@/lib/dashboard/queries';
 import { requireUser } from '@/lib/dashboard/session';
+import { unreadTicketCount } from '@/lib/support/tickets';
 import {
   EmptyRow,
   PageHeader,
@@ -18,10 +19,12 @@ const LEDGER_HEAD = ['Kind', 'Credits', 'Request ID', 'When'] as const;
 
 export default async function OverviewPage() {
   const user = await requireUser();
-  const [balance, entitlement, ledger] = await Promise.all([
+  const [balance, entitlement, ledger, supportReplies] = await Promise.all([
     getBalance(),
     getEntitlement(user.id),
     listLedger({ limit: 10 }),
+    // A support outage must not take the overview down with it.
+    unreadTicketCount(user.id).catch(() => 0),
   ]);
 
   const plan = getPlans()[entitlement.planKey];
@@ -29,6 +32,15 @@ export default async function OverviewPage() {
   return (
     <>
       <PageHeader title="Overview" description="Credits, plan and recent ledger activity." />
+
+      {supportReplies > 0 && (
+        <Link
+          href="/dashboard/support"
+          className="mb-5 block rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 hover:bg-emerald-100"
+        >
+          Support replied to {supportReplies === 1 ? 'your request' : `${supportReplies} of your requests`}. <span className="font-medium underline">Read the reply</span>
+        </Link>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <Stat label="Credit balance" value={formatCredits(balance)} hint={`≈ ${formatCreditsUsd(balance)}`} />

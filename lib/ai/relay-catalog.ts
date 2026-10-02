@@ -20,6 +20,8 @@ export const relayCatalogSchema = z.object({
   vendors: z.array(z.object({ id: z.number(), name: z.string() })),
 });
 const families: Record<string, string> = { OpenAI: 'gpt', Anthropic: 'claude', Google: 'gemini', xAI: 'grok', DeepSeek: 'deepseek', MiniMax: 'minimax', '智谱': 'zhipu', Tencent: 'tencent', Moonshot: 'moonshot', Xiaomi: 'xiaomi' };
+/** Relay's own name for each vendor's routing family, as its routing profile and usage log spell it. */
+export const RELAY_FAMILIES: Record<string, string> = { OpenAI: 'gpt', Anthropic: 'claude', Google: 'gemini', xAI: 'grok', DeepSeek: 'deepseek', MiniMax: 'minimax', '智谱': 'glm', Tencent: 'hy3', Moonshot: 'kimi', Xiaomi: 'mimo' };
 
 /** Parse the published arithmetic grammar. Never execute remote expressions. */
 export function parseRelayExpression(raw: string, factor: number): Pick<BillingPolicy, 'tiers' | 'contextThreshold' | 'peakUtcHours'> {
@@ -71,7 +73,13 @@ export function relayChannels(raw: unknown, now = new Date()) {
       if (tiers && (tiers.length !== 2 || tiers[0]!.label !== '1K / <=1792 px' || tiers[1]!.label !== '2K / 4K / >1792 px')) throw new Error('Unknown image pricing tiers');
       imagePrices = { standard: (tiers?.[0]?.price ?? model.model_price) * factor, large: (tiers?.[1]?.price ?? model.model_price) * factor };
     }
-    const policy = billingPolicySchema.parse({ origin: 'relay.fast', version: catalog.pricing_version, syncedAt: now.toISOString(), ...pricing, ...(imagePrices ? { imagePrices } : {}) });
+    // Chat is billed at the account's selected Relay source; see sourcePricingSchema.
+    // Image models sit in Relay's separate, fixed-price image family.
+    const sourcePricing = image ? undefined : {
+      relayFamily: RELAY_FAMILIES[vendor!]!, factor, billingMultiplier: model.billing_multiplier ?? 1,
+      baseTiers: pricing.tiers, scale: 1, tier: null, label: null,
+    };
+    const policy = billingPolicySchema.parse({ origin: 'relay.fast', version: catalog.pricing_version, syncedAt: now.toISOString(), ...pricing, ...(imagePrices ? { imagePrices } : {}), ...(sourcePricing ? { sourcePricing } : {}) });
     const rates = policy.tiers[0]!.rates;
     return {
       id: `relay-${model.model_name}`, label: model.model_name, task: image ? 'image.generate' : 'chat.completions',

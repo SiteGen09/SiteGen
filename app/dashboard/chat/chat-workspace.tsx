@@ -8,6 +8,7 @@ import { ATTACHMENT_ACCEPT, attachmentsSchema, chooseModel, decodeTurn, detectMo
 import { canRetry, chatErrorSchema, describeError, errorAction, INTERRUPTED, showsReference, transportError, type ChatError, type ChatErrorKind } from '@/lib/chat/errors';
 import { readSseData } from '@/lib/chat/sse';
 import { parseMediaMarker } from '@/lib/media/marker';
+import { MEDIA_POLICY_CHECKBOX, MEDIA_POLICY_WARNING, MEDIA_SUSPENDED } from '@/lib/safety/media-policy-text';
 import { createClient } from '@/lib/supabase/client';
 import type { Family } from '@/lib/ai/source-types';
 import { MediaBubble } from './media-bubble';
@@ -108,9 +109,12 @@ function AttachmentCards({ files, onRemove }: { files: ChatAttachment[]; onRemov
   ))}</div>;
 }
 
-export function ChatWorkspace({ models, imageModels, videoModels, families, initialConversations }: {
-  models: string[]; imageModels: string[]; videoModels: string[]; families: Record<string, Family>; initialConversations: Conversation[];
+export function ChatWorkspace({ models, imageModels, videoModels, families, mediaAccess, initialConversations }: {
+  models: string[]; imageModels: string[]; videoModels: string[]; families: Record<string, Family>;
+  mediaAccess: { accepted: boolean; suspended: boolean }; initialConversations: Conversation[];
 }) {
+  const [policyAccepted, setPolicyAccepted] = useState(mediaAccess.accepted);
+  const [savingConsent, setSavingConsent] = useState(false);
   const [conversations, setConversations] = useState(initialConversations);
   const [conversationId, setConversationId] = useState<string>();
   const [messages, setMessages] = useState<Turn[]>([]);
@@ -160,7 +164,8 @@ export function ChatWorkspace({ models, imageModels, videoModels, families, init
   const autoModel = chooseModel(modeModels, kind, kind === 'chat' && needsImages);
   const available = model !== 'auto' && eligibleModels.includes(model) ? model : autoModel;
   const attachmentBlock = kind !== 'chat' && attachments.length > 0;
-  const canSend = !busy && !reading && (draft.trim().length > 0 || attachments.length > 0) && !!available && !attachmentBlock;
+  const mediaBlocked = kind !== 'chat' && (mediaAccess.suspended || !policyAccepted);
+  const canSend = !busy && !reading && (draft.trim().length > 0 || attachments.length > 0) && !!available && !attachmentBlock && !mediaBlocked;
   const idle = !busy && !reading;
   const editingId = editing?.id;
 
@@ -321,6 +326,21 @@ export function ChatWorkspace({ models, imageModels, videoModels, families, init
       sending.current = false;
       setBusy(false);
       requestAnimationFrame(() => textarea.current?.focus());
+    }
+  }
+
+  /** Records the Acceptable Use Policy agreement; generation needs it before the first render. */
+  async function acceptPolicy(): Promise<void> {
+    if (savingConsent || policyAccepted) return;
+    setSavingConsent(true);
+    try {
+      const response = await fetch('/api/media/consent', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ accepted: true }) });
+      if (!response.ok) throw new TurnFailure(await readFailure(response));
+      setPolicyAccepted(true);
+    } catch (err) {
+      setNotice(noticeFrom(problemFrom(err, false)));
+    } finally {
+      setSavingConsent(false);
     }
   }
 
@@ -539,6 +559,24 @@ export function ChatWorkspace({ models, imageModels, videoModels, families, init
         <div className="px-3 pb-4 sm:px-6 sm:pb-5">
           {pendingGeneration && <div className="mb-3 rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3"><GenerationProgress startedAt={pendingGeneration.startedAt} label={pendingGeneration.kind === 'image' ? 'Generating image' : 'Rendering video'} /></div>}
           {notice && <div className="mb-3"><ProblemCard notice={notice} onDismiss={() => setNotice(null)} /></div>}
+          {kind !== 'chat' && (
+            <div className="mb-3 space-y-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-900">
+              {mediaAccess.suspended
+                ? <p role="alert" className="font-medium">{MEDIA_SUSPENDED}</p>
+                : <>
+                  <p>{MEDIA_POLICY_WARNING}</p>
+                  {!policyAccepted && (
+                    <label className="flex cursor-pointer items-start gap-2 font-medium">
+                      <input type="checkbox" checked={false} disabled={savingConsent} onChange={() => void acceptPolicy()} className="mt-0.5 h-4 w-4 accent-zinc-900" />
+                      <span>
+                        {MEDIA_POLICY_CHECKBOX.replace('Acceptable Use Policy.', '')}<Link href="/acceptable-use" target="_blank" className="underline underline-offset-2">Acceptable Use Policy</Link>.
+                        <span className="block font-normal text-amber-800">This also confirms you are old enough to use Whop under its Terms of Service. Generated files are kept for 7 days.</span>
+                      </span>
+                    </label>
+                  )}
+                </>}
+            </div>
+          )}
           <form onSubmit={(event) => void send(event)} className="rounded-2xl border border-zinc-300 bg-white p-3 shadow-sm transition focus-within:border-zinc-400 focus-within:ring-2 focus-within:ring-zinc-100">
             {attachments.length > 0 && <div className="mb-2"><AttachmentCards files={attachments} {...(!busy && !reading ? { onRemove: (index: number) => setAttachments((current) => current.filter((_, i) => i !== index)) } : {})} /></div>}
             <textarea ref={textarea} aria-label="Message" aria-describedby="composer-hint composer-route" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape' && stoppable) { event.preventDefault(); stop(); } else if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); if (!event.repeat) event.currentTarget.form?.requestSubmit(); } }} onPaste={(event) => { const files = Array.from(event.clipboardData.files); if (files.length) { event.preventDefault(); void addFiles(files); } }} disabled={busy && !stoppable} maxLength={32000} rows={2} placeholder={dragging ? 'Drop your files here…' : 'Ask anything, or describe an idea…'} className="block max-h-44 min-h-16 w-full resize-none border-0 bg-transparent px-2 py-2 text-sm leading-6 text-zinc-900 outline-none placeholder:text-zinc-500" />

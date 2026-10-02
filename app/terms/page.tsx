@@ -22,7 +22,7 @@ export default function TermsPage() {
           children: (
             <>
               <p>sitegen is an AI workspace and developer API operated by Philip Pasaje in the Philippines. The service lets you use supported third-party AI models, create media jobs, and connect applications through our API.</p>
-              <p>By creating an account or using sitegen, you agree to these Terms of Service, our <Link className="underline" href="/eula">End User License Agreement</Link>, <Link className="underline" href="/privacy">Privacy Policy</Link>, <Link className="underline" href="/refund-policy">Refund Policy</Link>, and <Link className="underline" href="/billing-terms">Billing Terms</Link>. Whop may also apply its own checkout and platform terms.</p>
+              <p>By creating an account or using sitegen, you agree to these Terms of Service, our <Link className="underline" href="/eula">End User License Agreement</Link>, <Link className="underline" href="/privacy">Privacy Policy</Link>, <Link className="underline" href="/refund-policy">Refund Policy</Link>, <Link className="underline" href="/acceptable-use">Acceptable Use Policy</Link>, and <Link className="underline" href="/billing-terms">Billing Terms</Link>. Whop may also apply its own checkout and platform terms.</p>
             </>
           ),
         },
@@ -39,7 +39,7 @@ export default function TermsPage() {
           title: '3. Acceptable use',
           children: (
             <>
-              <p>You may use sitegen only for lawful purposes and in a way that respects other people’s rights. You must not use it to create or distribute child sexual abuse material, sexually explicit content involving minors, non-consensual sexual content, fraud, malware, credential theft, unauthorized access, harassment, threats, or content that infringes intellectual property or privacy rights.</p>
+              <p>You may use sitegen only for lawful purposes and in a way that respects other people’s rights. You must not use it to create or distribute child sexual abuse material, sexually explicit content involving minors, non-consensual sexual content, fraud, malware, credential theft, unauthorized access, harassment, threats, or content that infringes intellectual property or privacy rights. Image and video generation is also subject to the stricter <Link className="underline" href="/acceptable-use">Acceptable Use Policy</Link>.</p>
               <p>You must not bypass limits, probe other accounts, reverse engineer protected systems, resell access without written permission, or use the service to make high-impact decisions about a person without appropriate human review and legal compliance.</p>
               <p>We may block a request, suspend generation, or restrict an account when we reasonably believe use violates these terms, provider rules, Whop policies, or the law.</p>
             </>

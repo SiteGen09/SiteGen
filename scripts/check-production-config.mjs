@@ -123,13 +123,17 @@ if (value('WHOP_PLAN_TOPUP')) {
 }
 
 if (value('MEDIA_GENERATION_ENABLED') === 'true') {
-  if (value('MODERATION_MODE') !== 'remote' || value('MEDIA_OUTPUT_MODERATION') !== 'remote' || value('MEDIA_OUTPUT_MODERATION_READY') !== 'true' || !value('MODERATION_API_KEY')) {
-    errors.push('MEDIA_GENERATION_ENABLED: requires tested remote prompt/output moderation, MEDIA_OUTPUT_MODERATION_READY=true, and MODERATION_API_KEY');
-  } else {
-    ok.push('moderated image generation enabled');
+  // The media safety gate (lib/safety/media-gate.ts) screens with platform
+  // Gemini channels and fails closed; OpenAI moderation is an optional extra.
+  ok.push('image generation enabled behind the media safety gate');
+  if (!value('MODERATION_API_KEY') && !value('OPENAI_AI_KEY') && !value('OPENAI_API_KEY')) {
+    warnings.push('No OpenAI moderation key: media is screened by the Gemini classifier alone.');
+  }
+  if (value('MEDIA_VIDEO_ENABLED') === 'true') {
+    ok.push('video generation enabled (needs ffmpeg on this host for frame screening)');
   }
 } else {
-  warnings.push('Media generation is disabled; video remains unavailable until a supported output-screening workflow is deployed.');
+  warnings.push('Media generation is disabled (MEDIA_GENERATION_ENABLED).');
 }
 
 console.log(`Production configuration check: ${resolvedEnvFile}`);

@@ -188,7 +188,7 @@ describe('dashboard chat settlement after a Kie stream', () => {
     expect(state.rpc.mock.calls.filter(([name]) => name === 'settle_credits')).toHaveLength(1);
     expect(state.rpc).toHaveBeenCalledWith('settle_credits', expect.objectContaining({
       p_actual_credits: 1,
-      p_meta: { input_tokens: 84, output_tokens: 1, cached_tokens: 0 },
+      p_meta: { input_tokens: 84, output_tokens: 1, cached_tokens: 0, cost_source: 'tokens' },
     }));
     expect(state.writes.filter((write) => write.table === 'usage_events')).toEqual([
       expect.objectContaining({ value: expect.objectContaining({
@@ -355,7 +355,7 @@ describe('stopping a reply', () => {
     expect(upstream.aborted).toBe(false);
     // Billed on the provider's report, not on what was shown.
     expect(state.rpc).toHaveBeenCalledWith('settle_credits', expect.objectContaining({
-      p_meta: { input_tokens: 84, output_tokens: 40, cached_tokens: 0 },
+      p_meta: { input_tokens: 84, output_tokens: 40, cached_tokens: 0, cost_source: 'tokens' },
     }));
     expect(state.rpc.mock.calls.some(([name]) => name === 'release_credits')).toBe(false);
     // The rest of the reply is never saved.
@@ -378,7 +378,7 @@ describe('stopping a reply', () => {
 
     expect(upstream.aborted).toBe(false);
     expect(state.rpc).toHaveBeenCalledWith('settle_credits', expect.objectContaining({
-      p_meta: { input_tokens: 84, output_tokens: 40, cached_tokens: 0 },
+      p_meta: { input_tokens: 84, output_tokens: 40, cached_tokens: 0, cost_source: 'tokens' },
     }));
     expect(state.rpc.mock.calls.some(([name]) => name === 'release_credits')).toBe(false);
     expect(state.writes).not.toContainEqual(expect.objectContaining({

@@ -33,6 +33,19 @@ function resolverFor(rows: ChannelRow[]): (id: string) => Promise<ChannelRow | n
 }
 
 describe('callWithFallback', () => {
+  it('does not retry another channel after the caller aborts', async () => {
+    const halt = new AbortController();
+    const attempt = vi.fn(async () => {
+      halt.abort();
+      throw new DOMException('cancelled', 'AbortError');
+    });
+    await expect(callWithFallback(
+      channel('a', { fallbackTo: 'b' }), resolverFor([channel('b')]), attempt,
+      undefined, halt.signal,
+    )).rejects.toMatchObject({ name: 'AbortError' });
+    expect(attempt).toHaveBeenCalledTimes(1);
+  });
+
   it('tries automatic alternatives before configured backup models, once each', async () => {
     const start = channel('a', { automaticRouting: true, automaticFallbackIds: ['missing', 'b', 'a'], fallbackTo: 'configured' });
     const b = channel('b', { automaticRouting: true, fallbackTo: 'configured' });

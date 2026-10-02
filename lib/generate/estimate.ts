@@ -1,6 +1,7 @@
 import type { ChannelRow } from '@/lib/ai/fallback';
 import { costUsd, creditsForUsage } from '@/lib/ai/pricing';
 import { ApiError } from '@/lib/api/errors';
+import type { NormalizedUsage } from '@/lib/generate/usage';
 
 /**
  * Worst-case token budget for a generation. Deliberately generous: the hold
@@ -30,6 +31,31 @@ export function estimateHoldCredits(channel: ChannelRow): number {
 
 /** Deliberately coarse token estimate: ~4 characters per token. */
 const CHARS_PER_TOKEN = 4;
+
+/**
+ * Usage for a streamed turn the client cancelled.
+ *
+ * Stopping the upstream means it never sends its usage report, yet the
+ * provider still bills the prompt it processed and the output it generated
+ * before the stop. This bills the same: the prompt at the hold's ~4 characters
+ * a token (no cache discount), and the output the gateway received, capped at
+ * the output ceiling. Hidden reasoning is not counted, so the error favours
+ * the caller.
+ */
+export function cancelledTurnUsage(input: {
+  promptChars: number;
+  outputChars: number;
+  maxOutputTokens: number;
+}): NormalizedUsage {
+  return {
+    inputTokens: Math.ceil(Math.max(0, input.promptChars) / CHARS_PER_TOKEN),
+    outputTokens: Math.min(
+      Math.ceil(Math.max(0, input.outputChars) / CHARS_PER_TOKEN),
+      Math.max(0, input.maxOutputTokens),
+    ),
+    cachedTokens: 0,
+  };
+}
 
 /**
  * Credits to hold for a gateway chat call.

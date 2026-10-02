@@ -73,13 +73,69 @@ $TopLevelKeys = @('model', 'model_provider', 'model_catalog_json', 'web_search')
 $DisabledFeatures = @('multi_agent', 'view_image')
 # Claude Code settings the installer owns while installed.
 $ClaudeEnvKeys = @('ANTHROPIC_BASE_URL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL',
-  'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL')
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL',
+  'CLAUDE_CODE_AUTO_MODE_SERVER')
 
-function Say([string]$Text) { Write-Host $Text }
-function Step([string]$Text) { Write-Host ''; Write-Host $Text -ForegroundColor Cyan }
-function Ok([string]$Text) { Write-Host "  OK  $Text" -ForegroundColor Green }
-function Warn([string]$Text) { Write-Host "  !   $Text" -ForegroundColor Yellow }
+function Say([string]$Text) { Stop-Spinner; Write-Host $Text }
+function Step([string]$Text) { Stop-Spinner; Write-Host ''; Write-Host $Text -ForegroundColor Cyan }
+function Ok([string]$Text) { Stop-Spinner; Write-Host "  OK  $Text" -ForegroundColor Green }
+function Warn([string]$Text) { Stop-Spinner; Write-Host "  !   $Text" -ForegroundColor Yellow }
 function Fail([string]$Text) { throw (New-Object System.InvalidOperationException $Text) }
+
+# The spinner draws from its own runspace while the slow step keeps this one.
+# Anything printed meanwhile (a warning, say) ends it first, so its line never
+# mixes with real output. Without a console it prints one line instead.
+$SpinnerSlot = @{ Current = $null }
+
+function Start-Spinner([string]$Text) {
+  Stop-Spinner
+  $live = $false
+  try { $live = -not [Console]::IsOutputRedirected } catch { }
+  if (-not $live) { Say "  ..  $Text"; return }
+  try {
+    $state = [hashtable]::Synchronized(@{ Text = $Text; Done = $false })
+    $shell = [PowerShell]::Create()
+    [void]$shell.AddScript({
+      param($s)
+      $frames = '|', '/', '-', '\'
+      $clock = [Diagnostics.Stopwatch]::StartNew()
+      $width = 0
+      $i = 0
+      while (-not $s.Done) {
+        $seconds = [int][Math]::Floor($clock.Elapsed.TotalSeconds)
+        $tail = if ($seconds -ge 3) { " ($($seconds)s)" } else { '' }
+        $line = "   $($s.Text)$tail"
+        # A frame that fails while Invoke-Native swaps the console encoding is skipped.
+        try {
+          $color = [Console]::ForegroundColor
+          [Console]::Write("`r  ")
+          try { [Console]::ForegroundColor = 'Cyan'; [Console]::Write($frames[$i % 4]) } finally { [Console]::ForegroundColor = $color }
+          [Console]::Write($line.PadRight($width))
+        } catch { }
+        $width = [Math]::Max($width, $line.Length)
+        $i++
+        Start-Sleep -Milliseconds 100
+      }
+      [Console]::Write("`r" + (' ' * ($width + 3)) + "`r")
+    }).AddArgument($state)
+    $SpinnerSlot.Current = @{ State = $state; Shell = $shell; Handle = $shell.BeginInvoke() }
+  } catch { Write-Host "  ..  $Text" }
+}
+
+function Stop-Spinner {
+  $spinner = $SpinnerSlot.Current
+  if ($null -eq $spinner) { return }
+  $SpinnerSlot.Current = $null
+  $spinner.State.Done = $true
+  try { [void]$spinner.Shell.EndInvoke($spinner.Handle) } catch { }
+  $spinner.Shell.Dispose()
+}
+
+# Runs a slow step with the spinner showing, and returns what it returns.
+function Invoke-Working([string]$Text, [scriptblock]$Work) {
+  Start-Spinner $Text
+  try { & $Work } finally { Stop-Spinner }
+}
 
 function Write-Utf8([string]$Path, [string]$Text) {
   $parent = Split-Path -Parent $Path
@@ -612,6 +668,13 @@ function Install-Claude([string[]]$ClaudeIds, [string]$Model, [hashtable]$Tiers,
       hadEnv = ($null -ne $settings.PSObject.Properties['env'])
       fileExisted = (Test-Path -LiteralPath $ClaudeSettings)
     }
+  } else {
+    # Keys added to $ClaudeEnvKeys since the first install record their value now.
+    $prevEnv = Get-Prop $previous 'env'
+    if ($prevEnv -isnot [pscustomobject]) { $prevEnv = [pscustomobject]@{}; Set-Prop $previous 'env' $prevEnv }
+    foreach ($k in $ClaudeEnvKeys) {
+      if ($null -eq $prevEnv.PSObject.Properties[$k]) { Set-Prop $prevEnv $k (Get-Prop $envBlock $k) }
+    }
   }
 
   $helper = 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $HelperFile + '"'
@@ -621,6 +684,9 @@ function Install-Claude([string[]]$ClaudeIds, [string]$Model, [hashtable]$Tiers,
     ANTHROPIC_DEFAULT_SONNET_MODEL = $Tiers.sonnet
     ANTHROPIC_DEFAULT_HAIKU_MODEL = $Tiers.haiku
     ANTHROPIC_SMALL_FAST_MODEL = $Tiers.haiku
+    # sitegen cannot run auto mode's server-side classifier checks, so
+    # Claude Code makes its own and skips the "isn't eligible" notice.
+    CLAUDE_CODE_AUTO_MODE_SERVER = '0'
   }
   foreach ($k in $applied.Keys) { Set-Prop $envBlock $k $applied[$k] }
   # A token or pinned model left in the settings would override the helper.
@@ -826,7 +892,7 @@ function Invoke-Install {
 
   Step '1. Your sitegen API key'
   $key = Read-ApiKey
-  $models = Invoke-Sitegen 'GET' '/v1/models' $key
+  $models = Invoke-Working 'Checking your key' { Invoke-Sitegen 'GET' '/v1/models' $key }
   if ($models.Status -eq 401) { Fail 'sitegen did not accept that key. Check that you copied all of it, or create a new one.' }
   if ($models.Status -eq 403) { Fail 'That key cannot chat. Create a key with the chat permission and run this again.' }
   if ($models.Status -ne 200) { Fail "Could not reach sitegen ($($models.Status)): $(Get-ErrorMessage $models.Text)" }
@@ -909,20 +975,20 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR(`$ptr) }
 
   Step '4. Setting up the apps'
   if ($doCodex) {
-    if (Install-Codex $codex $gpt $codexModel $backupDir) {
+    if (Invoke-Working 'Setting up Codex (checking that Codex accepts the new settings)' { Install-Codex $codex $gpt $codexModel $backupDir }) {
       $newState.codex = [pscustomobject]@{ home = $CodexHome; config = $CodexConfig; catalog = $CodexCatalog; model = $codexModel }
       Ok "Codex now uses sitegen ($codexModel by default, $($gpt.Count) models in its picker)."
     }
   }
   if ($doClaude) {
-    $result = Install-Claude $claude $claudeModel $tiers $state $backupDir
+    $result = Invoke-Working 'Setting up Claude Code' { Install-Claude $claude $claudeModel $tiers $state $backupDir }
     if ($null -ne $result) {
       $newState.claude = $result
       Ok "Claude Code now uses sitegen ($claudeModel by default; opus=$($tiers.opus), sonnet=$($tiers.sonnet), haiku=$($tiers.haiku))."
     }
   }
   if ($doOpenCode) {
-    $result = Install-OpenCode $everything $openCodeModel $openCodeSmall $state $backupDir
+    $result = Invoke-Working 'Setting up OpenCode' { Install-OpenCode $everything $openCodeModel $openCodeSmall $state $backupDir }
     if ($null -ne $result) {
       $newState.opencode = $result
       Ok "OpenCode now uses sitegen ($openCodeModel by default, $($everything.Count) models under the sitegen provider)."
@@ -937,15 +1003,15 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR(`$ptr) }
   if (-not $env:SITEGEN_SKIP_TEST) {
     Step '5. Sending one short test message'
     if ($doCodex -and $newState.codex) {
-      $err = Test-Route $key 'codex' $codexModel
+      $err = Invoke-Working "Waiting for Codex to answer ($codexModel)" { Test-Route $key 'codex' $codexModel }
       if ($err) { Warn "Codex route test failed: $err" } else { Ok "Codex route answered ($codexModel)." }
     }
     if ($doClaude -and $newState.claude) {
-      $err = Test-Route $key 'claude' $claudeModel
+      $err = Invoke-Working "Waiting for Claude Code to answer ($claudeModel)" { Test-Route $key 'claude' $claudeModel }
       if ($err) { Warn "Claude Code route test failed: $err" } else { Ok "Claude Code route answered ($claudeModel)." }
     }
     if ($doOpenCode -and $newState.opencode) {
-      $err = Test-Route $key 'opencode' $openCodeModel
+      $err = Invoke-Working "Waiting for OpenCode to answer ($openCodeModel)" { Test-Route $key 'opencode' $openCodeModel }
       if ($err) { Warn "OpenCode route test failed: $err" } else { Ok "OpenCode route answered ($openCodeModel)." }
     }
   }
@@ -1076,10 +1142,12 @@ try {
   if ($uri.Scheme -ne 'https' -and $uri.Host -notin @('localhost', '127.0.0.1')) { Fail 'The sitegen address must use https.' }
   if ($Action -eq 'uninstall') { Invoke-Uninstall } else { Invoke-Install }
 } catch {
+  Stop-Spinner
   Write-Host ''
   Write-Host "  X   $($_.Exception.Message)" -ForegroundColor Red
   Write-Host '      Nothing further was changed.' -ForegroundColor Red
 } finally {
+  Stop-Spinner
   if ($env:SITEGEN_ACTION) { Remove-Item Env:SITEGEN_ACTION -ErrorAction SilentlyContinue }
 }
 }

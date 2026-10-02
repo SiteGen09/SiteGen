@@ -110,13 +110,19 @@ export function isRetryableError(err: unknown): boolean {
   return cause === undefined || cause === null ? false : isRetryableError(cause);
 }
 
-function isAutomaticRouteUnavailable(err: unknown): boolean {
-  if (isPolicyRejection(err) || typeof err !== 'object' || err === null) return false;
+/** The HTTP status an upstream error carries, on itself or its response. */
+export function upstreamStatus(err: unknown): number | undefined {
+  if (typeof err !== 'object' || err === null) return undefined;
   const source = err as Record<string, unknown>;
   const response = source['response'];
-  const status = numericProp(source, 'statusCode') ?? numericProp(source, 'status') ??
+  return numericProp(source, 'statusCode') ?? numericProp(source, 'status') ??
     (typeof response === 'object' && response !== null
       ? numericProp(response as Record<string, unknown>, 'status') : undefined);
+}
+
+function isAutomaticRouteUnavailable(err: unknown): boolean {
+  if (isPolicyRejection(err) || typeof err !== 'object' || err === null) return false;
+  const status = upstreamStatus(err);
   // These responses can mean that this provider cannot currently serve the
   // requested model. Invalid input (400/422) and policy refusals remain final.
   return status !== undefined && [401, 402, 404, 408].includes(status);
@@ -136,6 +142,10 @@ export async function callWithFallback<T>(
   start: ChannelRow,
   resolve: (id: string) => Promise<ChannelRow | null>,
   attempt: (channel: ChannelRow) => Promise<T>,
+  /** Told of every failed attempt, including ones a later channel recovers from. */
+  onAttemptFailed?: (channelId: string, err: unknown) => void,
+  /** A caller cancellation must end the walk, even when the provider reports AbortError as retryable. */
+  abortSignal?: AbortSignal,
 ): Promise<FallbackResult<T>> {
   const attempts: Array<{ channelId: string; error?: string }> = [];
   const visited = new Set<string>();
@@ -147,6 +157,7 @@ export async function callWithFallback<T>(
   let sawError = false;
 
   for (let depth = 0; current !== null && depth < MAX_CHAIN_DEPTH; depth += 1) {
+    abortSignal?.throwIfAborted();
     const channel: ChannelRow = current;
     if (visited.has(channel.id)) break;
     visited.add(channel.id);
@@ -159,7 +170,13 @@ export async function callWithFallback<T>(
         attempts.push({ channelId: channel.id });
         return { value, channelId: channel.id, attempts };
       } catch (err) {
+        if (abortSignal?.aborted) throw err;
         await observePolicyRejection(err);
+        try {
+          onAttemptFailed?.(channel.id, err);
+        } catch {
+          // Observation must never change the outcome of the walk.
+        }
         attempts.push({
           channelId: channel.id,
           error: err instanceof Error ? err.message : String(err),

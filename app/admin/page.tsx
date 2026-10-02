@@ -62,6 +62,12 @@ export default async function AdminOverviewPage({ searchParams }: {
         <Stat label="Error rate" value={pct(summary.errors, summary.requests)} tone={summary.errors > 0 ? 'alert' : undefined} />
         <Stat label="p95 latency" value={summary.p95_latency_ms === null ? '—' : Math.round(summary.p95_latency_ms) + ' ms'} />
       </div>
+      {/* Same split as the consumer usage page: input_tokens excludes cache reads. */}
+      <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <Stat label="Total input tokens" value={(summary.input_tokens + summary.cached_tokens).toLocaleString()} detail="includes cached input" />
+        <Stat label="Cached tokens" value={summary.cached_tokens.toLocaleString()} />
+        <Stat label="Output tokens" value={summary.output_tokens.toLocaleString()} />
+      </div>
 
       <div className="mb-5 space-y-5">
         <RecentRequests rows={recent} now={now} />
